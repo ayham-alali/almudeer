@@ -46,6 +46,15 @@ async def init_database():
         conn = await asyncpg.connect(DATABASE_URL)
         try:
             await _init_postgresql_tables(conn)
+            # Add license_key_encrypted column if it doesn't exist (for existing databases)
+            try:
+                await conn.execute("""
+                    ALTER TABLE license_keys 
+                    ADD COLUMN IF NOT EXISTS license_key_encrypted TEXT
+                """)
+            except Exception:
+                # Column might already exist, ignore
+                pass
         finally:
             await conn.close()
     else:
@@ -60,6 +69,7 @@ async def _init_sqlite_tables(db):
         CREATE TABLE IF NOT EXISTS license_keys (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             key_hash TEXT UNIQUE NOT NULL,
+            license_key_encrypted TEXT,
             company_name TEXT NOT NULL,
             contact_email TEXT,
             is_active BOOLEAN DEFAULT TRUE,
@@ -138,6 +148,7 @@ async def _init_postgresql_tables(conn):
         CREATE TABLE IF NOT EXISTS license_keys (
             id SERIAL PRIMARY KEY,
             key_hash VARCHAR(255) UNIQUE NOT NULL,
+            license_key_encrypted TEXT,
             company_name VARCHAR(255) NOT NULL,
             contact_email VARCHAR(255),
             is_active BOOLEAN DEFAULT TRUE,
@@ -223,6 +234,10 @@ async def generate_license_key(
     raw_key = f"MUDEER-{secrets.token_hex(2).upper()}-{secrets.token_hex(2).upper()}-{secrets.token_hex(2).upper()}"
     key_hash = hash_license_key(raw_key)
     
+    # Encrypt the original key for storage
+    from security_enhanced import encrypt_sensitive_data
+    encrypted_key = encrypt_sensitive_data(raw_key)
+    
     expires_at = datetime.now() + timedelta(days=days_valid)
     
     if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
@@ -236,20 +251,59 @@ async def generate_license_key(
             await conn.execute(f"SELECT setval('license_keys_id_seq', {next_id}, false)")
             
             await conn.execute("""
-                INSERT INTO license_keys (id, key_hash, company_name, contact_email, expires_at, max_requests_per_day)
-                VALUES ($1, $2, $3, $4, $5, $6)
-            """, next_id, key_hash, company_name, contact_email, expires_at, max_requests)
+                INSERT INTO license_keys (id, key_hash, license_key_encrypted, company_name, contact_email, expires_at, max_requests_per_day)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+            """, next_id, key_hash, encrypted_key, company_name, contact_email, expires_at, max_requests)
         finally:
             await conn.close()
     else:
         async with aiosqlite.connect(DATABASE_PATH) as db:
             await db.execute("""
-                INSERT INTO license_keys (key_hash, company_name, contact_email, expires_at, max_requests_per_day)
-                VALUES (?, ?, ?, ?, ?)
-            """, (key_hash, company_name, contact_email, expires_at.isoformat(), max_requests))
+                INSERT INTO license_keys (key_hash, license_key_encrypted, company_name, contact_email, expires_at, max_requests_per_day)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (key_hash, encrypted_key, company_name, contact_email, expires_at.isoformat(), max_requests))
             await db.commit()
     
     return raw_key
+
+
+async def get_license_key_by_id(license_id: int) -> Optional[str]:
+    """Get the original license key by ID (decrypted)"""
+    from security_enhanced import decrypt_sensitive_data
+    
+    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            row = await conn.fetchrow("""
+                SELECT license_key_encrypted FROM license_keys WHERE id = $1
+            """, license_id)
+            
+            if not row or not row['license_key_encrypted']:
+                return None
+            
+            encrypted_key = row['license_key_encrypted']
+            try:
+                return decrypt_sensitive_data(encrypted_key)
+            except Exception:
+                return None
+        finally:
+            await conn.close()
+    else:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT license_key_encrypted FROM license_keys WHERE id = ?
+            """, (license_id,)) as cursor:
+                row = await cursor.fetchone()
+                
+                if not row or not row['license_key_encrypted']:
+                    return None
+                
+                encrypted_key = row['license_key_encrypted']
+                try:
+                    return decrypt_sensitive_data(encrypted_key)
+                except Exception:
+                    return None
 
 
 async def validate_license_key(key: str) -> dict:

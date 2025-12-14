@@ -55,8 +55,19 @@ class MigrationManager:
             if await cursor.fetchone():
                 return False
             
-            # Apply migration
-            await db.executescript(migration["up"])
+            # Special handling for version 2 (add license_key_encrypted column)
+            if migration["version"] == 2:
+                # Check if column already exists
+                cursor = await db.execute("PRAGMA table_info(license_keys)")
+                columns = await cursor.fetchall()
+                column_names = [col[1] for col in columns]
+                
+                if "license_key_encrypted" not in column_names:
+                    await db.execute("ALTER TABLE license_keys ADD COLUMN license_key_encrypted TEXT")
+                    await db.commit()
+            else:
+                # Apply migration normally
+                await db.executescript(migration["up"])
             
             # Record migration
             await db.execute(
@@ -97,6 +108,18 @@ migration_manager.register_migration(
         CREATE INDEX IF NOT EXISTS idx_crm_created_at ON crm_entries(created_at);
         CREATE INDEX IF NOT EXISTS idx_usage_logs_license_id ON usage_logs(license_key_id);
         CREATE INDEX IF NOT EXISTS idx_license_expires_at ON license_keys(expires_at);
+    """
+)
+
+# Migration to add license_key_encrypted column
+migration_manager.register_migration(
+    version=2,
+    name="add_license_key_encrypted_column",
+    up_sql="""
+        -- Add license_key_encrypted column if it doesn't exist
+        -- SQLite doesn't support IF NOT EXISTS for ALTER TABLE ADD COLUMN
+        -- So we'll use a try-catch approach in the migration manager
+        -- For PostgreSQL, we'll handle it separately
     """
 )
 

@@ -213,38 +213,47 @@ async def get_subscription(
     _: None = Depends(verify_admin)
 ):
     """Get details of a specific subscription"""
-    import aiosqlite
-    from database import DATABASE_PATH
+    from database import get_license_key_by_id
+    from db_helper import get_db, fetch_one
     
     try:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("""
-                SELECT * FROM license_keys WHERE id = ?
-            """, (license_id,)) as cursor:
-                row = await cursor.fetchone()
-                
-                if not row:
-                    raise HTTPException(status_code=404, detail="الاشتراك غير موجود")
-                
-                subscription = dict(row)
-                
-                # Calculate days remaining
-                if subscription.get("expires_at"):
+        async with get_db() as db:
+            row = await fetch_one(db, "SELECT * FROM license_keys WHERE id = ?", [license_id])
+            
+            if not row:
+                raise HTTPException(status_code=404, detail="الاشتراك غير موجود")
+            
+            subscription = dict(row)
+            
+            # Get the original license key (decrypted)
+            license_key = await get_license_key_by_id(license_id)
+            subscription["license_key"] = license_key
+            
+            # Calculate days remaining
+            if subscription.get("expires_at"):
+                if isinstance(subscription["expires_at"], str):
                     expires = datetime.fromisoformat(subscription["expires_at"])
-                    days_remaining = (expires - datetime.now()).days
-                    subscription["days_remaining"] = max(0, days_remaining)
                 else:
-                    subscription["days_remaining"] = None
-                
-                # Calculate usage statistics
-                today = datetime.now().date().isoformat()
-                if subscription.get("last_request_date") == today:
-                    subscription["requests_today"] = subscription.get("requests_today", 0)
-                else:
-                    subscription["requests_today"] = 0
-                
-                return {"subscription": subscription}
+                    expires = subscription["expires_at"]
+                days_remaining = (expires - datetime.now()).days
+                subscription["days_remaining"] = max(0, days_remaining)
+            else:
+                subscription["days_remaining"] = None
+            
+            # Calculate usage statistics
+            today = datetime.now().date()
+            last_request_date = subscription.get("last_request_date")
+            if isinstance(last_request_date, str):
+                last_request_date = datetime.fromisoformat(last_request_date).date()
+            elif last_request_date:
+                last_request_date = last_request_date.date() if hasattr(last_request_date, 'date') else last_request_date
+            
+            if last_request_date == today:
+                subscription["requests_today"] = subscription.get("requests_today", 0)
+            else:
+                subscription["requests_today"] = 0
+            
+            return {"subscription": subscription}
     
     except HTTPException:
         raise
@@ -262,50 +271,75 @@ async def update_subscription(
     _: None = Depends(verify_admin)
 ):
     """Update subscription settings"""
-    import aiosqlite
-    from database import DATABASE_PATH
+    from database import DB_TYPE, DATABASE_PATH, DATABASE_URL, POSTGRES_AVAILABLE
+    from db_helper import get_db, fetch_one, execute_sql, commit_db
     from logging_config import get_logger
     
     logger = get_logger(__name__)
     
     try:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
+        async with get_db() as db:
             # Get current subscription
-            db.row_factory = aiosqlite.Row
-            async with db.execute("SELECT * FROM license_keys WHERE id = ?", (license_id,)) as cursor:
-                row = await cursor.fetchone()
-                if not row:
-                    raise HTTPException(status_code=404, detail="الاشتراك غير موجود")
-                
-                current = dict(row)
+            row = await fetch_one(db, "SELECT * FROM license_keys WHERE id = ?", [license_id])
+            
+            if not row:
+                raise HTTPException(status_code=404, detail="الاشتراك غير موجود")
+            
+            current = dict(row)
             
             # Build update query
             updates = []
             params = []
+            param_index = 1
             
             if update.is_active is not None:
-                updates.append("is_active = ?")
-                params.append(1 if update.is_active else 0)
+                if DB_TYPE == "postgresql":
+                    updates.append(f"is_active = ${param_index}")
+                else:
+                    updates.append("is_active = ?")
+                params.append(update.is_active)
+                param_index += 1
             
             if update.max_requests_per_day is not None:
-                updates.append("max_requests_per_day = ?")
+                if DB_TYPE == "postgresql":
+                    updates.append(f"max_requests_per_day = ${param_index}")
+                else:
+                    updates.append("max_requests_per_day = ?")
                 params.append(update.max_requests_per_day)
+                param_index += 1
             
             if update.days_valid_extension is not None and update.days_valid_extension > 0:
                 # Extend expiration date
-                current_expires = datetime.fromisoformat(current["expires_at"]) if current.get("expires_at") else datetime.now()
+                if current.get("expires_at"):
+                    if isinstance(current["expires_at"], str):
+                        current_expires = datetime.fromisoformat(current["expires_at"])
+                    else:
+                        current_expires = current["expires_at"]
+                else:
+                    current_expires = datetime.now()
+                
                 new_expires = current_expires + timedelta(days=update.days_valid_extension)
-                updates.append("expires_at = ?")
-                params.append(new_expires.isoformat())
+                
+                if DB_TYPE == "postgresql":
+                    updates.append(f"expires_at = ${param_index}")
+                    params.append(new_expires)
+                else:
+                    updates.append("expires_at = ?")
+                    params.append(new_expires.isoformat())
+                param_index += 1
             
             if not updates:
                 raise HTTPException(status_code=400, detail="لا توجد تحديثات لتطبيقها")
             
             # Execute update
+            if DB_TYPE == "postgresql":
+                query = f"UPDATE license_keys SET {', '.join(updates)} WHERE id = ${param_index}"
+            else:
+                query = f"UPDATE license_keys SET {', '.join(updates)} WHERE id = ?"
             params.append(license_id)
-            query = f"UPDATE license_keys SET {', '.join(updates)} WHERE id = ?"
-            await db.execute(query, params)
-            await db.commit()
+            
+            await execute_sql(db, query, params)
+            await commit_db(db)
             
             logger.info(f"Updated subscription {license_id}")
             
@@ -319,6 +353,48 @@ async def update_subscription(
     except Exception as e:
         logger.error(f"Error updating subscription: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="حدث خطأ أثناء تحديث الاشتراك")
+
+
+@router.delete("/{license_id}")
+async def delete_subscription(
+    license_id: int,
+    _: None = Depends(verify_admin)
+):
+    """Delete a subscription (soft delete by setting is_active=False)"""
+    from db_helper import get_db, fetch_one, execute_sql, commit_db
+    from logging_config import get_logger
+    
+    logger = get_logger(__name__)
+    
+    try:
+        async with get_db() as db:
+            # Check if subscription exists
+            row = await fetch_one(db, "SELECT * FROM license_keys WHERE id = ?", [license_id])
+            
+            if not row:
+                raise HTTPException(status_code=404, detail="الاشتراك غير موجود")
+            
+            # Soft delete: set is_active to False
+            from database import DB_TYPE
+            if DB_TYPE == "postgresql":
+                await execute_sql(db, "UPDATE license_keys SET is_active = $1 WHERE id = $2", [False, license_id])
+            else:
+                await execute_sql(db, "UPDATE license_keys SET is_active = ? WHERE id = ?", [False, license_id])
+            
+            await commit_db(db)
+            
+            logger.info(f"Deleted (deactivated) subscription {license_id}")
+            
+            return {
+                "success": True,
+                "message": "تم حذف الاشتراك بنجاح"
+            }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting subscription: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="حدث خطأ أثناء حذف الاشتراك")
 
 
 class ValidateKeyRequest(BaseModel):
