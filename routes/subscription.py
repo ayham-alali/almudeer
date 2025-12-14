@@ -368,8 +368,9 @@ async def delete_subscription(
     license_id: int,
     _: None = Depends(verify_admin)
 ):
-    """Delete a subscription (soft delete by setting is_active=False)"""
+    """Delete a subscription permanently (hard delete)"""
     from db_helper import get_db, fetch_one, execute_sql, commit_db
+    from database import DB_TYPE
     from logging_config import get_logger
     
     logger = get_logger(__name__)
@@ -382,20 +383,32 @@ async def delete_subscription(
             if not row:
                 raise HTTPException(status_code=404, detail="الاشتراك غير موجود")
             
-            # Soft delete: set is_active to False
-            from database import DB_TYPE
+            # Hard delete: Delete related records first (CASCADE should handle this, but being explicit)
+            # Delete usage logs
             if DB_TYPE == "postgresql":
-                await execute_sql(db, "UPDATE license_keys SET is_active = $1 WHERE id = $2", [False, license_id])
+                await execute_sql(db, "DELETE FROM usage_logs WHERE license_key_id = $1", [license_id])
+                # Delete CRM entries
+                await execute_sql(db, "DELETE FROM crm_entries WHERE license_key_id = $1", [license_id])
+                # Delete email configs
+                await execute_sql(db, "DELETE FROM email_configs WHERE license_key_id = $1", [license_id])
+                # Delete telegram configs
+                await execute_sql(db, "DELETE FROM telegram_configs WHERE license_key_id = $1", [license_id])
+                # Delete the subscription
+                await execute_sql(db, "DELETE FROM license_keys WHERE id = $1", [license_id])
             else:
-                await execute_sql(db, "UPDATE license_keys SET is_active = ? WHERE id = ?", [False, license_id])
+                await execute_sql(db, "DELETE FROM usage_logs WHERE license_key_id = ?", [license_id])
+                await execute_sql(db, "DELETE FROM crm_entries WHERE license_key_id = ?", [license_id])
+                await execute_sql(db, "DELETE FROM email_configs WHERE license_key_id = ?", [license_id])
+                await execute_sql(db, "DELETE FROM telegram_configs WHERE license_key_id = ?", [license_id])
+                await execute_sql(db, "DELETE FROM license_keys WHERE id = ?", [license_id])
             
             await commit_db(db)
             
-            logger.info(f"Deleted (deactivated) subscription {license_id}")
+            logger.info(f"Permanently deleted subscription {license_id}")
             
             return {
                 "success": True,
-                "message": "تم حذف الاشتراك بنجاح"
+                "message": "تم حذف الاشتراك نهائياً"
             }
     
     except HTTPException:
