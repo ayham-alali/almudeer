@@ -228,10 +228,17 @@ async def generate_license_key(
     if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
         conn = await asyncpg.connect(DATABASE_URL)
         try:
+            # Get the next ID manually to avoid sequence issues
+            max_id = await conn.fetchval("SELECT COALESCE(MAX(id), 0) FROM license_keys")
+            next_id = max_id + 1
+            
+            # Reset sequence if needed
+            await conn.execute(f"SELECT setval('license_keys_id_seq', {next_id}, false)")
+            
             await conn.execute("""
-                INSERT INTO license_keys (key_hash, company_name, contact_email, expires_at, max_requests_per_day)
-                VALUES ($1, $2, $3, $4, $5)
-            """, key_hash, company_name, contact_email, expires_at, max_requests)
+                INSERT INTO license_keys (id, key_hash, company_name, contact_email, expires_at, max_requests_per_day)
+                VALUES ($1, $2, $3, $4, $5, $6)
+            """, next_id, key_hash, company_name, contact_email, expires_at, max_requests)
         finally:
             await conn.close()
     else:
