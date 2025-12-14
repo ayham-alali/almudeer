@@ -1,0 +1,291 @@
+"""
+Migration script: SQLite → PostgreSQL
+Converts existing SQLite database to PostgreSQL
+"""
+
+import os
+import asyncio
+import aiosqlite
+import asyncpg
+from typing import Dict, List, Any
+from datetime import datetime
+
+
+async def export_sqlite_data(db_path: str) -> Dict[str, List[Dict]]:
+    """Export all data from SQLite database"""
+    data = {}
+    
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        
+        # Export license_keys
+        cursor = await db.execute("SELECT * FROM license_keys")
+        rows = await cursor.fetchall()
+        data['license_keys'] = [dict(row) for row in rows]
+        
+        # Export crm_entries
+        cursor = await db.execute("SELECT * FROM crm_entries")
+        rows = await cursor.fetchall()
+        data['crm_entries'] = [dict(row) for row in rows]
+        
+        # Export usage_logs
+        cursor = await db.execute("SELECT * FROM usage_logs")
+        rows = await cursor.fetchall()
+        data['usage_logs'] = [dict(row) for row in rows]
+        
+        # Export schema_migrations if exists
+        try:
+            cursor = await db.execute("SELECT * FROM schema_migrations")
+            rows = await cursor.fetchall()
+            data['schema_migrations'] = [dict(row) for row in rows]
+        except:
+            data['schema_migrations'] = []
+    
+    return data
+
+
+async def create_postgresql_schema(conn: asyncpg.Connection):
+    """Create PostgreSQL schema"""
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS license_keys (
+            id SERIAL PRIMARY KEY,
+            key_hash TEXT UNIQUE NOT NULL,
+            company_name TEXT NOT NULL,
+            contact_email TEXT,
+            is_active BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP,
+            max_requests_per_day INTEGER DEFAULT 100,
+            requests_today INTEGER DEFAULT 0,
+            last_request_date DATE
+        )
+    """)
+    
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage_logs (
+            id SERIAL PRIMARY KEY,
+            license_key_id INTEGER REFERENCES license_keys(id),
+            action_type TEXT NOT NULL,
+            input_preview TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS crm_entries (
+            id SERIAL PRIMARY KEY,
+            license_key_id INTEGER REFERENCES license_keys(id),
+            sender_name TEXT,
+            sender_contact TEXT,
+            message_type TEXT,
+            intent TEXT,
+            extracted_data TEXT,
+            original_message TEXT,
+            draft_response TEXT,
+            status TEXT DEFAULT 'جديد',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP
+        )
+    """)
+    
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Create indexes
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_license_key_hash ON license_keys(key_hash)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_crm_license_id ON crm_entries(license_key_id)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_crm_created_at ON crm_entries(created_at)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_logs_license_id ON usage_logs(license_key_id)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_license_expires_at ON license_keys(expires_at)")
+
+
+async def import_data_to_postgresql(conn: asyncpg.Connection, data: Dict[str, List[Dict]]):
+    """Import data into PostgreSQL"""
+    
+    # Import license_keys
+    if data['license_keys']:
+        for row in data['license_keys']:
+            # Convert SQLite boolean (0/1) to Python boolean
+            is_active = row.get('is_active', True)
+            if isinstance(is_active, int):
+                is_active = bool(is_active)
+            
+            # Convert datetime strings to datetime objects
+            created_at = row.get('created_at')
+            if created_at and isinstance(created_at, str):
+                try:
+                    created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                except:
+                    created_at = None
+            
+            expires_at = row.get('expires_at')
+            if expires_at and isinstance(expires_at, str):
+                try:
+                    expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+                except:
+                    expires_at = None
+            
+            last_request_date = row.get('last_request_date')
+            if last_request_date and isinstance(last_request_date, str):
+                try:
+                    last_request_date = datetime.fromisoformat(last_request_date).date()
+                except:
+                    last_request_date = None
+            
+            await conn.execute("""
+                INSERT INTO license_keys 
+                (id, key_hash, company_name, contact_email, is_active, created_at, 
+                 expires_at, max_requests_per_day, requests_today, last_request_date)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                ON CONFLICT (id) DO NOTHING
+            """, 
+                row.get('id'),
+                row.get('key_hash'),
+                row.get('company_name'),
+                row.get('contact_email'),
+                is_active,
+                created_at,
+                expires_at,
+                row.get('max_requests_per_day', 100),
+                row.get('requests_today', 0),
+                last_request_date
+            )
+    
+    # Import crm_entries
+    if data['crm_entries']:
+        for row in data['crm_entries']:
+            await conn.execute("""
+                INSERT INTO crm_entries
+                (id, license_key_id, sender_name, sender_contact, message_type, intent,
+                 extracted_data, original_message, draft_response, status, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                ON CONFLICT (id) DO NOTHING
+            """,
+                row.get('id'),
+                row.get('license_key_id'),
+                row.get('sender_name'),
+                row.get('sender_contact'),
+                row.get('message_type'),
+                row.get('intent'),
+                row.get('extracted_data'),
+                row.get('original_message'),
+                row.get('draft_response'),
+                row.get('status', 'جديد'),
+                row.get('created_at'),
+                row.get('updated_at')
+            )
+    
+    # Import usage_logs
+    if data['usage_logs']:
+        for row in data['usage_logs']:
+            # Convert datetime strings
+            created_at = row.get('created_at')
+            if created_at and isinstance(created_at, str):
+                try:
+                    created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                except:
+                    created_at = None
+            
+            await conn.execute("""
+                INSERT INTO usage_logs
+                (id, license_key_id, action_type, input_preview, created_at)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (id) DO NOTHING
+            """,
+                row.get('id'),
+                row.get('license_key_id'),
+                row.get('action_type'),
+                row.get('input_preview'),
+                created_at
+            )
+    
+    # Import schema_migrations
+    if data['schema_migrations']:
+        for row in data['schema_migrations']:
+            # Convert datetime strings
+            applied_at = row.get('applied_at')
+            if applied_at and isinstance(applied_at, str):
+                try:
+                    applied_at = datetime.fromisoformat(applied_at.replace('Z', '+00:00'))
+                except:
+                    applied_at = None
+            
+            await conn.execute("""
+                INSERT INTO schema_migrations (version, name, applied_at)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (version) DO NOTHING
+            """,
+                row.get('version'),
+                row.get('name'),
+                applied_at
+            )
+
+
+async def migrate(sqlite_path: str, postgres_url: str):
+    """Main migration function"""
+    print("Starting SQLite -> PostgreSQL migration...")
+    
+    # Step 1: Export SQLite data
+    print("Exporting data from SQLite...")
+    data = await export_sqlite_data(sqlite_path)
+    print(f"SUCCESS: Exported {len(data['license_keys'])} license keys")
+    print(f"SUCCESS: Exported {len(data['crm_entries'])} CRM entries")
+    print(f"SUCCESS: Exported {len(data['usage_logs'])} usage logs")
+    
+    # Step 2: Connect to PostgreSQL
+    print("Connecting to PostgreSQL...")
+    # Try with SSL first (for public URLs), fallback to no SSL (for internal)
+    try:
+        conn = await asyncpg.connect(postgres_url, ssl='require')
+    except:
+        # If SSL fails, try without (for internal Railway URLs)
+        conn = await asyncpg.connect(postgres_url)
+    
+    try:
+        # Step 3: Create schema
+        print("Creating PostgreSQL schema...")
+        await create_postgresql_schema(conn)
+        print("SUCCESS: Schema created")
+        
+        # Step 4: Import data
+        print("Importing data to PostgreSQL...")
+        await import_data_to_postgresql(conn, data)
+        print("SUCCESS: Data imported")
+        
+        # Step 5: Verify
+        print("Verifying migration...")
+        count = await conn.fetchval("SELECT COUNT(*) FROM license_keys")
+        print(f"SUCCESS: Verified {count} license keys in PostgreSQL")
+        
+        print("\nMigration completed successfully!")
+        print("\nIMPORTANT: Update your environment variables:")
+        print("   export DB_TYPE=postgresql")
+        print("   export DATABASE_URL=your_postgres_url")
+        print("\n   Then restart your application.")
+        
+    finally:
+        await conn.close()
+
+
+if __name__ == "__main__":
+    import sys
+    
+    sqlite_path = os.getenv("DATABASE_PATH", "almudeer.db")
+    postgres_url = os.getenv("DATABASE_URL")
+    
+    if not postgres_url:
+        print("❌ ERROR: DATABASE_URL environment variable required")
+        print("   Example: postgresql://user:password@localhost:5432/almudeer")
+        sys.exit(1)
+    
+    if not os.path.exists(sqlite_path):
+        print(f"❌ ERROR: SQLite database not found: {sqlite_path}")
+        sys.exit(1)
+    
+    asyncio.run(migrate(sqlite_path, postgres_url))
+

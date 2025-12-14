@@ -1,0 +1,31 @@
+# Railway Configuration for Al-Mudeer
+# Optimized for Arab World users
+
+[build]
+builder = "nixpacks"  # Railway's default builder
+
+[deploy]
+startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT --workers 2"
+healthcheckPath = "/health"
+healthcheckTimeout = 100
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
+
+# Performance optimization for Arab World
+[env]
+# Region hint (Railway will use EU West if available)
+REGION = "EU-West"
+OPTIMIZED_FOR = "Arab-World"
+
+# Database configuration
+# For PostgreSQL (recommended for production):
+DB_TYPE = "postgresql"
+# DATABASE_URL is automatically set by Railway when you add PostgreSQL service
+
+# For SQLite (development only):
+# DATABASE_PATH = "/app/data/almudeer.db"
+
+# Performance settings
+WORKERS = "2"  # Optimal for Railway's resources
+KEEP_ALIVE = "5"
+

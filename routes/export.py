@@ -1,0 +1,423 @@
+"""
+Al-Mudeer - Export & Reports Routes
+PDF, Excel, CSV export functionality
+"""
+
+from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+from typing import Optional
+from datetime import datetime, timedelta
+import io
+import csv
+import json
+
+router = APIRouter(prefix="/api/export", tags=["Export"])
+
+
+# ============ Dependency ============
+
+async def get_license_from_header(x_license_key: str = Header(None, alias="X-License-Key")) -> dict:
+    from database import validate_license_key
+    
+    if not x_license_key:
+        raise HTTPException(status_code=401, detail="مفتاح الاشتراك مطلوب")
+    
+    result = await validate_license_key(x_license_key)
+    if not result["valid"]:
+        raise HTTPException(status_code=401, detail=result["error"])
+    
+    return result
+
+
+# ============ Schemas ============
+
+class ExportRequest(BaseModel):
+    start_date: Optional[str] = None  # ISO format: YYYY-MM-DD
+    end_date: Optional[str] = None
+    export_type: str = Field(default="csv", description="csv, json, or html")
+
+
+# ============ Helper Functions ============
+
+def get_date_range(start_date: str = None, end_date: str = None, days: int = 30):
+    """Parse date range or use defaults"""
+    if end_date:
+        end = datetime.fromisoformat(end_date)
+    else:
+        end = datetime.now()
+    
+    if start_date:
+        start = datetime.fromisoformat(start_date)
+    else:
+        start = end - timedelta(days=days)
+    
+    return start, end
+
+
+async def get_export_data(license_id: int, start: datetime, end: datetime):
+    """Fetch all data for export"""
+    import aiosqlite
+    from models import DATABASE_PATH
+    
+    data = {
+        "period": {
+            "start": start.isoformat(),
+            "end": end.isoformat()
+        },
+        "analytics": {},
+        "customers": [],
+        "messages": [],
+        "crm_entries": []
+    }
+    
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        
+        # Analytics summary
+        async with db.execute("""
+            SELECT 
+                SUM(messages_received) as total_received,
+                SUM(messages_replied) as total_replied,
+                SUM(auto_replies) as auto_replies,
+                SUM(positive_sentiment) as positive,
+                SUM(negative_sentiment) as negative,
+                SUM(neutral_sentiment) as neutral,
+                SUM(time_saved_seconds) as time_saved
+            FROM analytics 
+            WHERE license_key_id = ? 
+            AND date BETWEEN ? AND ?
+        """, (license_id, start.date().isoformat(), end.date().isoformat())) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                data["analytics"] = dict(row)
+        
+        # Customers
+        async with db.execute("""
+            SELECT * FROM customers 
+            WHERE license_key_id = ?
+            ORDER BY total_messages DESC
+        """, (license_id,)) as cursor:
+            rows = await cursor.fetchall()
+            data["customers"] = [dict(row) for row in rows]
+        
+        # Inbox messages in date range
+        async with db.execute("""
+            SELECT * FROM inbox_messages 
+            WHERE license_key_id = ?
+            AND created_at BETWEEN ? AND ?
+            ORDER BY created_at DESC
+        """, (license_id, start.isoformat(), end.isoformat())) as cursor:
+            rows = await cursor.fetchall()
+            data["messages"] = [dict(row) for row in rows]
+        
+        # CRM entries in date range
+        async with db.execute("""
+            SELECT * FROM crm_entries 
+            WHERE license_key_id = ?
+            AND created_at BETWEEN ? AND ?
+            ORDER BY created_at DESC
+        """, (license_id, start.isoformat(), end.isoformat())) as cursor:
+            rows = await cursor.fetchall()
+            data["crm_entries"] = [dict(row) for row in rows]
+    
+    return data
+
+
+def generate_csv(data: dict, data_type: str) -> str:
+    """Generate CSV content"""
+    output = io.StringIO()
+    
+    if data_type == "customers":
+        fieldnames = ["id", "name", "phone", "email", "company", "total_messages", "is_vip", "created_at"]
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
+        writer.writeheader()
+        for customer in data.get("customers", []):
+            writer.writerow(customer)
+    
+    elif data_type == "messages":
+        fieldnames = ["id", "channel", "sender_name", "sender_contact", "subject", "body", "intent", "sentiment", "status", "created_at"]
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
+        writer.writeheader()
+        for msg in data.get("messages", []):
+            writer.writerow(msg)
+    
+    elif data_type == "crm":
+        fieldnames = ["id", "sender_name", "sender_contact", "message_type", "intent", "status", "created_at"]
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
+        writer.writeheader()
+        for entry in data.get("crm_entries", []):
+            writer.writerow(entry)
+    
+    elif data_type == "analytics":
+        writer = csv.writer(output)
+        writer.writerow(["المقياس", "القيمة"])
+        analytics = data.get("analytics", {})
+        writer.writerow(["الرسائل المستلمة", analytics.get("total_received", 0)])
+        writer.writerow(["الرسائل المردود عليها", analytics.get("total_replied", 0)])
+        writer.writerow(["الردود التلقائية", analytics.get("auto_replies", 0)])
+        writer.writerow(["المشاعر الإيجابية", analytics.get("positive", 0)])
+        writer.writerow(["المشاعر السلبية", analytics.get("negative", 0)])
+        writer.writerow(["المشاعر المحايدة", analytics.get("neutral", 0)])
+        writer.writerow(["الوقت الموفر (ثواني)", analytics.get("time_saved", 0)])
+    
+    return output.getvalue()
+
+
+def generate_html_report(data: dict, license_name: str = "شركتك") -> str:
+    """Generate HTML report"""
+    analytics = data.get("analytics", {})
+    customers = data.get("customers", [])
+    messages = data.get("messages", [])
+    period = data.get("period", {})
+    
+    html = f"""
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <title>تقرير المدير - {license_name}</title>
+    <style>
+        * {{ font-family: 'Segoe UI', Tahoma, sans-serif; }}
+        body {{ max-width: 800px; margin: 0 auto; padding: 20px; background: #f5f5f5; }}
+        .header {{ text-align: center; padding: 20px; background: linear-gradient(135deg, #1e40af, #3b82f6); color: white; border-radius: 10px; margin-bottom: 20px; }}
+        .card {{ background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+        .stats {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; }}
+        .stat {{ text-align: center; padding: 15px; background: #f8fafc; border-radius: 8px; }}
+        .stat-value {{ font-size: 2em; font-weight: bold; color: #1e40af; }}
+        .stat-label {{ color: #64748b; font-size: 0.9em; }}
+        table {{ width: 100%; border-collapse: collapse; }}
+        th, td {{ padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0; }}
+        th {{ background: #f1f5f9; font-weight: 600; }}
+        .badge {{ display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.8em; }}
+        .badge-positive {{ background: #dcfce7; color: #166534; }}
+        .badge-negative {{ background: #fee2e2; color: #991b1b; }}
+        .footer {{ text-align: center; color: #64748b; font-size: 0.9em; margin-top: 20px; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🏢 تقرير المدير</h1>
+        <p>{license_name}</p>
+        <p>الفترة: {period.get('start', '')[:10]} إلى {period.get('end', '')[:10]}</p>
+    </div>
+    
+    <div class="card">
+        <h2>📊 ملخص الإحصائيات</h2>
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-value">{analytics.get('total_received', 0) or 0}</div>
+                <div class="stat-label">رسالة مستلمة</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">{analytics.get('total_replied', 0) or 0}</div>
+                <div class="stat-label">تم الرد عليها</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">{round((analytics.get('time_saved', 0) or 0) / 3600, 1)}</div>
+                <div class="stat-label">ساعة موفرة</div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="card">
+        <h2>😊 تحليل المشاعر</h2>
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-value" style="color: #16a34a;">{analytics.get('positive', 0) or 0}</div>
+                <div class="stat-label">إيجابي</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" style="color: #64748b;">{analytics.get('neutral', 0) or 0}</div>
+                <div class="stat-label">محايد</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" style="color: #dc2626;">{analytics.get('negative', 0) or 0}</div>
+                <div class="stat-label">سلبي</div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="card">
+        <h2>👥 أفضل العملاء ({len(customers[:10])})</h2>
+        <table>
+            <tr>
+                <th>الاسم</th>
+                <th>الرسائل</th>
+                <th>VIP</th>
+            </tr>
+            {''.join(f'''
+            <tr>
+                <td>{c.get('name', 'بدون اسم')}</td>
+                <td>{c.get('total_messages', 0)}</td>
+                <td>{'⭐' if c.get('is_vip') else '-'}</td>
+            </tr>
+            ''' for c in customers[:10])}
+        </table>
+    </div>
+    
+    <div class="card">
+        <h2>📨 آخر الرسائل ({len(messages[:20])})</h2>
+        <table>
+            <tr>
+                <th>المرسل</th>
+                <th>القناة</th>
+                <th>النية</th>
+                <th>المشاعر</th>
+            </tr>
+            {''.join(f'''
+            <tr>
+                <td>{m.get('sender_name', 'مجهول')}</td>
+                <td>{m.get('channel', '-')}</td>
+                <td>{m.get('intent', '-')}</td>
+                <td><span class="badge {'badge-positive' if m.get('sentiment') == 'إيجابي' else 'badge-negative' if m.get('sentiment') == 'سلبي' else ''}">{m.get('sentiment', '-')}</span></td>
+            </tr>
+            ''' for m in messages[:20])}
+        </table>
+    </div>
+    
+    <div class="footer">
+        <p>تم إنشاء هذا التقرير بواسطة المدير - {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
+    </div>
+</body>
+</html>
+"""
+    return html
+
+
+# ============ Routes ============
+
+@router.get("/customers")
+async def export_customers(
+    format: str = "csv",
+    license: dict = Depends(get_license_from_header)
+):
+    """Export customers list"""
+    start, end = get_date_range(days=365)  # All customers
+    data = await get_export_data(license["license_id"], start, end)
+    
+    if format == "json":
+        return {"customers": data["customers"]}
+    
+    elif format == "csv":
+        csv_content = generate_csv(data, "customers")
+        return StreamingResponse(
+            io.StringIO(csv_content),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=customers.csv"}
+        )
+    
+    raise HTTPException(status_code=400, detail="صيغة غير مدعومة")
+
+
+@router.get("/messages")
+async def export_messages(
+    format: str = "csv",
+    start_date: str = None,
+    end_date: str = None,
+    license: dict = Depends(get_license_from_header)
+):
+    """Export messages"""
+    start, end = get_date_range(start_date, end_date, days=30)
+    data = await get_export_data(license["license_id"], start, end)
+    
+    if format == "json":
+        return {"messages": data["messages"], "period": data["period"]}
+    
+    elif format == "csv":
+        csv_content = generate_csv(data, "messages")
+        return StreamingResponse(
+            io.StringIO(csv_content),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=messages.csv"}
+        )
+    
+    raise HTTPException(status_code=400, detail="صيغة غير مدعومة")
+
+
+@router.get("/crm")
+async def export_crm(
+    format: str = "csv",
+    start_date: str = None,
+    end_date: str = None,
+    license: dict = Depends(get_license_from_header)
+):
+    """Export CRM entries"""
+    start, end = get_date_range(start_date, end_date, days=30)
+    data = await get_export_data(license["license_id"], start, end)
+    
+    if format == "json":
+        return {"crm_entries": data["crm_entries"], "period": data["period"]}
+    
+    elif format == "csv":
+        csv_content = generate_csv(data, "crm")
+        return StreamingResponse(
+            io.StringIO(csv_content),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=crm.csv"}
+        )
+    
+    raise HTTPException(status_code=400, detail="صيغة غير مدعومة")
+
+
+@router.get("/analytics")
+async def export_analytics(
+    format: str = "csv",
+    start_date: str = None,
+    end_date: str = None,
+    license: dict = Depends(get_license_from_header)
+):
+    """Export analytics summary"""
+    start, end = get_date_range(start_date, end_date, days=30)
+    data = await get_export_data(license["license_id"], start, end)
+    
+    if format == "json":
+        return {"analytics": data["analytics"], "period": data["period"]}
+    
+    elif format == "csv":
+        csv_content = generate_csv(data, "analytics")
+        return StreamingResponse(
+            io.StringIO(csv_content),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=analytics.csv"}
+        )
+    
+    raise HTTPException(status_code=400, detail="صيغة غير مدعومة")
+
+
+@router.get("/report")
+async def generate_full_report(
+    start_date: str = None,
+    end_date: str = None,
+    license: dict = Depends(get_license_from_header)
+):
+    """Generate full HTML report"""
+    start, end = get_date_range(start_date, end_date, days=30)
+    data = await get_export_data(license["license_id"], start, end)
+    
+    html = generate_html_report(data, license.get("company_name", "شركتك"))
+    
+    return StreamingResponse(
+        io.StringIO(html),
+        media_type="text/html",
+        headers={"Content-Disposition": "attachment; filename=report.html"}
+    )
+
+
+@router.get("/report/preview")
+async def preview_report(
+    start_date: str = None,
+    end_date: str = None,
+    license: dict = Depends(get_license_from_header)
+):
+    """Preview HTML report in browser"""
+    start, end = get_date_range(start_date, end_date, days=30)
+    data = await get_export_data(license["license_id"], start, end)
+    
+    html = generate_html_report(data, license.get("company_name", "شركتك"))
+    
+    return StreamingResponse(
+        io.StringIO(html),
+        media_type="text/html"
+    )
+

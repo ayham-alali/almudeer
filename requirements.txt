@@ -1,0 +1,41 @@
+# Al-Mudeer Backend Dependencies
+# Zero-cost, production-ready stack
+
+# Web Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+
+# Database
+aiosqlite==0.19.0
+
+# LangGraph & LangChain (compatible versions)
+langgraph>=0.0.26
+langchain>=0.1.0
+langchain-core>=0.1.25
+langchain-community>=0.0.13
+
+# For local LLM (Ollama) or free API alternatives
+httpx==0.26.0
+
+# Validation & Settings
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0
+email-validator>=2.1.0
+
+# Security
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+cryptography>=41.0.0  # For enhanced encryption
+
+# CORS
+python-multipart>=0.0.6
+
+# Performance & Caching (Optimized for Arab World)
+cachetools>=5.3.2
+slowapi>=0.1.9  # Rate limiting
+redis>=5.0.0  # Optional: Redis caching (install if using Redis)
+# Note: For async Redis, also install: redis[hiredis]>=5.0.0
+
+# Database (PostgreSQL support)
+asyncpg>=0.29.0  # PostgreSQL async driver (required for production)
