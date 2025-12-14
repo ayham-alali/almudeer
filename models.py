@@ -59,7 +59,7 @@ async def init_enhanced_tables():
         """)
         
         # Telegram Bot Configuration per license
-        await db.execute("""
+        await execute_sql(db, """
             CREATE TABLE IF NOT EXISTS telegram_configs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 license_key_id INTEGER UNIQUE NOT NULL,
@@ -74,7 +74,7 @@ async def init_enhanced_tables():
         """)
         
         # Unified Inbox - All incoming messages
-        await db.execute("""
+        await execute_sql(db, """
             CREATE TABLE IF NOT EXISTS inbox_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 license_key_id INTEGER NOT NULL,
@@ -99,7 +99,7 @@ async def init_enhanced_tables():
         """)
         
         # Outbox - Approved/Sent messages
-        await db.execute("""
+        await execute_sql(db, """
             CREATE TABLE IF NOT EXISTS outbox_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 inbox_message_id INTEGER NOT NULL,
@@ -120,7 +120,7 @@ async def init_enhanced_tables():
         """)
         
         # Telegram Chat Sessions
-        await db.execute("""
+        await execute_sql(db, """
             CREATE TABLE IF NOT EXISTS telegram_chats (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 license_key_id INTEGER NOT NULL,
@@ -136,7 +136,7 @@ async def init_enhanced_tables():
             )
         """)
         
-        await db.commit()
+        await commit_db(db)
         print("Enhanced tables initialized")
 
 
