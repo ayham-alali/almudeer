@@ -31,3 +31,24 @@ async def get_license_from_header(
     return result
 
 
+async def get_optional_license_from_header(
+    x_license_key: Optional[str] = Header(None, alias="X-License-Key"),
+) -> Optional[Dict]:
+    """
+    Version of get_license_from_header that never raises.
+
+    Used for "soft" endpoints like notification badge counts where it's
+    preferable to return empty data instead of an auth error when the
+    license key is missing (for example during pre-rendering or before
+    the key is saved on the client).
+    """
+    if not x_license_key:
+        return None
+
+    result = await validate_license_key(x_license_key)
+    if not result.get("valid"):
+        return None
+
+    return result
+
+

@@ -34,7 +34,7 @@ from services.voice_service import (
 )
 from services.auto_categorization import categorize_message_dict, categorize_messages_batch
 from security import sanitize_email, sanitize_phone, sanitize_string
-from dependencies import get_license_from_header
+from dependencies import get_license_from_header, get_optional_license_from_header
 
 router = APIRouter(prefix="/api", tags=["Features"])
 
@@ -428,9 +428,17 @@ async def transcribe_voice_url(
 async def list_notifications(
     unread_only: bool = False,
     limit: int = 50,
-    license: dict = Depends(get_license_from_header)
+    license: dict = Depends(get_optional_license_from_header)
 ):
     """Get user notifications"""
+    if not license:
+        # When there is no valid license key, return empty notifications instead of 401
+        return {
+            "notifications": [],
+            "unread_count": 0,
+            "total": 0
+        }
+
     notifications = await get_notifications(license["license_id"], unread_only, limit)
     unread = await get_unread_count(license["license_id"])
     
@@ -442,8 +450,15 @@ async def list_notifications(
 
 
 @router.get("/notifications/count")
-async def get_notification_count(license: dict = Depends(get_license_from_header)):
-    """Get unread notification count"""
+async def get_notification_count(license: dict = Depends(get_optional_license_from_header)):
+    """Get unread notification count.
+
+    If the license key is missing or invalid we return 0 instead of an error
+    so the dashboard badge doesn't break for unauthenticated or pre-rendered views.
+    """
+    if not license:
+        return {"unread_count": 0}
+
     count = await get_unread_count(license["license_id"])
     return {"unread_count": count}
 
