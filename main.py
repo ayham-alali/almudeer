@@ -29,6 +29,7 @@ from logging_config import setup_logging, get_logger
 # Setup logging
 setup_logging(os.getenv("LOG_LEVEL", "INFO"))
 logger = get_logger(__name__)
+DEBUG_ERRORS = os.getenv("DEBUG_ERRORS", "0") == "1"
 
 from database import (
     init_database,
@@ -581,10 +582,14 @@ async def general_exception_handler(request: Request, exc: Exception):
         exc_info=True,
         extra={"extra_fields": {"path": request.url.path, "method": request.method}}
     )
-    return JSONResponse(
-        status_code=500,
-        content={"success": False, "error": "حدث خطأ في الخادم"}
-    )
+    payload = {"success": False, "error": "حدث خطأ في الخادم"}
+    # When DEBUG_ERRORS=1 (set via env variable), include debug info in response
+    if DEBUG_ERRORS:
+        payload["debug"] = {
+            "type": type(exc).__name__,
+            "message": str(exc),
+        }
+    return JSONResponse(status_code=500, content=payload)
 
 
 # ============ Run Server ============
