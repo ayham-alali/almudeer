@@ -172,69 +172,102 @@ async def save_email_config(
     auto_reply: bool = False,
     check_interval: int = 5
 ) -> int:
-    """Save or update email configuration"""
+    """Save or update email configuration (SQLite & PostgreSQL compatible)."""
     # Simple XOR encryption (for demo - use proper encryption in production!)
     encrypted_password = simple_encrypt(password)
-    
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+
+    async with get_db() as db:
         # Check if config exists
-        async with db.execute(
+        existing = await fetch_one(
+            db,
             "SELECT id FROM email_configs WHERE license_key_id = ?",
-            (license_id,)
-        ) as cursor:
-            existing = await cursor.fetchone()
-        
+            [license_id],
+        )
+
         if existing:
-            await db.execute("""
+            await execute_sql(
+                db,
+                """
                 UPDATE email_configs SET
                     email_address = ?, imap_server = ?, imap_port = ?,
                     smtp_server = ?, smtp_port = ?, password_encrypted = ?,
                     auto_reply_enabled = ?, check_interval_minutes = ?
                 WHERE license_key_id = ?
-            """, (email_address, imap_server, imap_port, smtp_server, smtp_port,
-                  encrypted_password, auto_reply, check_interval, license_id))
-            await db.commit()
-            return existing[0]
-        else:
-            cursor = await db.execute("""
-                INSERT INTO email_configs 
+                """,
+                [
+                    email_address,
+                    imap_server,
+                    imap_port,
+                    smtp_server,
+                    smtp_port,
+                    encrypted_password,
+                    auto_reply,
+                    check_interval,
+                    license_id,
+                ],
+            )
+            await commit_db(db)
+            return existing["id"]
+
+        await execute_sql(
+            db,
+            """
+            INSERT INTO email_configs 
                 (license_key_id, email_address, imap_server, imap_port,
                  smtp_server, smtp_port, password_encrypted, auto_reply_enabled,
                  check_interval_minutes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (license_id, email_address, imap_server, imap_port, smtp_server,
-                  smtp_port, encrypted_password, auto_reply, check_interval))
-            await db.commit()
-            return cursor.lastrowid
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                license_id,
+                email_address,
+                imap_server,
+                imap_port,
+                smtp_server,
+                smtp_port,
+                encrypted_password,
+                auto_reply,
+                check_interval,
+            ],
+        )
+        row = await fetch_one(
+            db,
+            """
+            SELECT id FROM email_configs
+            WHERE license_key_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            [license_id],
+        )
+        await commit_db(db)
+        return row["id"] if row else 0
 
 
 async def get_email_config(license_id: int) -> Optional[dict]:
-    """Get email configuration for a license"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
+    """Get email configuration for a license (SQLite & PostgreSQL compatible)."""
+    async with get_db() as db:
+        row = await fetch_one(
+            db,
             "SELECT * FROM email_configs WHERE license_key_id = ?",
-            (license_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                config = dict(row)
-                # Don't return the actual password
-                config.pop('password_encrypted', None)
-                return config
-    return None
+            [license_id],
+        )
+        if row:
+            # Don't return the actual password
+            row.pop("password_encrypted", None)
+        return row
 
 
 async def get_email_password(license_id: int) -> Optional[str]:
-    """Get decrypted email password (internal use only)"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        async with db.execute(
+    """Get decrypted email password (internal use only)."""
+    async with get_db() as db:
+        row = await fetch_one(
+            db,
             "SELECT password_encrypted FROM email_configs WHERE license_key_id = ?",
-            (license_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                return simple_decrypt(row[0])
+            [license_id],
+        )
+        if row and row.get("password_encrypted"):
+            return simple_decrypt(row["password_encrypted"])
     return None
 
 
@@ -246,72 +279,82 @@ async def save_telegram_config(
     bot_username: str = None,
     auto_reply: bool = False
 ) -> int:
-    """Save or update Telegram bot configuration"""
+    """Save or update Telegram bot configuration (SQLite & PostgreSQL compatible)."""
     import secrets
     webhook_secret = secrets.token_hex(16)
-    
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        async with db.execute(
+
+    async with get_db() as db:
+        existing = await fetch_one(
+            db,
             "SELECT id FROM telegram_configs WHERE license_key_id = ?",
-            (license_id,)
-        ) as cursor:
-            existing = await cursor.fetchone()
-        
+            [license_id],
+        )
+
         if existing:
-            await db.execute("""
+            await execute_sql(
+                db,
+                """
                 UPDATE telegram_configs SET
                     bot_token = ?, bot_username = ?, auto_reply_enabled = ?
                 WHERE license_key_id = ?
-            """, (bot_token, bot_username, auto_reply, license_id))
-            await db.commit()
-            return existing[0]
-        else:
-            cursor = await db.execute("""
-                INSERT INTO telegram_configs 
+                """,
+                [bot_token, bot_username, auto_reply, license_id],
+            )
+            await commit_db(db)
+            return existing["id"]
+
+        await execute_sql(
+            db,
+            """
+            INSERT INTO telegram_configs 
                 (license_key_id, bot_token, bot_username, webhook_secret, auto_reply_enabled)
-                VALUES (?, ?, ?, ?, ?)
-            """, (license_id, bot_token, bot_username, webhook_secret, auto_reply))
-            await db.commit()
-            return cursor.lastrowid
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [license_id, bot_token, bot_username, webhook_secret, auto_reply],
+        )
+        row = await fetch_one(
+            db,
+            """
+            SELECT id FROM telegram_configs
+            WHERE license_key_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            [license_id],
+        )
+        await commit_db(db)
+        return row["id"] if row else 0
 
 
 async def get_telegram_config(license_id: int) -> Optional[dict]:
-    """Get Telegram configuration for a license"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
+    """Get Telegram configuration for a license (SQLite & PostgreSQL compatible)."""
+    async with get_db() as db:
+        config = await fetch_one(
+            db,
             "SELECT * FROM telegram_configs WHERE license_key_id = ?",
-            (license_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                config = dict(row)
-                # Mask the bot token
-                if config.get('bot_token'):
-                    token = config['bot_token']
-                    config['bot_token_masked'] = token[:10] + '...' + token[-5:]
-                    config.pop('bot_token', None)
-                return config
-    return None
+            [license_id],
+        )
+        if config and config.get("bot_token"):
+            token = config["bot_token"]
+            config["bot_token_masked"] = token[:10] + "..." + token[-5:]
+            config.pop("bot_token", None)
+        return config
 
 
 async def get_whatsapp_config(license_id: int) -> Optional[dict]:
-    """Get WhatsApp configuration for a license"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
+    """Get WhatsApp configuration for a license (SQLite & PostgreSQL compatible)."""
+    async with get_db() as db:
+        config = await fetch_one(
+            db,
             "SELECT * FROM whatsapp_configs WHERE license_key_id = ? AND is_active = 1",
-            (license_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                config = dict(row)
-                # Mask the access token
-                if config.get('access_token'):
-                    token = config['access_token']
-                    config['access_token_masked'] = token[:10] + '...' + token[-5:] if len(token) > 15 else '***'
-                return config
-    return None
+            [license_id],
+        )
+        if config and config.get("access_token"):
+            token = config["access_token"]
+            config["access_token_masked"] = (
+                token[:10] + "..." + token[-5:] if len(token) > 15 else "***"
+            )
+        return config
 
 
 # ============ Inbox Functions ============
