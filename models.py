@@ -368,27 +368,25 @@ async def get_inbox_messages(
     channel: str = None,
     limit: int = 50
 ) -> List[dict]:
-    """Get inbox messages for a license"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        
-        query = "SELECT * FROM inbox_messages WHERE license_key_id = ?"
-        params = [license_id]
-        
-        if status:
-            query += " AND status = ?"
-            params.append(status)
-        
-        if channel:
-            query += " AND channel = ?"
-            params.append(channel)
-        
-        query += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
-        
-        async with db.execute(query, params) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+    """Get inbox messages for a license (SQLite & PostgreSQL compatible)."""
+
+    query = "SELECT * FROM inbox_messages WHERE license_key_id = ?"
+    params = [license_id]
+
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+
+    if channel:
+        query += " AND channel = ?"
+        params.append(channel)
+
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+
+    async with get_db() as db:
+        rows = await fetch_all(db, query, params)
+        return rows
 
 
 async def update_inbox_status(message_id: int, status: str):
@@ -775,17 +773,19 @@ async def get_or_create_customer(
 
 
 async def get_customers(license_id: int, limit: int = 100) -> List[dict]:
-    """Get all customers for a license"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("""
+    """Get all customers for a license (SQLite & PostgreSQL compatible)."""
+    async with get_db() as db:
+        rows = await fetch_all(
+            db,
+            """
             SELECT * FROM customers 
             WHERE license_key_id = ? 
             ORDER BY last_contact_at DESC
             LIMIT ?
-        """, (license_id, limit)) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            """,
+            [license_id, limit],
+        )
+        return rows
 
 
 async def get_customer(license_id: int, customer_id: int) -> Optional[dict]:
@@ -901,8 +901,10 @@ async def get_analytics_summary(license_id: int, days: int = 30) -> dict:
 
     Uses the unified db_helper layer so it works with both SQLite and PostgreSQL.
     """
-    # Calculate cutoff date in Python to keep SQL cross-database
-    cutoff_date = (datetime.utcnow().date() - timedelta(days=days)).isoformat()
+    # Calculate cutoff date as a real date object.
+    # - For PostgreSQL, asyncpg expects a date instance.
+    # - For SQLite, the driver will convert it to a string automatically.
+    cutoff_date = datetime.utcnow().date() - timedelta(days=days)
 
     async with get_db() as db:
         row = await fetch_one(

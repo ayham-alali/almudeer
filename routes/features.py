@@ -202,7 +202,8 @@ async def get_chart_data(
     license: dict = Depends(get_license_from_header)
 ):
     """Get daily data for charts (works with SQLite and PostgreSQL)."""
-    cutoff_date = (datetime.utcnow().date() - timedelta(days=days)).isoformat()
+    # Use a real date object for cross-database compatibility.
+    cutoff_date = datetime.utcnow().date() - timedelta(days=days)
 
     async with get_db() as db:
         rows = await fetch_all(
