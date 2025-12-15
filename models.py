@@ -673,15 +673,14 @@ async def init_templates_and_customers():
 # ============ Quick Reply Templates ============
 
 async def get_templates(license_id: int) -> List[dict]:
-    """Get all templates for a license"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
+    """Get all templates for a license (SQLite & PostgreSQL compatible)."""
+    async with get_db() as db:
+        rows = await fetch_all(
+            db,
             "SELECT * FROM reply_templates WHERE license_key_id = ? ORDER BY use_count DESC",
-            (license_id,)
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            [license_id],
+        )
+        return rows
 
 
 async def save_template(
@@ -691,36 +690,81 @@ async def save_template(
     body: str,
     category: str = 'عام'
 ) -> int:
-    """Save a new template"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        cursor = await db.execute("""
-            INSERT OR REPLACE INTO reply_templates 
-            (license_key_id, shortcut, title, body, category)
+    """Create or update a template (works with SQLite & PostgreSQL)."""
+    normalized_shortcut = shortcut.lower()
+
+    async with get_db() as db:
+        # Check if template already exists
+        existing = await fetch_one(
+            db,
+            """
+            SELECT id FROM reply_templates
+            WHERE license_key_id = ? AND shortcut = ?
+            """,
+            [license_id, normalized_shortcut],
+        )
+
+        if existing:
+            # Update existing template
+            await execute_sql(
+                db,
+                """
+                UPDATE reply_templates
+                SET title = ?, body = ?, category = ?
+                WHERE id = ?
+                """,
+                [title, body, category, existing["id"]],
+            )
+            await commit_db(db)
+            return existing["id"]
+
+        # Insert new template
+        await execute_sql(
+            db,
+            """
+            INSERT INTO reply_templates
+                (license_key_id, shortcut, title, body, category)
             VALUES (?, ?, ?, ?, ?)
-        """, (license_id, shortcut.lower(), title, body, category))
-        await db.commit()
-        return cursor.lastrowid
+            """,
+            [license_id, normalized_shortcut, title, body, category],
+        )
+
+        # Fetch the newly created id in a cross‑database way
+        row = await fetch_one(
+            db,
+            """
+            SELECT id FROM reply_templates
+            WHERE license_key_id = ? AND shortcut = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            [license_id, normalized_shortcut],
+        )
+        await commit_db(db)
+        return row["id"] if row else 0
 
 
 async def delete_template(license_id: int, template_id: int) -> bool:
     """Delete a template"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute(
+    async with get_db() as db:
+        await execute_sql(
+            db,
             "DELETE FROM reply_templates WHERE id = ? AND license_key_id = ?",
-            (template_id, license_id)
+            [template_id, license_id],
         )
-        await db.commit()
+        await commit_db(db)
         return True
 
 
 async def increment_template_usage(template_id: int):
     """Increment template usage counter"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute(
+    async with get_db() as db:
+        await execute_sql(
+            db,
             "UPDATE reply_templates SET use_count = use_count + 1 WHERE id = ?",
-            (template_id,)
+            [template_id],
         )
-        await db.commit()
+        await commit_db(db)
 
 
 # ============ Customer Profiles ============
@@ -1123,57 +1167,79 @@ async def create_team_member(
     invited_by: int = None,
     password_hash: str = None
 ) -> int:
-    """Create a new team member"""
+    """Create a new team member (SQLite & PostgreSQL compatible)."""
     if role not in ROLES:
         role = "agent"
-    
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        cursor = await db.execute("""
-            INSERT INTO team_members 
-            (license_key_id, email, name, role, invited_by, password_hash, permissions)
+
+    normalized_email = email.lower()
+    permissions = ",".join(ROLES[role]["permissions"])
+
+    async with get_db() as db:
+        await execute_sql(
+            db,
+            """
+            INSERT INTO team_members
+                (license_key_id, email, name, role, invited_by, password_hash, permissions)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (license_id, email.lower(), name, role, invited_by, password_hash, 
-              ",".join(ROLES[role]["permissions"])))
-        await db.commit()
-        return cursor.lastrowid
+            """,
+            [license_id, normalized_email, name, role, invited_by, password_hash, permissions],
+        )
+
+        # Fetch created member id in a DB‑agnostic way
+        row = await fetch_one(
+            db,
+            """
+            SELECT id FROM team_members
+            WHERE license_key_id = ? AND email = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            [license_id, normalized_email],
+        )
+        await commit_db(db)
+        return row["id"] if row else 0
 
 
 async def get_team_members(license_id: int) -> List[dict]:
     """Get all team members for a license"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("""
+    async with get_db() as db:
+        rows = await fetch_all(
+            db,
+            """
             SELECT id, email, name, role, is_active, last_login_at, created_at
             FROM team_members 
             WHERE license_key_id = ?
             ORDER BY created_at ASC
-        """, (license_id,)) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            """,
+            [license_id],
+        )
+        return rows
 
 
 async def get_team_member(license_id: int, member_id: int) -> Optional[dict]:
     """Get a specific team member"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("""
+    async with get_db() as db:
+        return await fetch_one(
+            db,
+            """
             SELECT * FROM team_members 
             WHERE id = ? AND license_key_id = ?
-        """, (member_id, license_id)) as cursor:
-            row = await cursor.fetchone()
-            return dict(row) if row else None
+            """,
+            [member_id, license_id],
+        )
 
 
 async def get_team_member_by_email(license_id: int, email: str) -> Optional[dict]:
     """Get team member by email"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("""
+    async with get_db() as db:
+        return await fetch_one(
+            db,
+            """
             SELECT * FROM team_members 
             WHERE email = ? AND license_key_id = ?
-        """, (email.lower(), license_id)) as cursor:
-            row = await cursor.fetchone()
-            return dict(row) if row else None
+            """,
+            [email.lower(), license_id],
+        )
 
 
 async def update_team_member(
@@ -1194,24 +1260,29 @@ async def update_team_member(
     
     set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
     values = list(updates.values()) + [member_id, license_id]
-    
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute(f"""
+
+    async with get_db() as db:
+        await execute_sql(
+            db,
+            f"""
             UPDATE team_members SET {set_clause}
             WHERE id = ? AND license_key_id = ?
-        """, values)
-        await db.commit()
+            """,
+            values,
+        )
+        await commit_db(db)
         return True
 
 
 async def delete_team_member(license_id: int, member_id: int) -> bool:
     """Delete a team member"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute(
+    async with get_db() as db:
+        await execute_sql(
+            db,
             "DELETE FROM team_members WHERE id = ? AND license_key_id = ?",
-            (member_id, license_id)
+            [member_id, license_id],
         )
-        await db.commit()
+        await commit_db(db)
         return True
 
 
@@ -1233,29 +1304,35 @@ async def log_team_activity(
     ip_address: str = None
 ):
     """Log team member activity"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute("""
+    async with get_db() as db:
+        await execute_sql(
+            db,
+            """
             INSERT INTO team_activity_log 
             (license_key_id, team_member_id, action, details, ip_address)
             VALUES (?, ?, ?, ?, ?)
-        """, (license_id, member_id, action, details, ip_address))
-        await db.commit()
+            """,
+            [license_id, member_id, action, details, ip_address],
+        )
+        await commit_db(db)
 
 
 async def get_team_activity(license_id: int, limit: int = 100) -> List[dict]:
     """Get team activity log"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("""
+    async with get_db() as db:
+        rows = await fetch_all(
+            db,
+            """
             SELECT a.*, m.name as member_name
             FROM team_activity_log a
             LEFT JOIN team_members m ON a.team_member_id = m.id
             WHERE a.license_key_id = ?
             ORDER BY a.created_at DESC
             LIMIT ?
-        """, (license_id, limit)) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            """,
+            [license_id, limit],
+        )
+        return rows
 
 
 # Smart notification triggers
