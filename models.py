@@ -254,6 +254,7 @@ async def save_email_config(
                     smtp_server = ?, smtp_port = ?,
                     access_token_encrypted = ?, refresh_token_encrypted = ?,
                     token_expires_at = ?,
+                    password_encrypted = ?,
                     auto_reply_enabled = ?, check_interval_minutes = ?
                 WHERE license_key_id = ?
                 """,
@@ -266,6 +267,7 @@ async def save_email_config(
                     encrypted_access_token,
                     encrypted_refresh_token,
                     expires_value,
+                    "",  # Empty string for OAuth (legacy password field)
                     auto_reply,
                     check_interval,
                     license_id,
@@ -280,8 +282,8 @@ async def save_email_config(
             INSERT INTO email_configs 
                 (license_key_id, email_address, imap_server, imap_port,
                  smtp_server, smtp_port, access_token_encrypted, refresh_token_encrypted,
-                 token_expires_at, auto_reply_enabled, check_interval_minutes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 token_expires_at, password_encrypted, auto_reply_enabled, check_interval_minutes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 license_id,
@@ -293,6 +295,7 @@ async def save_email_config(
                 encrypted_access_token,
                 encrypted_refresh_token,
                 expires_value,
+                "",  # Empty string for OAuth (legacy password field)
                 auto_reply,
                 check_interval,
             ],
