@@ -21,9 +21,16 @@ class GmailOAuthService:
     TOKEN_INFO_URL = "https://www.googleapis.com/oauth2/v1/tokeninfo"
     
     # Required scopes for Gmail access
+    # NOTE:
+    # - gmail.readonly / gmail.send are used for reading & sending mail
+    # - userinfo.email is required so that the token info endpoint returns the
+    #   authenticated user's email address (used in the OAuth callback).
+    #   Without this scope, token_info.get("email") will be None and the
+    #   backend will fail with "تعذر الحصول على عنوان البريد الإلكتروني".
     SCOPES = [
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/userinfo.email",
     ]
     
     def __init__(

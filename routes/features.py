@@ -1,6 +1,6 @@
 """
 Al-Mudeer - Feature Routes
-Templates, Customers, Analytics, Preferences, Voice Transcription
+Customers, Analytics, Preferences, Voice Transcription
 """
 
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
@@ -9,10 +9,6 @@ from typing import Optional, List
 from datetime import datetime, timedelta
 
 from models import (
-    get_templates,
-    save_template,
-    delete_template,
-    increment_template_usage,
     get_customers,
     get_customer,
     update_customer,
@@ -39,69 +35,6 @@ from dependencies import get_license_from_header, get_optional_license_from_head
 from db_helper import get_db, fetch_all
 
 router = APIRouter(prefix="/api", tags=["Features"])
-
-
-# ============ Templates Schemas ============
-
-class TemplateCreate(BaseModel):
-    shortcut: str = Field(..., min_length=1, max_length=20)
-    title: str = Field(..., min_length=1, max_length=100)
-    body: str = Field(..., min_length=1)
-    category: str = Field(default="عام")
-
-
-class TemplateResponse(BaseModel):
-    id: int
-    shortcut: str
-    title: str
-    body: str
-    category: str
-    use_count: int
-
-
-# ============ Templates Routes ============
-
-@router.get("/templates")
-async def list_templates(license: dict = Depends(get_license_from_header)):
-    """Get all quick reply templates"""
-    templates = await get_templates(license["license_id"])
-    return {"templates": templates}
-
-
-@router.post("/templates")
-async def create_template(
-    template: TemplateCreate,
-    license: dict = Depends(get_license_from_header)
-):
-    """Create a new quick reply template"""
-    template_id = await save_template(
-        license_id=license["license_id"],
-        shortcut=template.shortcut,
-        title=template.title,
-        body=template.body,
-        category=template.category
-    )
-    return {"success": True, "template_id": template_id, "message": "تم إنشاء القالب بنجاح"}
-
-
-@router.delete("/templates/{template_id}")
-async def remove_template(
-    template_id: int,
-    license: dict = Depends(get_license_from_header)
-):
-    """Delete a template"""
-    await delete_template(license["license_id"], template_id)
-    return {"success": True, "message": "تم حذف القالب"}
-
-
-@router.post("/templates/{template_id}/use")
-async def use_template(
-    template_id: int,
-    license: dict = Depends(get_license_from_header)
-):
-    """Mark template as used (increment counter)"""
-    await increment_template_usage(template_id)
-    return {"success": True}
 
 
 # ============ Customers Schemas ============
@@ -251,59 +184,6 @@ async def update_user_preferences(
         **data.dict(exclude_none=True)
     )
     return {"success": True, "message": "تم حفظ التفضيلات"}
-
-
-# ============ Default Templates ============
-
-DEFAULT_TEMPLATES = [
-    {
-        "shortcut": "سعر",
-        "title": "استفسار عن الأسعار",
-        "body": "شكراً لتواصلكم معنا!\n\nأسعارنا تبدأ من [أدخل السعر] وتختلف حسب نوع الخدمة المطلوبة.\n\nهل تود معرفة تفاصيل أكثر عن خدمة معينة؟",
-        "category": "أسعار"
-    },
-    {
-        "shortcut": "شكرا",
-        "title": "شكر وتقدير",
-        "body": "شكراً جزيلاً لتواصلكم معنا! 🙏\n\nنسعد دائماً بخدمتكم.\n\nمع أطيب التحيات،\nفريق خدمة العملاء",
-        "category": "عام"
-    },
-    {
-        "shortcut": "موقع",
-        "title": "الموقع والعنوان",
-        "body": "موقعنا:\n📍 [العنوان]\n\nساعات العمل:\n🕐 [من - إلى]\n\nللتواصل:\n📱 [رقم الهاتف]",
-        "category": "معلومات"
-    },
-    {
-        "shortcut": "انتظر",
-        "title": "طلب الانتظار",
-        "body": "شكراً لتواصلكم!\n\nتم استلام رسالتكم وسيتم الرد عليكم في أقرب وقت ممكن.\n\nنقدر صبركم! 🙏",
-        "category": "عام"
-    },
-    {
-        "shortcut": "حجز",
-        "title": "تأكيد الحجز",
-        "body": "تم تأكيد حجزكم بنجاح! ✅\n\n📅 التاريخ: [التاريخ]\n🕐 الوقت: [الوقت]\n\nنتطلع لرؤيتكم!",
-        "category": "حجوزات"
-    }
-]
-
-
-@router.post("/templates/defaults")
-async def create_default_templates(license: dict = Depends(get_license_from_header)):
-    """Create default templates for new users"""
-    created = 0
-    for template in DEFAULT_TEMPLATES:
-        try:
-            await save_template(
-                license_id=license["license_id"],
-                **template
-            )
-            created += 1
-        except:
-            pass  # Template might already exist
-    
-    return {"success": True, "created": created, "message": f"تم إنشاء {created} قوالب افتراضية"}
 
 
 # ============ Voice Transcription Schemas ============
@@ -526,57 +406,5 @@ async def categorize_multiple_messages(
         "categorizations": results,
         "count": len(results),
         "message": f"تم تصنيف {len(results)} رسالة"
-    }
-
-
-# ============ Template Suggestions ============
-
-@router.get("/templates/suggest")
-async def suggest_templates(
-    intent: Optional[str] = None,
-    message: Optional[str] = None,
-    limit: int = 5,
-    license: dict = Depends(get_license_from_header)
-):
-    """
-    Get AI-suggested templates based on message intent or content
-    """
-    templates = await get_templates(license["license_id"])
-    
-    if not templates:
-        return {"templates": [], "message": "لا توجد قوالب. قم بإنشاء قوالب أولاً."}
-    
-    # Category mapping for intents
-    intent_categories = {
-        'استفسار': ['أسعار', 'معلومات', 'عام'],
-        'طلب خدمة': ['حجوزات', 'طلبات', 'عام'],
-        'شكوى': ['شكاوى', 'دعم', 'عام'],
-        'متابعة': ['متابعة', 'عام'],
-        'عرض': ['عروض', 'عام'],
-    }
-    
-    suggested = []
-    
-    # Filter by intent
-    if intent and intent in intent_categories:
-        categories = intent_categories[intent]
-        suggested = [t for t in templates if t.get('category') in categories]
-    
-    # Filter by message content keywords
-    if message and not suggested:
-        message_lower = message.lower()
-        for template in templates:
-            template_text = f"{template['title']} {template['body']} {template['shortcut']}".lower()
-            if any(word in template_text for word in message_lower.split() if len(word) > 2):
-                suggested.append(template)
-    
-    # Fall back to most used templates
-    if not suggested:
-        suggested = sorted(templates, key=lambda t: t.get('use_count', 0), reverse=True)
-    
-    return {
-        "templates": suggested[:limit],
-        "total": len(suggested),
-        "intent": intent
     }
 

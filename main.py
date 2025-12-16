@@ -54,7 +54,7 @@ from schemas import (
     HealthCheck
 )
 from agent import process_message
-from models import init_enhanced_tables, init_templates_and_customers
+from models import init_enhanced_tables, init_customers_and_analytics
 from routes import integrations_router, features_router, whatsapp_router, team_router, export_router, notifications_router
 from routes.subscription import router as subscription_router
 from security import sanitize_message, sanitize_string
@@ -96,9 +96,9 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Notification tables initialization warning (may already exist): {e}")
         try:
-            await init_templates_and_customers()  # Templates, Customers, Analytics
+            await init_customers_and_analytics()  # Customers, Analytics
         except Exception as e:
-            logger.warning(f"Templates initialization warning (may already exist): {e}")
+            logger.warning(f"Customers/analytics initialization warning (may already exist): {e}")
         demo_key = await create_demo_license()
         if demo_key:
             logger.info(f"Demo license key created: {demo_key[:20]}...")
@@ -115,7 +115,7 @@ async def lifespan(app: FastAPI):
         
         logger.info("Al-Mudeer backend initialized successfully")
         print("Al-Mudeer Premium Backend Ready!")
-        print("Templates, Customers, Analytics - All Ready!")
+        print("Customers & Analytics - All Ready!")
         print("Background workers active for automatic message processing")
     except Exception as e:
         logger.error(f"Failed to initialize backend: {e}", exc_info=True)
@@ -200,7 +200,7 @@ app.add_middleware(
 
 # Include routes
 app.include_router(integrations_router)    # Email & Telegram
-app.include_router(features_router)        # Templates, Customers, Analytics
+app.include_router(features_router)        # Customers, Analytics
 app.include_router(whatsapp_router)        # WhatsApp Business
 app.include_router(team_router)            # Team Management
 app.include_router(export_router)          # Export & Reports

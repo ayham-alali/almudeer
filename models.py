@@ -625,11 +625,11 @@ def simple_decrypt(encrypted: str) -> str:
         return simple_encrypt(encrypted)  # XOR is symmetric
 
 
-# Initialize on import
 import asyncio
 
-async def init_templates_and_customers():
-    """Initialize templates, customers, analytics and related tables.
+
+async def init_customers_and_analytics():
+    """Initialize customers, analytics, notifications and related tables.
 
     Uses the generic db_helper layer so it works for both SQLite (dev)
     and PostgreSQL (production).
@@ -701,22 +701,6 @@ async def init_templates_and_customers():
                 is_read BOOLEAN DEFAULT FALSE,
                 created_at {TIMESTAMP_NOW},
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
-            )
-        """)
-
-        # Quick Reply Templates
-        await execute_sql(db, f"""
-            CREATE TABLE IF NOT EXISTS reply_templates (
-                id {ID_PK},
-                license_key_id INTEGER NOT NULL,
-                shortcut TEXT NOT NULL,
-                title TEXT NOT NULL,
-                body TEXT NOT NULL,
-                category TEXT DEFAULT 'عام',
-                use_count INTEGER DEFAULT 0,
-                created_at {TIMESTAMP_NOW},
-                FOREIGN KEY (license_key_id) REFERENCES license_keys(id),
-                UNIQUE(license_key_id, shortcut)
             )
         """)
 
@@ -799,104 +783,7 @@ async def init_templates_and_customers():
         """)
 
         await commit_db(db)
-        print("Templates, Customers, Analytics & Notifications tables initialized")
-
-
-# ============ Quick Reply Templates ============
-
-async def get_templates(license_id: int) -> List[dict]:
-    """Get all templates for a license (SQLite & PostgreSQL compatible)."""
-    async with get_db() as db:
-        rows = await fetch_all(
-            db,
-            "SELECT * FROM reply_templates WHERE license_key_id = ? ORDER BY use_count DESC",
-            [license_id],
-        )
-        return rows
-
-
-async def save_template(
-    license_id: int,
-    shortcut: str,
-    title: str,
-    body: str,
-    category: str = 'عام'
-) -> int:
-    """Create or update a template (works with SQLite & PostgreSQL)."""
-    normalized_shortcut = shortcut.lower()
-
-    async with get_db() as db:
-        # Check if template already exists
-        existing = await fetch_one(
-            db,
-            """
-            SELECT id FROM reply_templates
-            WHERE license_key_id = ? AND shortcut = ?
-            """,
-            [license_id, normalized_shortcut],
-        )
-
-        if existing:
-            # Update existing template
-            await execute_sql(
-                db,
-                """
-                UPDATE reply_templates
-                SET title = ?, body = ?, category = ?
-                WHERE id = ?
-                """,
-                [title, body, category, existing["id"]],
-            )
-            await commit_db(db)
-            return existing["id"]
-
-        # Insert new template
-        await execute_sql(
-            db,
-            """
-            INSERT INTO reply_templates
-                (license_key_id, shortcut, title, body, category)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            [license_id, normalized_shortcut, title, body, category],
-        )
-
-        # Fetch the newly created id in a cross‑database way
-        row = await fetch_one(
-            db,
-            """
-            SELECT id FROM reply_templates
-            WHERE license_key_id = ? AND shortcut = ?
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            [license_id, normalized_shortcut],
-        )
-        await commit_db(db)
-        return row["id"] if row else 0
-
-
-async def delete_template(license_id: int, template_id: int) -> bool:
-    """Delete a template"""
-    async with get_db() as db:
-        await execute_sql(
-            db,
-            "DELETE FROM reply_templates WHERE id = ? AND license_key_id = ?",
-            [template_id, license_id],
-        )
-        await commit_db(db)
-        return True
-
-
-async def increment_template_usage(template_id: int):
-    """Increment template usage counter"""
-    async with get_db() as db:
-        await execute_sql(
-            db,
-            "UPDATE reply_templates SET use_count = use_count + 1 WHERE id = ?",
-            [template_id],
-        )
-        await commit_db(db)
+        print("Customers, Analytics & Notifications tables initialized")
 
 
 # ============ Customer Profiles ============
@@ -1278,11 +1165,11 @@ ROLES = {
     },
     "admin": {
         "name": "مدير",
-        "permissions": ["read", "write", "reply", "manage_templates", "manage_integrations", "view_analytics"]
+        "permissions": ["read", "write", "reply", "manage_integrations", "view_analytics"]
     },
     "agent": {
         "name": "موظف",
-        "permissions": ["read", "write", "reply", "use_templates"]
+        "permissions": ["read", "write", "reply"]
     },
     "viewer": {
         "name": "مشاهد",
@@ -1542,11 +1429,11 @@ def init_models():
         loop = asyncio.get_event_loop()
         if loop.is_running():
             asyncio.create_task(init_enhanced_tables())
-            asyncio.create_task(init_templates_and_customers())
+            asyncio.create_task(init_customers_and_analytics())
         else:
             loop.run_until_complete(init_enhanced_tables())
-            loop.run_until_complete(init_templates_and_customers())
+            loop.run_until_complete(init_customers_and_analytics())
     except RuntimeError:
         asyncio.run(init_enhanced_tables())
-        asyncio.run(init_templates_and_customers())
+        asyncio.run(init_customers_and_analytics())
 

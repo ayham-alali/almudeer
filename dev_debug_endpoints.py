@@ -39,7 +39,6 @@ def main() -> None:
     http_get("/api/customers?limit=5", headers)
     http_get("/api/integrations/inbox?status=pending&limit=5", headers)
     http_get("/api/notifications/count", headers)
-    http_get("/api/templates", headers)
 
 
 if __name__ == "__main__":
