@@ -47,6 +47,40 @@ class TelegramPhoneService:
         # In production, consider using Redis or database
         self._pending_logins: Dict[str, Dict] = {}
     
+    def _cleanup_expired_logins(self, max_age_minutes: int = 10):
+        """Clean up expired login sessions (older than max_age_minutes)"""
+        from datetime import timedelta
+        now = datetime.now()
+        expired_ids = []
+        
+        for session_id, data in self._pending_logins.items():
+            created_at = data.get("created_at")
+            if created_at:
+                age = now - created_at
+                if age > timedelta(minutes=max_age_minutes):
+                    expired_ids.append(session_id)
+                    # Cleanup client if exists
+                    if "client" in data:
+                        client = data["client"]
+                        try:
+                            # Schedule disconnect (can't await in sync method)
+                            import asyncio
+                            if client.is_connected():
+                                asyncio.create_task(client.disconnect())
+                        except:
+                            pass
+                    # Cleanup session file
+                    session_path = data.get("session_path")
+                    if session_path and os.path.exists(session_path):
+                        try:
+                            os.unlink(session_path)
+                        except:
+                            pass
+        
+        # Remove expired entries
+        for session_id in expired_ids:
+            self._pending_logins.pop(session_id, None)
+    
     async def start_login(self, phone_number: str) -> Dict[str, str]:
         """
         Start login process by requesting verification code
@@ -81,11 +115,14 @@ class TelegramPhoneService:
                 # Request code
                 await client.send_code_request(phone_number)
                 
-                # Store pending login info (cleanup temp file later)
+                # IMPORTANT: Keep client connected! Don't disconnect yet.
+                # The client needs to stay connected for code verification.
+                # Store pending login info with client reference
                 self._pending_logins[session_id] = {
                     "phone_number": phone_number,
                     "session_path": temp_session_path,
                     "created_at": datetime.now(),
+                    "client": client,  # Keep client connected
                 }
                 
                 return {
@@ -180,8 +217,8 @@ class TelegramPhoneService:
         if session_id and session_id in self._pending_logins:
             pending = self._pending_logins[session_id]
             session_path = pending.get("session_path")
-            # Check if we have a stored client (for 2FA retry)
-            if pending.get("needs_2fa") and "client" in pending:
+            # Check if we have a stored client (from start_login or 2FA retry)
+            if "client" in pending:
                 client = pending["client"]
             # Verify phone matches
             if pending["phone_number"] != phone_number:
@@ -191,21 +228,49 @@ class TelegramPhoneService:
             for sid, data in self._pending_logins.items():
                 if data["phone_number"] == phone_number:
                     session_path = data.get("session_path")
-                    if data.get("needs_2fa") and "client" in data:
+                    if "client" in data:
                         client = data["client"]
                     session_id = sid
                     break
         
-        # If we have a stored client (2FA retry), use it
+        # If we have a stored client, use it (it's already connected)
         if client:
-            # Client already connected from previous attempt
-            pass
+            # Client already connected from start_login
+            # Make sure it's still connected
+            try:
+                if not client.is_connected():
+                    await client.connect()
+            except Exception as e:
+                # If connection failed, try to reconnect from session file
+                if session_path and os.path.exists(session_path):
+                    try:
+                        client = TelegramClient(session_path, int(self.api_id), self.api_hash)
+                        await client.connect()
+                    except:
+                        # Clean up and raise error
+                        if session_id:
+                            self._pending_logins.pop(session_id, None)
+                        raise ValueError(f"فشل الاتصال بالجلسة. يرجى طلب كود جديد")
+                else:
+                    # Clean up and raise error
+                    if session_id:
+                        self._pending_logins.pop(session_id, None)
+                    raise ValueError("انتهت صلاحية طلب تسجيل الدخول. يرجى طلب كود جديد")
         elif session_path and os.path.exists(session_path):
-            # Create new client from session file
-            client = TelegramClient(session_path, int(self.api_id), self.api_hash)
-            await client.connect()
+            # Fallback: Create new client from session file
+            # This shouldn't happen if start_login worked correctly, but handle it gracefully
+            try:
+                client = TelegramClient(session_path, int(self.api_id), self.api_hash)
+                await client.connect()
+            except Exception as e:
+                # Clean up and raise error
+                if session_id:
+                    self._pending_logins.pop(session_id, None)
+                raise ValueError("انتهت صلاحية طلب تسجيل الدخول. يرجى طلب كود جديد")
         else:
-            raise ValueError("انتهت صلاحية طلب تسجيل الدخول. يرجى المحاولة مرة أخرى")
+            # Clean up any expired entries
+            self._cleanup_expired_logins()
+            raise ValueError("انتهت صلاحية طلب تسجيل الدخول. يرجى طلب كود جديد")
         
         try:
             if await client.is_user_authorized():
