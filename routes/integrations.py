@@ -65,6 +65,7 @@ class TelegramPhoneVerifyRequest(BaseModel):
     phone_number: str
     code: str
     session_id: Optional[str] = None
+    password: Optional[str] = None  # 2FA password
 
 
 class ApprovalRequest(BaseModel):
@@ -637,13 +638,14 @@ async def verify_telegram_phone_code(
     request: TelegramPhoneVerifyRequest,
     license: dict = Depends(get_license_from_header)
 ):
-    """Verify Telegram code and complete login"""
+    """Verify Telegram code and complete login (supports 2FA)"""
     try:
         phone_service = TelegramPhoneService()
         session_string, user_info = await phone_service.verify_code(
             phone_number=request.phone_number,
             code=request.code,
-            session_id=request.session_id
+            session_id=request.session_id,
+            password=request.password  # 2FA password if needed
         )
         
         # Save session to database

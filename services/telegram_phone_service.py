@@ -156,7 +156,8 @@ class TelegramPhoneService:
         self,
         phone_number: str,
         code: str,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        password: Optional[str] = None
     ) -> Tuple[str, Dict]:
         """
         Verify code and complete login, returning session string
@@ -174,9 +175,14 @@ class TelegramPhoneService:
         
         # Find pending login
         session_path = None
+        client = None
+        
         if session_id and session_id in self._pending_logins:
             pending = self._pending_logins[session_id]
-            session_path = pending["session_path"]
+            session_path = pending.get("session_path")
+            # Check if we have a stored client (for 2FA retry)
+            if pending.get("needs_2fa") and "client" in pending:
+                client = pending["client"]
             # Verify phone matches
             if pending["phone_number"] != phone_number:
                 raise ValueError("رقم الهاتف لا يطابق الطلب الأصلي")
@@ -184,18 +190,24 @@ class TelegramPhoneService:
             # Try to find by phone number (fallback)
             for sid, data in self._pending_logins.items():
                 if data["phone_number"] == phone_number:
-                    session_path = data["session_path"]
+                    session_path = data.get("session_path")
+                    if data.get("needs_2fa") and "client" in data:
+                        client = data["client"]
                     session_id = sid
                     break
         
-        if not session_path or not os.path.exists(session_path):
-            raise ValueError("انتهت صلاحية طلب تسجيل الدخول. يرجى المحاولة مرة أخرى")
-        
-        client = None
-        try:
+        # If we have a stored client (2FA retry), use it
+        if client:
+            # Client already connected from previous attempt
+            pass
+        elif session_path and os.path.exists(session_path):
+            # Create new client from session file
             client = TelegramClient(session_path, int(self.api_id), self.api_hash)
             await client.connect()
-            
+        else:
+            raise ValueError("انتهت صلاحية طلب تسجيل الدخول. يرجى المحاولة مرة أخرى")
+        
+        try:
             if await client.is_user_authorized():
                 # Already authorized, convert file session to string
                 client.session.save()
@@ -234,21 +246,35 @@ class TelegramPhoneService:
             try:
                 await client.sign_in(phone_number, code)
             except SessionPasswordNeededError:
-                # 2FA enabled - we don't support this in first version
-                await client.disconnect()
-                os.unlink(session_path)
-                if session_id:
-                    self._pending_logins.pop(session_id, None)
-                raise ValueError(
-                    "حسابك محمي بكلمة مرور ثنائية (2FA). "
-                    "يرجى تعطيل 2FA مؤقتاً للسماح بالربط، أو استخدم بوت Telegram بدلاً من الرقم."
-                )
+                # 2FA enabled - request password
+                if not password:
+                    # Keep session alive for password entry
+                    # Store client temporarily (don't disconnect yet)
+                    if session_id:
+                        # Update pending login to indicate 2FA needed
+                        self._pending_logins[session_id]["needs_2fa"] = True
+                        self._pending_logins[session_id]["client"] = client
+                    raise ValueError(
+                        "حسابك محمي بكلمة مرور ثنائية (2FA). "
+                        "يرجى إدخال كلمة المرور الثنائية لإكمال تسجيل الدخول."
+                    )
+                else:
+                    # Sign in with password
+                    try:
+                        await client.sign_in(password=password)
+                    except Exception as e:
+                        await client.disconnect()
+                        os.unlink(session_path)
+                        if session_id:
+                            self._pending_logins.pop(session_id, None)
+                        raise ValueError(f"كلمة المرور الثنائية غير صحيحة: {str(e)}")
             except PhoneCodeInvalidError:
                 raise ValueError("كود التحقق غير صحيح")
             except PhoneCodeExpiredError:
                 if session_id:
                     self._pending_logins.pop(session_id, None)
-                os.unlink(session_path)
+                if os.path.exists(session_path):
+                    os.unlink(session_path)
                 raise ValueError("انتهت صلاحية كود التحقق. يرجى طلب كود جديد")
             
             # Get session string - convert file session to StringSession format
