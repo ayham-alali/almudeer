@@ -1,0 +1,302 @@
+"""
+Al-Mudeer - Gmail API Service
+Uses Gmail API with OAuth 2.0 tokens for fetching and sending emails
+"""
+
+import base64
+import json
+import httpx
+from typing import List, Dict, Optional
+from datetime import datetime, timedelta
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+
+class GmailAPIService:
+    """Service for Gmail API operations using OAuth 2.0"""
+    
+    GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1"
+    
+    def __init__(self, access_token: str, refresh_token: str = None, oauth_service=None):
+        """
+        Initialize Gmail API service
+        
+        Args:
+            access_token: OAuth 2.0 access token
+            refresh_token: OAuth 2.0 refresh token (optional, for auto-refresh)
+            oauth_service: GmailOAuthService instance for token refresh
+        """
+        self.access_token = access_token
+        self.refresh_token = refresh_token
+        self.oauth_service = oauth_service
+        self._headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+    
+    async def _refresh_token_if_needed(self):
+        """Refresh access token if it's expired"""
+        if self.oauth_service and self.refresh_token:
+            try:
+                new_tokens = await self.oauth_service.refresh_access_token(self.refresh_token)
+                self.access_token = new_tokens["access_token"]
+                self._headers["Authorization"] = f"Bearer {self.access_token}"
+                return new_tokens
+            except Exception as e:
+                print(f"Failed to refresh token: {e}")
+                raise
+    
+    async def _request(self, method: str, endpoint: str, **kwargs) -> Dict:
+        """Make authenticated request to Gmail API"""
+        url = f"{self.GMAIL_API_BASE}/{endpoint}"
+        
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.request(
+                    method,
+                    url,
+                    headers=self._headers,
+                    timeout=30.0,
+                    **kwargs
+                )
+                
+                # If unauthorized, try refreshing token
+                if response.status_code == 401 and self.refresh_token:
+                    await self._refresh_token_if_needed()
+                    # Retry request with new token
+                    response = await client.request(
+                        method,
+                        url,
+                        headers=self._headers,
+                        timeout=30.0,
+                        **kwargs
+                    )
+                
+                if response.status_code != 200:
+                    error_data = response.json() if response.content else {}
+                    error_msg = error_data.get("error", {}).get("message", response.text)
+                    raise Exception(f"Gmail API error: {error_msg}")
+                
+                return response.json() if response.content else {}
+                
+            except httpx.HTTPStatusError as e:
+                error_data = e.response.json() if e.response.content else {}
+                error_msg = error_data.get("error", {}).get("message", str(e))
+                raise Exception(f"Gmail API error: {error_msg}")
+    
+    async def get_profile(self) -> Dict:
+        """Get Gmail user profile"""
+        return await self._request("GET", "users/me/profile")
+    
+    async def list_messages(
+        self,
+        query: str = "",
+        max_results: int = 50,
+        page_token: str = None
+    ) -> Dict:
+        """
+        List messages from Gmail
+        
+        Args:
+            query: Gmail search query (e.g., "is:unread", "newer_than:1d")
+            max_results: Maximum number of messages to return
+            page_token: Token for pagination
+        
+        Returns:
+            Dictionary with messages list and nextPageToken
+        """
+        params = {"maxResults": max_results}
+        if query:
+            params["q"] = query
+        if page_token:
+            params["pageToken"] = page_token
+        
+        query_string = "&".join([f"{k}={v}" for k, v in params.items()])
+        return await self._request("GET", f"users/me/messages?{query_string}")
+    
+    async def get_message(self, message_id: str, format: str = "full") -> Dict:
+        """
+        Get a specific message by ID
+        
+        Args:
+            message_id: Gmail message ID
+            format: Format to return (full, raw, metadata, minimal)
+        
+        Returns:
+            Message object
+        """
+        return await self._request("GET", f"users/me/messages/{message_id}?format={format}")
+    
+    async def send_message(
+        self,
+        to_email: str,
+        subject: str,
+        body: str,
+        reply_to_message_id: str = None
+    ) -> Dict:
+        """
+        Send an email message
+        
+        Args:
+            to_email: Recipient email address
+            subject: Email subject
+            body: Email body (plain text)
+            reply_to_message_id: Optional Gmail message ID to reply to
+        
+        Returns:
+            Dictionary with sent message info
+        """
+        # Create MIME message
+        msg = MIMEMultipart('alternative')
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        
+        if reply_to_message_id:
+            # Get original message for threading
+            try:
+                original = await self.get_message(reply_to_message_id, format="metadata")
+                thread_id = original.get("threadId")
+                # Get original message headers
+                headers = original.get("payload", {}).get("headers", [])
+                msg_id = next((h["value"] for h in headers if h["name"].lower() == "message-id"), None)
+                references = next((h["value"] for h in headers if h["name"].lower() == "references"), None)
+                
+                if msg_id:
+                    msg['In-Reply-To'] = msg_id
+                    if references:
+                        msg['References'] = f"{references} {msg_id}"
+                    else:
+                        msg['References'] = msg_id
+                if thread_id:
+                    msg['X-Gmail-Thread-ID'] = thread_id
+            except:
+                pass  # Continue even if we can't get thread info
+        
+        # Add plain text body
+        text_part = MIMEText(body, 'plain', 'utf-8')
+        msg.attach(text_part)
+        
+        # Encode message as base64url
+        raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        
+        payload = {"raw": raw_message}
+        
+        return await self._request("POST", "users/me/messages/send", json=payload)
+    
+    async def fetch_new_emails(
+        self,
+        since_hours: int = 24,
+        limit: int = 50
+    ) -> List[Dict]:
+        """
+        Fetch new emails from Gmail
+        
+        Args:
+            since_hours: Hours to look back for messages
+            limit: Maximum number of messages to fetch
+        
+        Returns:
+            List of email dictionaries
+        """
+        # Build Gmail search query
+        if since_hours == 24:
+            query = "is:unread OR newer_than:1d"
+        else:
+            query = f"newer_than:{since_hours}h"
+        
+        # List messages
+        messages_result = await self.list_messages(query=query, max_results=limit)
+        message_ids = [msg["id"] for msg in messages_result.get("messages", [])]
+        
+        emails = []
+        for msg_id in message_ids:
+            try:
+                message = await self.get_message(msg_id, format="full")
+                emails.append(self._parse_message(message))
+            except Exception as e:
+                print(f"Error parsing message {msg_id}: {e}")
+                continue
+        
+        return emails
+    
+    def _parse_message(self, message: Dict) -> Dict:
+        """Parse Gmail API message format into our standard format"""
+        payload = message.get("payload", {})
+        headers = {h["name"].lower(): h["value"] for h in payload.get("headers", [])}
+        
+        # Extract email address from From header
+        from_header = headers.get("from", "")
+        sender_email = self._extract_email_address(from_header)
+        sender_name = self._extract_name(from_header)
+        
+        # Get body
+        body = self._extract_body(payload)
+        
+        # Parse date
+        date_str = headers.get("date", "")
+        try:
+            from email.utils import parsedate_to_datetime
+            received_at = parsedate_to_datetime(date_str)
+        except:
+            received_at = datetime.now()
+        
+        return {
+            "channel_message_id": message.get("id"),
+            "subject": headers.get("subject", ""),
+            "sender_name": sender_name or sender_email.split("@")[0],
+            "sender_contact": sender_email,
+            "body": body,
+            "received_at": received_at,
+            "raw_from": from_header,
+        }
+    
+    def _extract_email_address(self, from_header: str) -> str:
+        """Extract email address from From header"""
+        import re
+        # Match email in <email@domain.com> format or plain email
+        match = re.search(r'<(.+?)>|([^\s<>]+@[^\s<>]+)', from_header)
+        if match:
+            return match.group(1) or match.group(2)
+        return from_header.strip()
+    
+    def _extract_name(self, from_header: str) -> str:
+        """Extract name from From header"""
+        import re
+        match = re.match(r'(.+?)\s*<', from_header)
+        if match:
+            name = match.group(1).strip().strip('"')
+            return name
+        return ""
+    
+    def _extract_body(self, payload: Dict) -> str:
+        """Extract body text from Gmail message payload"""
+        body = ""
+        
+        # Check if message has parts
+        parts = payload.get("parts", [])
+        if parts:
+            # Look for plain text part
+            for part in parts:
+                mime_type = part.get("mimeType", "")
+                if mime_type == "text/plain":
+                    data = part.get("body", {}).get("data")
+                    if data:
+                        body = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+                        break
+                elif mime_type == "text/html" and not body:
+                    data = part.get("body", {}).get("data")
+                    if data:
+                        html = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+                        # Simple HTML stripping
+                        import re
+                        body = re.sub(r'<[^>]+>', '', html)
+        else:
+            # Single part message
+            mime_type = payload.get("mimeType", "")
+            if mime_type == "text/plain":
+                data = payload.get("body", {}).get("data")
+                if data:
+                    body = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+        
+        return body.strip()
+

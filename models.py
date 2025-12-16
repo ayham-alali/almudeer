@@ -43,7 +43,7 @@ async def init_enhanced_tables():
     """Initialize enhanced tables for Email & Telegram integration"""
     async with get_db() as db:
         
-        # Email Configuration per license
+        # Email Configuration per license (OAuth 2.0 for Gmail)
         await execute_sql(db, """
             CREATE TABLE IF NOT EXISTS email_configs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,7 +53,12 @@ async def init_enhanced_tables():
                 imap_port INTEGER DEFAULT 993,
                 smtp_server TEXT NOT NULL,
                 smtp_port INTEGER DEFAULT 587,
-                password_encrypted TEXT NOT NULL,
+                -- OAuth 2.0 tokens (for Gmail)
+                access_token_encrypted TEXT,
+                refresh_token_encrypted TEXT,
+                token_expires_at TIMESTAMP,
+                -- Legacy password field (deprecated, kept for migration)
+                password_encrypted TEXT,
                 is_active BOOLEAN DEFAULT TRUE,
                 auto_reply_enabled BOOLEAN DEFAULT FALSE,
                 check_interval_minutes INTEGER DEFAULT 5,
@@ -62,6 +67,28 @@ async def init_enhanced_tables():
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
         """)
+        
+        # Add OAuth columns if they don't exist (migration for existing databases)
+        try:
+            await execute_sql(db, """
+                ALTER TABLE email_configs ADD COLUMN access_token_encrypted TEXT
+            """)
+        except:
+            pass  # Column already exists
+        
+        try:
+            await execute_sql(db, """
+                ALTER TABLE email_configs ADD COLUMN refresh_token_encrypted TEXT
+            """)
+        except:
+            pass  # Column already exists
+        
+        try:
+            await execute_sql(db, """
+                ALTER TABLE email_configs ADD COLUMN token_expires_at TIMESTAMP
+            """)
+        except:
+            pass  # Column already exists
         
         # Telegram Bot Configuration per license
         await execute_sql(db, """
@@ -164,17 +191,20 @@ async def init_enhanced_tables():
 async def save_email_config(
     license_id: int,
     email_address: str,
-    imap_server: str,
-    smtp_server: str,
-    password: str,
+    access_token: str = None,
+    refresh_token: str = None,
+    token_expires_at: datetime = None,
+    imap_server: str = "imap.gmail.com",
+    smtp_server: str = "smtp.gmail.com",
     imap_port: int = 993,
     smtp_port: int = 587,
     auto_reply: bool = False,
     check_interval: int = 5
 ) -> int:
-    """Save or update email configuration (SQLite & PostgreSQL compatible)."""
-    # Simple XOR encryption (for demo - use proper encryption in production!)
-    encrypted_password = simple_encrypt(password)
+    """Save or update email configuration with OAuth 2.0 tokens (Gmail only)."""
+    # Encrypt OAuth tokens
+    encrypted_access_token = simple_encrypt(access_token) if access_token else None
+    encrypted_refresh_token = simple_encrypt(refresh_token) if refresh_token else None
 
     async with get_db() as db:
         # Check if config exists
@@ -190,7 +220,9 @@ async def save_email_config(
                 """
                 UPDATE email_configs SET
                     email_address = ?, imap_server = ?, imap_port = ?,
-                    smtp_server = ?, smtp_port = ?, password_encrypted = ?,
+                    smtp_server = ?, smtp_port = ?,
+                    access_token_encrypted = ?, refresh_token_encrypted = ?,
+                    token_expires_at = ?,
                     auto_reply_enabled = ?, check_interval_minutes = ?
                 WHERE license_key_id = ?
                 """,
@@ -200,7 +232,9 @@ async def save_email_config(
                     imap_port,
                     smtp_server,
                     smtp_port,
-                    encrypted_password,
+                    encrypted_access_token,
+                    encrypted_refresh_token,
+                    token_expires_at.isoformat() if token_expires_at else None,
                     auto_reply,
                     check_interval,
                     license_id,
@@ -214,9 +248,9 @@ async def save_email_config(
             """
             INSERT INTO email_configs 
                 (license_key_id, email_address, imap_server, imap_port,
-                 smtp_server, smtp_port, password_encrypted, auto_reply_enabled,
-                 check_interval_minutes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 smtp_server, smtp_port, access_token_encrypted, refresh_token_encrypted,
+                 token_expires_at, auto_reply_enabled, check_interval_minutes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 license_id,
@@ -225,7 +259,9 @@ async def save_email_config(
                 imap_port,
                 smtp_server,
                 smtp_port,
-                encrypted_password,
+                encrypted_access_token,
+                encrypted_refresh_token,
+                token_expires_at.isoformat() if token_expires_at else None,
                 auto_reply,
                 check_interval,
             ],
@@ -253,13 +289,66 @@ async def get_email_config(license_id: int) -> Optional[dict]:
             [license_id],
         )
         if row:
-            # Don't return the actual password
-            row.pop("password_encrypted", None)
+            # Don't return encrypted tokens
+            row.pop("access_token_encrypted", None)
+            row.pop("refresh_token_encrypted", None)
+            row.pop("password_encrypted", None)  # Legacy field
         return row
 
 
+async def get_email_oauth_tokens(license_id: int) -> Optional[dict]:
+    """Get decrypted OAuth tokens for email (internal use only)."""
+    async with get_db() as db:
+        row = await fetch_one(
+            db,
+            """SELECT access_token_encrypted, refresh_token_encrypted, token_expires_at
+               FROM email_configs WHERE license_key_id = ?""",
+            [license_id],
+        )
+        if row:
+            result = {}
+            if row.get("access_token_encrypted"):
+                result["access_token"] = simple_decrypt(row["access_token_encrypted"])
+            if row.get("refresh_token_encrypted"):
+                result["refresh_token"] = simple_decrypt(row["refresh_token_encrypted"])
+            if row.get("token_expires_at"):
+                result["token_expires_at"] = row["token_expires_at"]
+            return result if result else None
+    return None
+
+
+async def update_email_config_settings(
+    license_id: int,
+    auto_reply: bool = None,
+    check_interval: int = None
+) -> bool:
+    """Update email configuration settings without changing tokens"""
+    async with get_db() as db:
+        updates = []
+        params = []
+        
+        if auto_reply is not None:
+            updates.append("auto_reply_enabled = ?")
+            params.append(auto_reply)
+        
+        if check_interval is not None:
+            updates.append("check_interval_minutes = ?")
+            params.append(check_interval)
+        
+        if not updates:
+            return False
+        
+        params.append(license_id)
+        query = f"UPDATE email_configs SET {', '.join(updates)} WHERE license_key_id = ?"
+        
+        await execute_sql(db, query, params)
+        await commit_db(db)
+        return True
+
+
+# Deprecated - kept for backward compatibility
 async def get_email_password(license_id: int) -> Optional[str]:
-    """Get decrypted email password (internal use only)."""
+    """Get decrypted email password (deprecated - use OAuth tokens instead)."""
     async with get_db() as db:
         row = await fetch_one(
             db,

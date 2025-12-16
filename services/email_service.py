@@ -391,35 +391,14 @@ class EmailService:
         return True, "تم الاتصال بنجاح"
 
 
-# Common email provider settings
+# Gmail provider settings (OAuth 2.0 only)
 EMAIL_PROVIDERS = {
     "gmail": {
         "imap_server": "imap.gmail.com",
         "smtp_server": "smtp.gmail.com",
         "imap_port": 993,
         "smtp_port": 587,
-        "note": "يجب تفعيل 'كلمات مرور التطبيقات' في حساب Google"
-    },
-    "outlook": {
-        "imap_server": "outlook.office365.com",
-        "smtp_server": "smtp.office365.com",
-        "imap_port": 993,
-        "smtp_port": 587,
-        "note": "يعمل مع Outlook و Hotmail"
-    },
-    "yahoo": {
-        "imap_server": "imap.mail.yahoo.com",
-        "smtp_server": "smtp.mail.yahoo.com",
-        "imap_port": 993,
-        "smtp_port": 587,
-        "note": "يجب إنشاء كلمة مرور للتطبيق"
-    },
-    "custom": {
-        "imap_server": "",
-        "smtp_server": "",
-        "imap_port": 993,
-        "smtp_port": 587,
-        "note": "أدخل إعدادات الخادم يدوياً"
+        "note": "يتطلب تسجيل الدخول عبر Google OAuth"
     }
 }
 

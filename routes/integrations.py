@@ -11,7 +11,8 @@ from datetime import datetime
 from models import (
     save_email_config,
     get_email_config,
-    get_email_password,
+    get_email_oauth_tokens,
+    update_email_config_settings,
     save_telegram_config,
     get_telegram_config,
     save_inbox_message,
@@ -24,7 +25,8 @@ from models import (
     get_pending_outbox,
     init_enhanced_tables,
 )
-from services import EmailService, EMAIL_PROVIDERS, TelegramService, TELEGRAM_SETUP_GUIDE
+from services import EmailService, EMAIL_PROVIDERS, TelegramService, TELEGRAM_SETUP_GUIDE, GmailOAuthService, GmailAPIService
+from models import get_email_oauth_tokens
 from agent import process_message
 from workers import get_worker_status
 from security import sanitize_email, sanitize_string
@@ -36,13 +38,8 @@ router = APIRouter(prefix="/api/integrations", tags=["Integrations"])
 # ============ Schemas ============
 
 class EmailConfigRequest(BaseModel):
-    provider: str = Field(..., description="gmail, outlook, yahoo, custom")
-    email_address: str
-    password: str
-    imap_server: Optional[str] = None
-    smtp_server: Optional[str] = None
-    imap_port: Optional[int] = 993
-    smtp_port: Optional[int] = 587
+    provider: str = Field(..., description="gmail (OAuth 2.0 only)")
+    email_address: str  # Will be set from OAuth token
     auto_reply_enabled: bool = False
     check_interval_minutes: int = 5
 
@@ -74,12 +71,96 @@ class InboxMessageResponse(BaseModel):
     created_at: str
 
 
-# ============ Email Routes ============
+# ============ Email Routes (Gmail OAuth 2.0) ============
 
 @router.get("/email/providers")
 async def get_email_providers():
-    """Get list of supported email providers"""
+    """Get list of supported email providers (Gmail only)"""
     return {"providers": EMAIL_PROVIDERS}
+
+
+@router.get("/email/oauth/authorize")
+async def authorize_gmail(license: dict = Depends(get_license_from_header)):
+    """Get OAuth 2.0 authorization URL for Gmail"""
+    try:
+        oauth_service = GmailOAuthService()
+        state = GmailOAuthService.encode_state(license["license_id"])
+        auth_url = oauth_service.get_authorization_url(state)
+        
+        return {
+            "authorization_url": auth_url,
+            "state": state,
+            "message": "يرجى فتح هذا الرابط وتسجيل الدخول بحساب Google الخاص بك"
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=f"خطأ في إعداد OAuth: {str(e)}")
+
+
+@router.get("/email/oauth/callback")
+async def gmail_oauth_callback(
+    code: str,
+    state: str,
+    request: Request
+):
+    """Handle OAuth 2.0 callback from Google"""
+    try:
+        # Decode state to get license_id
+        state_data = GmailOAuthService.decode_state(state)
+        license_id = state_data.get("license_id")
+        
+        if not license_id:
+            raise HTTPException(status_code=400, detail="حالة غير صالحة")
+        
+        # Exchange code for tokens
+        oauth_service = GmailOAuthService()
+        tokens = await oauth_service.exchange_code_for_tokens(code)
+        
+        access_token = tokens["access_token"]
+        refresh_token = tokens.get("refresh_token")
+        expires_in = tokens.get("expires_in", 3600)
+        
+        # Calculate expiration time
+        from datetime import datetime, timedelta
+        token_expires_at = datetime.now() + timedelta(seconds=expires_in)
+        
+        # Get user email from token
+        token_info = await oauth_service.get_token_info(access_token)
+        email_address = token_info.get("email")
+        
+        if not email_address:
+            raise HTTPException(status_code=400, detail="تعذر الحصول على عنوان البريد الإلكتروني")
+        
+        # Test Gmail API connection
+        gmail_service = GmailAPIService(access_token, refresh_token, oauth_service)
+        profile = await gmail_service.get_profile()
+        verified_email = profile.get("emailAddress")
+        
+        if verified_email != email_address:
+            email_address = verified_email  # Use verified email from profile
+        
+        # Save configuration
+        config_id = await save_email_config(
+            license_id=license_id,
+            email_address=email_address,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            token_expires_at=token_expires_at,
+            auto_reply=False,  # Default
+            check_interval=5  # Default
+        )
+        
+        # Return success page (frontend will handle redirect)
+        return {
+            "success": True,
+            "message": "تم ربط حساب Gmail بنجاح",
+            "email": email_address,
+            "config_id": config_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"فشل ربط Gmail: {str(e)}")
 
 
 @router.post("/email/config")
@@ -87,56 +168,25 @@ async def configure_email(
     config: EmailConfigRequest,
     license: dict = Depends(get_license_from_header)
 ):
-    """Configure email integration"""
-    # Sanitize email input early (keeps response shape identical)
-    sanitized_email = sanitize_email(config.email_address)
-    if not sanitized_email:
-        raise HTTPException(status_code=400, detail="البريد الإلكتروني غير صالح")
-
-    # Get server settings from provider or use custom
-    if config.provider not in EMAIL_PROVIDERS:
-        raise HTTPException(status_code=400, detail="مزود البريد غير مدعوم")
-    provider = EMAIL_PROVIDERS[config.provider]
+    """Update email configuration settings (after OAuth)"""
+    if config.provider != "gmail":
+        raise HTTPException(status_code=400, detail="يتم دعم Gmail فقط عبر OAuth 2.0")
     
-    imap_server = config.imap_server or provider["imap_server"]
-    smtp_server = config.smtp_server or provider["smtp_server"]
-    imap_port = config.imap_port or provider["imap_port"]
-    smtp_port = config.smtp_port or provider["smtp_port"]
+    # Get existing config
+    existing_config = await get_email_config(license["license_id"])
+    if not existing_config:
+        raise HTTPException(status_code=404, detail="لم يتم ربط حساب Gmail بعد. يرجى استخدام OAuth أولاً.")
     
-    if not imap_server or not smtp_server:
-        raise HTTPException(status_code=400, detail="يجب تحديد خادم IMAP و SMTP")
-    
-    # Test connection first
-    email_service = EmailService(
-        email_address=sanitized_email,
-        password=config.password,
-        imap_server=imap_server,
-        smtp_server=smtp_server,
-        imap_port=imap_port,
-        smtp_port=smtp_port
-    )
-    
-    success, message = await email_service.test_connection()
-    if not success:
-        raise HTTPException(status_code=400, detail=f"فشل الاتصال: {message}")
-    
-    # Save configuration
-    config_id = await save_email_config(
+    # Update only settings (not tokens) using the helper function
+    await update_email_config_settings(
         license_id=license["license_id"],
-        email_address=sanitized_email,
-        imap_server=imap_server,
-        smtp_server=smtp_server,
-        password=config.password,
-        imap_port=imap_port,
-        smtp_port=smtp_port,
         auto_reply=config.auto_reply_enabled,
         check_interval=config.check_interval_minutes
     )
     
     return {
         "success": True,
-        "message": "تم حفظ إعدادات البريد الإلكتروني بنجاح",
-        "config_id": config_id
+        "message": "تم تحديث إعدادات البريد الإلكتروني بنجاح"
     }
 
 
@@ -148,28 +198,35 @@ async def get_email_configuration(license: dict = Depends(get_license_from_heade
 
 
 @router.post("/email/test")
-async def test_email_connection(
-    config: EmailConfigRequest,
-    license: dict = Depends(get_license_from_header)
-):
-    """Test email connection without saving"""
-    provider = EMAIL_PROVIDERS.get(config.provider, EMAIL_PROVIDERS["custom"])
-
-    sanitized_email = sanitize_email(config.email_address)
-    if not sanitized_email:
-        raise HTTPException(status_code=400, detail="البريد الإلكتروني غير صالح")
+async def test_email_connection(license: dict = Depends(get_license_from_header)):
+    """Test Gmail connection using OAuth tokens"""
+    tokens = await get_email_oauth_tokens(license["license_id"])
     
-    email_service = EmailService(
-        email_address=sanitized_email,
-        password=config.password,
-        imap_server=config.imap_server or provider["imap_server"],
-        smtp_server=config.smtp_server or provider["smtp_server"],
-        imap_port=config.imap_port or provider["imap_port"],
-        smtp_port=config.smtp_port or provider["smtp_port"]
-    )
+    if not tokens or not tokens.get("access_token"):
+        raise HTTPException(status_code=404, detail="لم يتم ربط حساب Gmail بعد. يرجى استخدام OAuth أولاً.")
     
-    success, message = await email_service.test_connection()
-    return {"success": success, "message": message}
+    try:
+        oauth_service = GmailOAuthService()
+        gmail_service = GmailAPIService(
+            tokens["access_token"],
+            tokens.get("refresh_token"),
+            oauth_service
+        )
+        
+        # Test by getting profile
+        profile = await gmail_service.get_profile()
+        email = profile.get("emailAddress")
+        
+        return {
+            "success": True,
+            "message": f"الاتصال ناجح مع {email}",
+            "email": email
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"فشل الاتصال: {str(e)}"
+        }
 
 
 @router.post("/email/fetch")
@@ -177,56 +234,62 @@ async def fetch_emails(
     background_tasks: BackgroundTasks,
     license: dict = Depends(get_license_from_header)
 ):
-    """Manually trigger email fetch"""
+    """Manually trigger email fetch using Gmail API"""
     config = await get_email_config(license["license_id"])
     if not config:
         raise HTTPException(status_code=400, detail="لم يتم تكوين البريد الإلكتروني")
     
-    password = await get_email_password(license["license_id"])
+    tokens = await get_email_oauth_tokens(license["license_id"])
+    if not tokens or not tokens.get("access_token"):
+        raise HTTPException(status_code=400, detail="لم يتم ربط حساب Gmail بعد. يرجى استخدام OAuth أولاً.")
     
-    email_service = EmailService(
-        email_address=config["email_address"],
-        password=password,
-        imap_server=config["imap_server"],
-        smtp_server=config["smtp_server"],
-        imap_port=config["imap_port"],
-        smtp_port=config["smtp_port"]
-    )
-    
-    # Fetch emails
-    emails = await email_service.fetch_new_emails(since_hours=24)
-    
-    # Process each email
-    processed = 0
-    for email_data in emails:
-        # Save to inbox
-        msg_id = await save_inbox_message(
-            license_id=license["license_id"],
-            channel="email",
-            body=email_data["body"],
-            sender_name=email_data["sender_name"],
-            sender_contact=email_data["sender_contact"],
-            subject=email_data["subject"],
-            channel_message_id=email_data["channel_message_id"],
-            received_at=email_data["received_at"]
+    try:
+        oauth_service = GmailOAuthService()
+        gmail_service = GmailAPIService(
+            tokens["access_token"],
+            tokens.get("refresh_token"),
+            oauth_service
         )
         
-        # Analyze with AI in background
-        background_tasks.add_task(
-            analyze_inbox_message,
-            msg_id,
-            email_data["body"],
-            license["license_id"],
-            config.get("auto_reply_enabled", False)
+        # Fetch emails using Gmail API
+        emails = await gmail_service.fetch_new_emails(
+            since_hours=24,
+            limit=50
         )
         
-        processed += 1
-    
-    return {
-        "success": True,
-        "message": f"تم جلب {processed} رسالة جديدة",
-        "count": processed
-    }
+        # Process each email
+        processed = 0
+        for email_data in emails:
+            # Save to inbox
+            msg_id = await save_inbox_message(
+                license_id=license["license_id"],
+                channel="email",
+                body=email_data["body"],
+                sender_name=email_data["sender_name"],
+                sender_contact=email_data["sender_contact"],
+                subject=email_data.get("subject", ""),
+                channel_message_id=email_data["channel_message_id"],
+                received_at=email_data["received_at"]
+            )
+            
+            # Analyze with AI in background
+            background_tasks.add_task(
+                analyze_inbox_message,
+                msg_id,
+                email_data["body"],
+                license["license_id"],
+                config.get("auto_reply_enabled", False)
+            )
+            
+            processed += 1
+        
+        return {
+            "success": True,
+            "message": f"تم جلب {processed} رسالة جديدة",
+            "count": processed
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"خطأ في جلب الرسائل: {str(e)}")
 
 
 # ============ Telegram Routes ============
@@ -522,44 +585,42 @@ async def send_approved_message(outbox_id: int, license_id: int):
             return
         
         if message["channel"] == "email":
-            # Send via email
-            config = await get_email_config(license_id)
-            password = await get_email_password(license_id)
+            # Send via Gmail API using OAuth
+            tokens = await get_email_oauth_tokens(license_id)
             
-            if config and password:
-                email_service = EmailService(
-                    email_address=config["email_address"],
-                    password=password,
-                    imap_server=config["imap_server"],
-                    smtp_server=config["smtp_server"],
-                    imap_port=config["imap_port"],
-                    smtp_port=config["smtp_port"]
+            if tokens and tokens.get("access_token"):
+                oauth_service = GmailOAuthService()
+                gmail_service = GmailAPIService(
+                    tokens["access_token"],
+                    tokens.get("refresh_token"),
+                    oauth_service
                 )
                 
-                await email_service.send_email(
+                await gmail_service.send_message(
                     to_email=message["recipient_email"],
                     subject=message.get("subject", "رد على رسالتك"),
-                    body=message["body"]
+                    body=message["body"],
+                    reply_to_message_id=message.get("inbox_message_id")  # For threading
                 )
                 
                 await mark_outbox_sent(outbox_id)
         
         elif message["channel"] == "telegram":
-            # Send via Telegram
-            from aiosqlite import connect
-            async with connect("almudeer.db") as db:
-                async with db.execute(
+            # Send via Telegram - need to query bot_token directly
+            from db_helper import get_db, fetch_one
+            async with get_db() as db:
+                row = await fetch_one(
+                    db,
                     "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?",
-                    (license_id,)
-                ) as cursor:
-                    row = await cursor.fetchone()
-                    if row:
-                        telegram_service = TelegramService(row[0])
-                        await telegram_service.send_message(
-                            chat_id=message["recipient_id"],
-                            text=message["body"]
-                        )
-                        await mark_outbox_sent(outbox_id)
+                    [license_id],
+                )
+                if row and row.get("bot_token"):
+                    telegram_service = TelegramService(row["bot_token"])
+                    await telegram_service.send_message(
+                        chat_id=message["recipient_id"],
+                        text=message["body"]
+                    )
+                    await mark_outbox_sent(outbox_id)
     
     except Exception as e:
         print(f"Error sending message {outbox_id}: {e}")

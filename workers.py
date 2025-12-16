@@ -32,13 +32,14 @@ else:
     POSTGRES_AVAILABLE = False
 
 # Import services
-from services.email_service import EmailService
 from services.telegram_service import TelegramService
 from services.whatsapp_service import WhatsAppService
+from services.gmail_oauth_service import GmailOAuthService
+from services.gmail_api_service import GmailAPIService
 
 # Import models
 from models import (
-    get_email_config, get_email_password,
+    get_email_config, get_email_oauth_tokens,
     get_telegram_config,
     get_whatsapp_config,
     save_inbox_message,
@@ -149,7 +150,7 @@ class MessagePoller:
         return list(set(licenses))  # Remove duplicates
     
     async def _poll_email(self, license_id: int):
-        """Poll email for new messages"""
+        """Poll email for new messages using Gmail API"""
         try:
             config = await get_email_config(license_id)
             if not config or not config.get("is_active"):
@@ -164,22 +165,22 @@ class MessagePoller:
                 if datetime.now() - last_checked_dt < timedelta(minutes=check_interval):
                     return  # Too soon to check again
             
-            password = await get_email_password(license_id)
-            if not password:
-                logger.warning(f"No password found for license {license_id}")
+            # Get OAuth tokens
+            tokens = await get_email_oauth_tokens(license_id)
+            if not tokens or not tokens.get("access_token"):
+                logger.warning(f"No OAuth tokens found for license {license_id}")
                 return
             
-            email_service = EmailService(
-                email_address=config["email_address"],
-                password=password,
-                imap_server=config["imap_server"],
-                smtp_server=config["smtp_server"],
-                imap_port=config["imap_port"],
-                smtp_port=config["smtp_port"]
+            # Initialize Gmail API service
+            oauth_service = GmailOAuthService()
+            gmail_service = GmailAPIService(
+                tokens["access_token"],
+                tokens.get("refresh_token"),
+                oauth_service
             )
             
-            # Fetch new emails
-            emails = await email_service.fetch_new_emails(since_hours=24, limit=50)
+            # Fetch new emails using Gmail API
+            emails = await gmail_service.fetch_new_emails(since_hours=24, limit=50)
             
             # Get recent messages for duplicate detection
             recent_messages = await get_inbox_messages(license_id, limit=50)
@@ -360,40 +361,45 @@ class MessagePoller:
             message = dict(row)
             
             if channel == "email":
-                config = await get_email_config(license_id)
-                password = await get_email_password(license_id)
+                # Send via Gmail API using OAuth
+                tokens = await get_email_oauth_tokens(license_id)
                 
-                if config and password:
-                    email_service = EmailService(
-                        email_address=config["email_address"],
-                        password=password,
-                        imap_server=config["imap_server"],
-                        smtp_server=config["smtp_server"],
-                        imap_port=config["imap_port"],
-                        smtp_port=config["smtp_port"]
+                if tokens and tokens.get("access_token"):
+                    oauth_service = GmailOAuthService()
+                    gmail_service = GmailAPIService(
+                        tokens["access_token"],
+                        tokens.get("refresh_token"),
+                        oauth_service
                     )
                     
-                    await email_service.send_email(
+                    await gmail_service.send_message(
                         to_email=message["recipient_email"],
                         subject=message.get("subject", "رد على رسالتك"),
-                        body=message["body"]
+                        body=message["body"],
+                        reply_to_message_id=message.get("inbox_message_id")
                     )
                     
                     await mark_outbox_sent(outbox_id)
                     logger.info(f"Sent email reply for outbox {outbox_id}")
             
             elif channel == "telegram":
-                config = await get_telegram_config(license_id)
-                
-                if config:
-                    telegram_service = TelegramService(config["bot_token"])
-                    await telegram_service.send_message(
-                        chat_id=message["recipient_id"],
-                        text=message["body"]
+                # Get bot_token directly from database
+                from db_helper import get_db, fetch_one
+                async with get_db() as db:
+                    row = await fetch_one(
+                        db,
+                        "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?",
+                        [license_id],
                     )
-                    
-                    await mark_outbox_sent(outbox_id)
-                    logger.info(f"Sent Telegram reply for outbox {outbox_id}")
+                    if row and row.get("bot_token"):
+                        telegram_service = TelegramService(row["bot_token"])
+                        await telegram_service.send_message(
+                            chat_id=message["recipient_id"],
+                            text=message["body"]
+                        )
+                        
+                        await mark_outbox_sent(outbox_id)
+                        logger.info(f"Sent Telegram reply for outbox {outbox_id}")
             
             elif channel == "whatsapp":
                 config = await get_whatsapp_config(license_id)

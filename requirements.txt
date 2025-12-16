@@ -17,6 +17,12 @@ langchain-community>=0.0.13
 # For local LLM (Ollama) or free API alternatives
 httpx==0.26.0
 
+# Gmail OAuth 2.0 and API
+google-auth==2.27.0
+google-auth-oauthlib==1.2.0
+google-auth-httplib2==0.2.0
+google-api-python-client==2.108.0
+
 # Validation & Settings
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
