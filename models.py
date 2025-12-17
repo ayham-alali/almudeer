@@ -644,7 +644,7 @@ async def save_inbox_message(
     """Save incoming message to inbox (SQLite & PostgreSQL compatible)."""
     from db_helper import DB_TYPE  # local import to avoid circulars
 
-    # Normalize received_at to a timezone-aware UTC datetime
+    # Normalize received_at to a UTC datetime; asyncpg prefers naive UTC
     if isinstance(received_at, str):
         try:
             received = datetime.fromisoformat(received_at)
@@ -655,12 +655,10 @@ async def save_inbox_message(
     else:
         received = datetime.utcnow()
 
-    if received.tzinfo is None:
-        received = received.replace(tzinfo=timezone.utc)
-    else:
-        received = received.astimezone(timezone.utc)
+    if received.tzinfo is not None:
+        received = received.astimezone(timezone.utc).replace(tzinfo=None)
 
-    # For PostgreSQL (asyncpg), pass a real datetime object.
+    # For PostgreSQL (asyncpg), pass a naive UTC datetime.
     # For SQLite, use ISO string.
     ts_value: Any
     if DB_TYPE == "postgresql":

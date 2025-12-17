@@ -51,9 +51,10 @@ def _normalize_params(params: Iterable[Any] | None):
     """
     Normalize parameters before sending to the database.
 
-    For PostgreSQL, convert naive datetimes to timezone-aware UTC datetimes
-    to avoid 'can't subtract offset-naive and offset-aware datetimes' errors
-    inside asyncpg's adapters.
+    For PostgreSQL, asyncpg expects naive datetimes in UTC. To avoid
+    'can't subtract offset-naive and offset-aware datetimes' errors,
+    we always convert aware datetimes to naive UTC and leave naive
+    datetimes as-is (assuming they are already UTC).
     """
     if DB_TYPE != "postgresql" or not params:
         return params
@@ -61,10 +62,13 @@ def _normalize_params(params: Iterable[Any] | None):
     normalized: List[Any] = []
     for p in params:
         if isinstance(p, datetime):
-            if p.tzinfo is None:
-                normalized.append(p.replace(tzinfo=timezone.utc))
+            if p.tzinfo is not None:
+                # Convert to UTC and drop tzinfo (naive UTC)
+                p_utc = p.astimezone(timezone.utc).replace(tzinfo=None)
+                normalized.append(p_utc)
             else:
-                normalized.append(p.astimezone(timezone.utc))
+                # Assume already UTC naive
+                normalized.append(p)
         else:
             normalized.append(p)
     return normalized
