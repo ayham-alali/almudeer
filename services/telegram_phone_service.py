@@ -125,25 +125,32 @@ class TelegramPhoneService:
                 # Request code and capture phone_code_hash
                 sent = await client.send_code_request(phone_number)
                 
-                # Persist phone_code_hash so that any worker can verify later
+                # Persist phone_code_hash so that any worker can verify later (best-effort)
+                phone_code_hash = getattr(sent, "phone_code_hash", None)
                 try:
                     with open(meta_path, "w", encoding="utf-8") as f:
                         json.dump(
                             {
                                 "phone_number": phone_number,
-                                "phone_code_hash": getattr(sent, "phone_code_hash", None),
+                                "phone_code_hash": phone_code_hash,
                                 "created_at": datetime.now().isoformat(),
                             },
                             f,
                             ensure_ascii=False,
                         )
                 except Exception:
-                    # Best-effort; if this fails, verification will fail with a clear error
                     pass
-                
-                # We can safely disconnect here; verify step will reopen the session file
-                await client.disconnect()
-                
+
+                # Also keep client in memory so that the same process can verify
+                # without needing to reconstruct session state.
+                self._pending_logins[phone_number] = {
+                    "phone_number": phone_number,
+                    "session_path": session_path,
+                    "created_at": datetime.now(),
+                    "client": client,
+                    "phone_code_hash": phone_code_hash,
+                }
+
                 return {
                     "success": True,
                     "message": f"تم إرسال كود التحقق إلى Telegram الخاص برقم {phone_number}",
@@ -232,29 +239,35 @@ class TelegramPhoneService:
         if not phone_number.startswith('+'):
             phone_number = '+' + phone_number
         
-        # Use deterministic session + meta files (independent of in‑memory state)
-        session_path = self._get_session_path(phone_number)
-        meta_path = self._get_meta_path(phone_number)
-        
-        if not os.path.exists(session_path) or not os.path.exists(meta_path):
-            # No active login request found for this phone
-            raise ValueError("انتهت صلاحية طلب تسجيل الدخول. يرجى طلب كود جديد")
-        
-        # Load phone_code_hash from meta file
-        try:
-            with open(meta_path, "r", encoding="utf-8") as f:
-                meta = json.load(f)
-            phone_code_hash = meta.get("phone_code_hash")
-            if not phone_code_hash:
-                raise ValueError("بيانات التحقق غير مكتملة، يرجى طلب كود جديد")
-        except Exception as e:
-            raise ValueError("تعذر قراءة بيانات التحقق، يرجى طلب كود جديد") from e
-        
-        # Open client from session file
-        client: Optional[TelegramClient] = None
-        try:
+        # Prefer in-memory pending login (same process); fall back to session/meta files.
+        pending = self._pending_logins.get(phone_number)
+        if pending:
+            session_path = pending.get("session_path") or self._get_session_path(phone_number)
+            phone_code_hash = pending.get("phone_code_hash")
+            client: Optional[TelegramClient] = pending.get("client")
+        else:
+            session_path = self._get_session_path(phone_number)
+            meta_path = self._get_meta_path(phone_number)
+            
+            if not os.path.exists(session_path) or not os.path.exists(meta_path):
+                # No active login request found for this phone
+                raise ValueError("انتهت صلاحية طلب تسجيل الدخول. يرجى طلب كود جديد")
+            
+            # Load phone_code_hash from meta file
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                phone_code_hash = meta.get("phone_code_hash")
+                if not phone_code_hash:
+                    raise ValueError("بيانات التحقق غير مكتملة، يرجى طلب كود جديد")
+            except Exception as e:
+                raise ValueError("تعذر قراءة بيانات التحقق، يرجى طلب كود جديد") from e
+            
+            # Open client from session file
             client = TelegramClient(session_path, int(self.api_id), self.api_hash)
             await client.connect()
+
+        try:
             if await client.is_user_authorized():
                 # Already authorized, convert file session to string
                 client.session.save()
@@ -352,11 +365,14 @@ class TelegramPhoneService:
                     os.unlink(session_path)
                 except Exception:
                     pass
+            meta_path = self._get_meta_path(phone_number)
             if os.path.exists(meta_path):
                 try:
                     os.unlink(meta_path)
                 except Exception:
                     pass
+            # Remove pending in-memory login if exists
+            self._pending_logins.pop(phone_number, None)
             
             return session_string, {
                 "id": me.id,
@@ -377,11 +393,14 @@ class TelegramPhoneService:
                     os.unlink(session_path)
                 except Exception:
                     pass
+            meta_path = self._get_meta_path(phone_number)
             if os.path.exists(meta_path):
                 try:
                     os.unlink(meta_path)
                 except Exception:
                     pass
+            # Remove pending in-memory login if exists
+            self._pending_logins.pop(phone_number, None)
             
             if isinstance(e, ValueError):
                 raise
