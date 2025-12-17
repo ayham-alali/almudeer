@@ -9,11 +9,11 @@ uvicorn[standard]==0.27.0
 # Database
 aiosqlite==0.19.0
 
-# LangGraph & LangChain (pinned for stability)
-langgraph==0.0.26
-langchain==0.1.0
-langchain-core==0.1.25
-langchain-community==0.0.13
+# LangGraph & LangChain (compatible versions)
+langgraph>=0.0.20
+langchain>=0.1.0
+langchain-core>=0.1.0
+langchain-community>=0.0.10
 
 # For local LLM (Ollama) or free API alternatives
 httpx==0.26.0
