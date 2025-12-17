@@ -289,9 +289,10 @@ class TelegramPhoneService:
                     "username": me.username
                 }
             
-            # Sign in with code (using stored phone_code_hash)
+            # Sign in with code (using stored phone_code_hash).
+            # We don't need to pass the phone again because it's already bound in the session.
             try:
-                await client.sign_in(phone=phone_number, code=code, phone_code_hash=phone_code_hash)
+                await client.sign_in(code=code, phone_code_hash=phone_code_hash)
             except SessionPasswordNeededError:
                 # 2FA enabled - request password
                 if not password:
