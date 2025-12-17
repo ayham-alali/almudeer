@@ -56,13 +56,17 @@ async def get_export_data(license_id: int, start: datetime, end: datetime):
         "crm_entries": [],
     }
 
-    # For PostgreSQL we pass real date objects; for SQLite we use ISO strings.
+    # For PostgreSQL we pass real date/datetime objects; for SQLite we use ISO strings.
     if DB_TYPE == "postgresql":
         date_start = start.date()
         date_end = end.date()
+        ts_start = start
+        ts_end = end
     else:
         date_start = start.date().isoformat()
         date_end = end.date().isoformat()
+        ts_start = start.isoformat()
+        ts_end = end.isoformat()
 
     async with get_db() as db:
         # Analytics summary
@@ -106,7 +110,7 @@ async def get_export_data(license_id: int, start: datetime, end: datetime):
               AND created_at BETWEEN ? AND ?
             ORDER BY created_at DESC
             """,
-            [license_id, start.isoformat(), end.isoformat()],
+            [license_id, ts_start, ts_end],
         )
 
         # CRM entries in date range
@@ -118,7 +122,7 @@ async def get_export_data(license_id: int, start: datetime, end: datetime):
               AND created_at BETWEEN ? AND ?
             ORDER BY created_at DESC
             """,
-            [license_id, start.isoformat(), end.isoformat()],
+            [license_id, ts_start, ts_end],
         )
 
     return data
