@@ -42,6 +42,10 @@ from dependencies import get_license_from_header
 
 router = APIRouter(prefix="/api/integrations", tags=["Integrations"])
 
+# Shared Telegram phone service instance (per process) so that the same
+# Telethon client can handle both send_code_request and sign_in for a phone.
+telegram_phone_service = TelegramPhoneService()
+
 
 # ============ Schemas ============
 
@@ -618,8 +622,7 @@ async def start_telegram_phone_login(
 ):
     """Start Telegram phone number login - sends verification code"""
     try:
-        phone_service = TelegramPhoneService()
-        result = await phone_service.start_login(request.phone_number)
+        result = await telegram_phone_service.start_login(request.phone_number)
         
         return {
             "success": True,
@@ -640,8 +643,7 @@ async def verify_telegram_phone_code(
 ):
     """Verify Telegram code and complete login (supports 2FA)"""
     try:
-        phone_service = TelegramPhoneService()
-        session_string, user_info = await phone_service.verify_code(
+        session_string, user_info = await telegram_phone_service.verify_code(
             phone_number=request.phone_number,
             code=request.code,
             session_id=request.session_id,
@@ -692,8 +694,7 @@ async def test_telegram_phone_connection(license: dict = Depends(get_license_fro
         if not session_string:
             raise HTTPException(status_code=404, detail="لا توجد جلسة Telegram نشطة")
         
-        phone_service = TelegramPhoneService()
-        success, message, user_info = await phone_service.test_connection(session_string)
+        success, message, user_info = await telegram_phone_service.test_connection(session_string)
         
         return {
             "success": success,

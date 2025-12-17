@@ -7,7 +7,15 @@ import asyncio
 import os
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
+
 from logging_config import get_logger
+from db_helper import (
+    get_db,
+    fetch_one,
+    fetch_all,
+    execute_sql,
+    commit_db,
+)
 
 logger = get_logger(__name__)
 
@@ -336,12 +344,11 @@ class MessagePoller:
             return False
         
         try:
-            from db_helper import get_db, fetch_one
             async with get_db() as db:
                 row = await fetch_one(
                     db,
                     "SELECT id FROM inbox_messages WHERE license_key_id = ? AND channel = ? AND channel_message_id = ?",
-                    [license_id, channel, channel_message_id]
+                    [license_id, channel, channel_message_id],
                 )
                 return row is not None
         except Exception as e:
@@ -429,21 +436,23 @@ class MessagePoller:
     async def _send_message(self, outbox_id: int, license_id: int, channel: str):
         """Send an approved message"""
         try:
-            # Get outbox message
-            async with aiosqlite.connect(DATABASE_PATH) as db:
-                db.row_factory = aiosqlite.Row
-                async with db.execute("""
+            # Get outbox message (works for both SQLite and PostgreSQL)
+            async with get_db() as db:
+                rows = await fetch_all(
+                    db,
+                    """
                     SELECT o.*, i.sender_name, i.body as original_message, i.sender_contact, i.sender_id
                     FROM outbox_messages o
                     JOIN inbox_messages i ON o.inbox_message_id = i.id
                     WHERE o.id = ? AND o.license_key_id = ?
-                """, (outbox_id, license_id)) as cursor:
-                    row = await cursor.fetchone()
-            
-            if not row:
+                    """,
+                    [outbox_id, license_id],
+                )
+
+            if not rows:
                 return
             
-            message = dict(row)
+            message = rows[0]
             
             if channel == "email":
                 # Send via Gmail API using OAuth
@@ -469,7 +478,6 @@ class MessagePoller:
             
             elif channel == "telegram":
                 # Get bot_token directly from database
-                from db_helper import get_db, fetch_one
                 async with get_db() as db:
                     row = await fetch_one(
                         db,
@@ -510,13 +518,17 @@ class MessagePoller:
     async def _update_email_last_checked(self, license_id: int):
         """Update last_checked_at timestamp for email config"""
         try:
-            async with aiosqlite.connect(DATABASE_PATH) as db:
-                await db.execute("""
+            async with get_db() as db:
+                await execute_sql(
+                    db,
+                    """
                     UPDATE email_configs 
                     SET last_checked_at = ? 
                     WHERE license_key_id = ?
-                """, (datetime.now().isoformat(), license_id))
-                await db.commit()
+                    """,
+                    [datetime.now().isoformat(), license_id],
+                )
+                await commit_db(db)
         except Exception as e:
             logger.error(f"Error updating last_checked_at: {e}")
 
