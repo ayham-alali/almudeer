@@ -18,7 +18,7 @@ from telethon.errors import (
     ApiIdInvalidError
 )
 import json
-import tempfile
+import base64
 
 
 class TelegramPhoneService:
@@ -42,11 +42,20 @@ class TelegramPhoneService:
                 "Set TELEGRAM_API_ID and TELEGRAM_API_HASH environment variables. "
                 "Get them from https://my.telegram.org/apps"
             )
-        
-        # In-memory storage for temporary login states (kept for backward compatibility)
-        # NOTE: The new implementation relies primarily on deterministic session files,
-        # so that any worker process can handle the verification step.
-        self._pending_logins: Dict[str, Dict] = {}
+
+    # ============ Helper methods for stateless session payload ============
+
+    @staticmethod
+    def _encode_session_state(state: Dict) -> str:
+        """Encode session state (phone, session, hash, ts) into URL-safe token."""
+        raw = json.dumps(state, ensure_ascii=False).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii")
+
+    @staticmethod
+    def _decode_session_state(token: str) -> Dict:
+        """Decode URL-safe token back into session state dict."""
+        raw = base64.urlsafe_b64decode(token.encode("ascii"))
+        return json.loads(raw.decode("utf-8"))
 
     async def start_login(self, phone_number: str) -> Dict[str, str]:
         """
@@ -61,15 +70,9 @@ class TelegramPhoneService:
         if not phone_number.startswith('+'):
             phone_number = '+' + phone_number
 
-        # Clean up any previous pending login for this phone
-        pending = self._pending_logins.pop(phone_number, None)
-        if pending and "client" in pending:
-            try:
-                await pending["client"].disconnect()
-            except Exception:
-                pass
-
-        # Use an in-memory StringSession so we don't rely on temp files
+        # Use an in-memory StringSession and encode its state into a token that
+        # the frontend sends back on verification. This makes the flow
+        # stateless and resilient to multi-process deployments (Railway).
         session = StringSession()
         client = TelegramClient(session, int(self.api_id), self.api_hash)
 
@@ -80,41 +83,36 @@ class TelegramPhoneService:
             sent = await client.send_code_request(phone_number)
             phone_code_hash = getattr(sent, "phone_code_hash", None)
 
-            # Store pending login info in memory
-            self._pending_logins[phone_number] = {
+            # Persist minimal state in a signed/encoded token returned to client
+            session_state = {
                 "phone_number": phone_number,
-                "created_at": datetime.now(),
-                "client": client,
+                "session": session.save(),
                 "phone_code_hash": phone_code_hash,
+                "created_at": datetime.utcnow().isoformat(),
             }
+            session_id = self._encode_session_state(session_state)
 
             return {
                 "success": True,
                 "message": f"تم إرسال كود التحقق إلى Telegram الخاص برقم {phone_number}",
-                "session_id": None,
+                "session_id": session_id,
                 "phone_number": phone_number,
             }
 
         except PhoneNumberUnoccupiedError:
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
             raise ValueError(f"الرقم {phone_number} غير مسجل في Telegram")
 
         except FloodWaitError as e:
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
             raise ValueError(f"تم إرسال عدد كبير من الطلبات. يرجى الانتظار {e.seconds} ثانية")
 
         except Exception as e:
+            raise ValueError(f"خطأ في طلب الكود: {str(e)}")
+
+        finally:
             try:
                 await client.disconnect()
             except Exception:
                 pass
-            raise ValueError(f"خطأ في طلب الكود: {str(e)}")
     
     async def verify_code(
         self,
@@ -137,18 +135,34 @@ class TelegramPhoneService:
         if not phone_number.startswith('+'):
             phone_number = '+' + phone_number
 
-        pending = self._pending_logins.get(phone_number)
-        if not pending:
+        if not session_id:
             raise ValueError("انتهت صلاحية طلب تسجيل الدخول. يرجى طلب كود جديد")
 
-        client: TelegramClient = pending["client"]
+        # Decode state from token returned by start_login
+        try:
+            state = self._decode_session_state(session_id)
+        except Exception:
+            raise ValueError("انتهت صلاحية طلب تسجيل الدخول. يرجى طلب كود جديد")
+
+        if state.get("phone_number") != phone_number:
+            raise ValueError("حدث تعارض في رقم الهاتف. يرجى طلب كود جديد")
+
+        # Recreate client from stored StringSession
+        session = StringSession(state.get("session") or "")
+        client = TelegramClient(session, int(self.api_id), self.api_hash)
 
         try:
+            await client.connect()
+
             # If we are not yet authorized, complete sign-in
             if not await client.is_user_authorized():
                 try:
                     # First step: code verification
-                    await client.sign_in(phone_number, code)
+                    await client.sign_in(
+                        phone_number,
+                        code,
+                        phone_code_hash=state.get("phone_code_hash"),
+                    )
                 except SessionPasswordNeededError:
                     # 2FA enabled - ask for password on next call
                     if not password:
@@ -167,8 +181,6 @@ class TelegramPhoneService:
             me = await client.get_me()
 
             await client.disconnect()
-            # Remove pending login
-            self._pending_logins.pop(phone_number, None)
 
             return session_string, {
                 "id": me.id,
@@ -189,8 +201,6 @@ class TelegramPhoneService:
                 await client.disconnect()
             except Exception:
                 pass
-            # Ensure cleanup
-            self._pending_logins.pop(phone_number, None)
 
             # For known ValueError cases, bubble up as-is
             if isinstance(e, ValueError):
