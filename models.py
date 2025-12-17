@@ -6,7 +6,7 @@ Supports both SQLite (development) and PostgreSQL (production)
 
 import os
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional, List, Any
 import json
 
 # Database configuration
@@ -642,17 +642,56 @@ async def save_inbox_message(
     received_at: datetime = None
 ) -> int:
     """Save incoming message to inbox"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        cursor = await db.execute("""
+    # Use unified DB helper so this works with both SQLite and PostgreSQL.
+    from db_helper import DB_TYPE  # local import to avoid circulars
+
+    # Normalize timestamp based on backend
+    if received_at is None:
+        received = datetime.utcnow()
+    else:
+        received = received_at
+
+    ts_value: Any
+    if DB_TYPE == "postgresql":
+        ts_value = received  # real datetime for TIMESTAMP column
+    else:
+        ts_value = received.isoformat()
+
+    async with get_db() as db:
+        await execute_sql(
+            db,
+            """
             INSERT INTO inbox_messages 
-            (license_key_id, channel, channel_message_id, sender_id, sender_name,
-             sender_contact, subject, body, received_at)
+                (license_key_id, channel, channel_message_id, sender_id, sender_name,
+                 sender_contact, subject, body, received_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (license_id, channel, channel_message_id, sender_id, sender_name,
-              sender_contact, subject, body, 
-              received_at.isoformat() if received_at else datetime.now().isoformat()))
-        await db.commit()
-        return cursor.lastrowid
+            """,
+            [
+                license_id,
+                channel,
+                channel_message_id,
+                sender_id,
+                sender_name,
+                sender_contact,
+                subject,
+                body,
+                ts_value,
+            ],
+        )
+
+        # Fetch the last inserted id in a DB-agnostic way
+        row = await fetch_one(
+            db,
+            """
+            SELECT id FROM inbox_messages
+            WHERE license_key_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            [license_id],
+        )
+        await commit_db(db)
+        return row["id"] if row else 0
 
 
 async def update_inbox_analysis(
@@ -663,17 +702,25 @@ async def update_inbox_analysis(
     summary: str,
     draft_response: str
 ):
-    """Update inbox message with AI analysis"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute("""
+    """Update inbox message with AI analysis (DB agnostic)."""
+    from db_helper import DB_TYPE  # local import to avoid circulars
+
+    now = datetime.utcnow()
+    ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
+
+    async with get_db() as db:
+        await execute_sql(
+            db,
+            """
             UPDATE inbox_messages SET
                 intent = ?, urgency = ?, sentiment = ?,
                 ai_summary = ?, ai_draft_response = ?,
                 status = 'analyzed', processed_at = ?
             WHERE id = ?
-        """, (intent, urgency, sentiment, summary, draft_response,
-              datetime.now().isoformat(), message_id))
-        await db.commit()
+            """,
+            [intent, urgency, sentiment, summary, draft_response, ts_value, message_id],
+        )
+        await commit_db(db)
 
 
 async def get_inbox_messages(
@@ -704,13 +751,14 @@ async def get_inbox_messages(
 
 
 async def update_inbox_status(message_id: int, status: str):
-    """Update inbox message status"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute(
+    """Update inbox message status (DB agnostic)."""
+    async with get_db() as db:
+        await execute_sql(
+            db,
             "UPDATE inbox_messages SET status = ? WHERE id = ?",
-            (status, message_id)
+            [status, message_id],
         )
-        await db.commit()
+        await commit_db(db)
 
 
 # ============ Outbox Functions ============
@@ -724,61 +772,99 @@ async def create_outbox_message(
     recipient_email: str = None,
     subject: str = None
 ) -> int:
-    """Create outbox message for approval"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        cursor = await db.execute("""
+    """Create outbox message for approval (DB agnostic)."""
+    async with get_db() as db:
+        await execute_sql(
+            db,
+            """
             INSERT INTO outbox_messages 
-            (inbox_message_id, license_key_id, channel, recipient_id,
-             recipient_email, subject, body)
+                (inbox_message_id, license_key_id, channel, recipient_id,
+                 recipient_email, subject, body)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (inbox_message_id, license_id, channel, recipient_id,
-              recipient_email, subject, body))
-        await db.commit()
-        return cursor.lastrowid
+            """,
+            [inbox_message_id, license_id, channel, recipient_id, recipient_email, subject, body],
+        )
+
+        row = await fetch_one(
+            db,
+            """
+            SELECT id FROM outbox_messages
+            WHERE license_key_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            [license_id],
+        )
+        await commit_db(db)
+        return row["id"] if row else 0
 
 
 async def approve_outbox_message(message_id: int, edited_body: str = None):
-    """Approve an outbox message for sending"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    """Approve an outbox message for sending (DB agnostic)."""
+    from db_helper import DB_TYPE  # local import
+
+    now = datetime.utcnow()
+    ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
+
+    async with get_db() as db:
         if edited_body:
-            await db.execute("""
+            await execute_sql(
+                db,
+                """
                 UPDATE outbox_messages SET
                     body = ?, status = 'approved', approved_at = ?
                 WHERE id = ?
-            """, (edited_body, datetime.now().isoformat(), message_id))
+                """,
+                [edited_body, ts_value, message_id],
+            )
         else:
-            await db.execute("""
+            await execute_sql(
+                db,
+                """
                 UPDATE outbox_messages SET
                     status = 'approved', approved_at = ?
                 WHERE id = ?
-            """, (datetime.now().isoformat(), message_id))
-        await db.commit()
+                """,
+                [ts_value, message_id],
+            )
+        await commit_db(db)
 
 
 async def mark_outbox_sent(message_id: int):
-    """Mark outbox message as sent"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute("""
+    """Mark outbox message as sent (DB agnostic)."""
+    from db_helper import DB_TYPE  # local import
+
+    now = datetime.utcnow()
+    ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
+
+    async with get_db() as db:
+        await execute_sql(
+            db,
+            """
             UPDATE outbox_messages SET
                 status = 'sent', sent_at = ?
             WHERE id = ?
-        """, (datetime.now().isoformat(), message_id))
-        await db.commit()
+            """,
+            [ts_value, message_id],
+        )
+        await commit_db(db)
 
 
 async def get_pending_outbox(license_id: int) -> List[dict]:
-    """Get pending outbox messages"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("""
+    """Get pending outbox messages (DB agnostic)."""
+    async with get_db() as db:
+        rows = await fetch_all(
+            db,
+            """
             SELECT o.*, i.sender_name, i.body as original_message
             FROM outbox_messages o
             JOIN inbox_messages i ON o.inbox_message_id = i.id
             WHERE o.license_key_id = ? AND o.status IN ('pending', 'approved')
             ORDER BY o.created_at DESC
-        """, (license_id,)) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            """,
+            [license_id],
+        )
+        return rows
 
 
 # ============ Utility Functions ============
