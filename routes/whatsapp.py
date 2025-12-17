@@ -251,22 +251,19 @@ async def receive_webhook(request: Request):
                 if not phone_number_id:
                     continue
                 
-                # Find license by phone_number_id
-                import aiosqlite
-                from models import DATABASE_PATH
-                
-                async with aiosqlite.connect(DATABASE_PATH) as db:
-                    db.row_factory = aiosqlite.Row
-                    async with db.execute(
+                # Find license by phone_number_id using unified db_helper layer
+                from db_helper import get_db, fetch_one
+
+                async with get_db() as db:
+                    config = await fetch_one(
+                        db,
                         "SELECT * FROM whatsapp_configs WHERE phone_number_id = ?",
-                        (phone_number_id,)
-                    ) as cursor:
-                        config_row = await cursor.fetchone()
-                
-                if not config_row:
+                        [phone_number_id],
+                    )
+
+                if not config:
                     continue
                 
-                config = dict(config_row)
                 license_id = config["license_key_id"]
                 
                 service = WhatsAppService(

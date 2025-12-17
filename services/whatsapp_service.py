@@ -259,31 +259,34 @@ class WhatsAppService:
             return None
 
 
-# Database operations for WhatsApp config
+
+# Database operations for WhatsApp config (SQLite & PostgreSQL via db_helper)
 async def save_whatsapp_config(
     license_id: int,
     phone_number_id: str,
     access_token: str,
     business_account_id: str = None,
     verify_token: str = None,
-    auto_reply_enabled: bool = False
+    auto_reply_enabled: bool = False,
 ) -> int:
-    """Save WhatsApp configuration"""
-    import aiosqlite
-    from models import DATABASE_PATH
-    
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        # Check if config exists
-        async with db.execute(
+    """Save WhatsApp configuration in a database-agnostic way."""
+    from db_helper import get_db, fetch_one, execute_sql, commit_db, DB_TYPE
+
+    verify_token = verify_token or os.urandom(16).hex()
+    # Use real datetime for PostgreSQL, ISO string for SQLite for compatibility
+    updated_at = datetime.utcnow() if DB_TYPE == "postgresql" else datetime.utcnow().isoformat()
+
+    async with get_db() as db:
+        existing = await fetch_one(
+            db,
             "SELECT id FROM whatsapp_configs WHERE license_key_id = ?",
-            (license_id,)
-        ) as cursor:
-            existing = await cursor.fetchone()
-        
-        verify_token = verify_token or os.urandom(16).hex()
-        
+            [license_id],
+        )
+
         if existing:
-            await db.execute("""
+            await execute_sql(
+                db,
+                """
                 UPDATE whatsapp_configs SET
                     phone_number_id = ?,
                     access_token = ?,
@@ -293,47 +296,75 @@ async def save_whatsapp_config(
                     is_active = TRUE,
                     updated_at = ?
                 WHERE license_key_id = ?
-            """, (phone_number_id, access_token, business_account_id,
-                  verify_token, auto_reply_enabled, datetime.now().isoformat(), license_id))
-            await db.commit()
-            return existing[0]
-        else:
-            cursor = await db.execute("""
-                INSERT INTO whatsapp_configs 
+                """,
+                [
+                    phone_number_id,
+                    access_token,
+                    business_account_id,
+                    verify_token,
+                    auto_reply_enabled,
+                    updated_at,
+                    license_id,
+                ],
+            )
+            await commit_db(db)
+            return existing["id"]
+
+        await execute_sql(
+            db,
+            """
+            INSERT INTO whatsapp_configs 
                 (license_key_id, phone_number_id, access_token, business_account_id,
                  verify_token, auto_reply_enabled, is_active)
-                VALUES (?, ?, ?, ?, ?, ?, TRUE)
-            """, (license_id, phone_number_id, access_token, business_account_id,
-                  verify_token, auto_reply_enabled))
-            await db.commit()
-            return cursor.lastrowid
+            VALUES (?, ?, ?, ?, ?, ?, TRUE)
+            """,
+            [
+                license_id,
+                phone_number_id,
+                access_token,
+                business_account_id,
+                verify_token,
+                auto_reply_enabled,
+            ],
+        )
+
+        row = await fetch_one(
+            db,
+            """
+            SELECT id FROM whatsapp_configs
+            WHERE license_key_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            [license_id],
+        )
+        await commit_db(db)
+        return row["id"] if row else 0
 
 
 async def get_whatsapp_config(license_id: int) -> Optional[Dict]:
-    """Get WhatsApp configuration"""
-    import aiosqlite
-    from models import DATABASE_PATH
-    
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
+    """Get WhatsApp configuration (SQLite & PostgreSQL compatible)."""
+    from db_helper import get_db, fetch_one
+
+    async with get_db() as db:
+        row = await fetch_one(
+            db,
             "SELECT * FROM whatsapp_configs WHERE license_key_id = ?",
-            (license_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            return dict(row) if row else None
+            [license_id],
+        )
+        return row
 
 
 async def delete_whatsapp_config(license_id: int) -> bool:
-    """Delete WhatsApp configuration"""
-    import aiosqlite
-    from models import DATABASE_PATH
-    
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute(
+    """Delete WhatsApp configuration (SQLite & PostgreSQL compatible)."""
+    from db_helper import get_db, execute_sql, commit_db
+
+    async with get_db() as db:
+        await execute_sql(
+            db,
             "DELETE FROM whatsapp_configs WHERE license_key_id = ?",
-            (license_id,)
+            [license_id],
         )
-        await db.commit()
-        return True
+        await commit_db(db)
+    return True
 

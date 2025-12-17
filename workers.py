@@ -518,6 +518,11 @@ class MessagePoller:
     async def _update_email_last_checked(self, license_id: int):
         """Update last_checked_at timestamp for email config"""
         try:
+            # For PostgreSQL we should store a real datetime object.
+            # For SQLite we keep using ISO strings for backward compatibility.
+            from db_helper import DB_TYPE  # Local import to avoid circulars
+            now_value = datetime.utcnow() if DB_TYPE == "postgresql" else datetime.utcnow().isoformat()
+
             async with get_db() as db:
                 await execute_sql(
                     db,
@@ -526,7 +531,7 @@ class MessagePoller:
                     SET last_checked_at = ? 
                     WHERE license_key_id = ?
                     """,
-                    [datetime.now().isoformat(), license_id],
+                    [now_value, license_id],
                 )
                 await commit_db(db)
         except Exception as e:
