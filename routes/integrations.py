@@ -44,6 +44,10 @@ from dependencies import get_license_from_header
 
 router = APIRouter(prefix="/api/integrations", tags=["Integrations"])
 
+@router.get("/debug")
+def debug_integrations():
+    return {"status": "ok", "message": "Integrations router is loaded"}
+
 # Shared Telegram phone service instance (per process) so that the same
 # Telethon client can handle both send_code_request and sign_in for a phone.
 # Using lazy initialization to allow app to start without Telegram credentials
