@@ -6,7 +6,7 @@ Optimized for low bandwidth with text-only responses
 
 import json
 import re
-from typing import TypedDict, Literal, Optional
+from typing import TypedDict, Literal, Optional, Dict, Any
 from dataclasses import dataclass
 import httpx
 import os
@@ -15,14 +15,70 @@ import os
 from langgraph.graph import StateGraph, END
 
 # Configuration
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")  # or any Arabic-capable model
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
-# System prompt for Arabic business context
-SYSTEM_PROMPT = """أنت مساعد مكتبي ذكي لشركة سورية. تتحدث العربية الفصحى بأسلوب مهني ومهذب.
-تفهم السياق المحلي السوري والعربي جيداً.
+# Base system prompt for Arabic business context
+BASE_SYSTEM_PROMPT = """أنت مساعد مكتبي ذكي للشركات في العالم العربي. تتحدث العربية الفصحى بأسلوب مهني ومهذب.
+تفهم السياق المحلي جيداً (العملة، العادات، أسلوب التخاطب).
 مهمتك هي تحليل الرسائل الواردة واستخراج المعلومات المهمة وصياغة ردود مناسبة.
 كن موجزاً ومباشراً في ردودك لتوفير استهلاك البيانات."""
+
+
+def build_system_prompt(preferences: Optional[Dict[str, Any]] = None) -> str:
+    """
+    Build a system prompt customized by workspace preferences.
+
+    preferences comes from user_preferences table and may include:
+    - tone: formal | friendly | custom
+    - custom_tone_guidelines
+    - business_name, industry, products_services
+    - preferred_languages, reply_length, formality_level
+    """
+    if not preferences:
+        return BASE_SYSTEM_PROMPT
+
+    tone = (preferences.get("tone") or "formal").lower()
+    custom_guidelines = (preferences.get("custom_tone_guidelines") or "").strip()
+
+    # Tone description
+    if tone == "friendly":
+        tone_desc = "استخدم نبرة ودية وقريبة لكن مع احترام مهني، وتجنّب العامية الثقيلة."
+    elif tone == "custom" and custom_guidelines:
+        tone_desc = custom_guidelines
+    else:
+        # formal or unknown
+        tone_desc = "استخدم نبرة رسمية بسيطة وواضحة بدون مبالغة في المجاملات."
+
+    business_name = preferences.get("business_name") or "الشركة"
+    industry = preferences.get("industry") or ""
+    products = preferences.get("products_services") or ""
+
+    business_context_parts = [f"تتحدث باسم {business_name}."]
+    if industry:
+        business_context_parts.append(f"النشاط الرئيسي: {industry}.")
+    if products:
+        business_context_parts.append(f"الخدمات / المنتجات الأساسية: {products}.")
+
+    reply_length = (preferences.get("reply_length") or "").lower()
+    if reply_length == "short":
+        length_hint = "احرص أن يكون الرد قصيراً قدر الإمكان (من 2 إلى 3 أسطر تقريباً)."
+    elif reply_length == "long":
+        length_hint = "يمكن أن يكون الرد مفصلاً أكثر عند الحاجة، مع المحافظة على الوضوح."
+    else:
+        length_hint = "حافظ على طول رد متوسط وواضح (حوالي 3 إلى 6 أسطر)."
+
+    return (
+        BASE_SYSTEM_PROMPT
+        + "\n\n"
+        + "سياق العمل:\n"
+        + " ".join(business_context_parts)
+        + "\n\nأسلوب الكتابة المطلوب:\n"
+        + tone_desc
+        + "\n"
+        + length_hint
+    )
 
 
 class AgentState(TypedDict):
@@ -35,6 +91,8 @@ class AgentState(TypedDict):
     intent: str  # استفسار, طلب خدمة, شكوى, متابعة, عرض, أخرى
     urgency: str  # عاجل, عادي, منخفض
     sentiment: str  # إيجابي, محايد, سلبي
+    language: Optional[str]
+    dialect: Optional[str]
     
     # Extraction
     sender_name: Optional[str]
@@ -52,31 +110,67 @@ class AgentState(TypedDict):
     error: Optional[str]
     processing_step: str
 
+    # Preferences / context
+    preferences: Optional[Dict[str, Any]]
+    # Recent conversation history (plain text)
+    conversation_history: Optional[str]
 
-async def call_llm(prompt: str, system: str = SYSTEM_PROMPT) -> str:
-    """Call Ollama or fallback to rule-based processing"""
+
+async def call_llm(
+    prompt: str,
+    system: Optional[str] = None,
+    json_mode: bool = False,
+    max_tokens: int = 600,
+) -> Optional[str]:
+    """
+    Call OpenAI Chat Completions API.
+
+    - Uses Arabic business system prompt.
+    - Supports JSON-mode responses for structured outputs.
+    - Falls back to None if the call fails so that rule-based logic can run.
+    """
+    if not OPENAI_API_KEY:
+        # No API key configured; caller should fall back to rule-based logic
+        return None
+
+    effective_system = system or BASE_SYSTEM_PROMPT
+
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
+            body: dict = {
+                "model": OPENAI_MODEL,
+                "messages": [
+                    {"role": "system", "content": effective_system},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.3,
+                "max_tokens": max_tokens,
+            }
+
+            if json_mode:
+                # Ask OpenAI to produce valid JSON
+                body["response_format"] = {"type": "json_object"}
+
             response = await client.post(
-                f"{OLLAMA_BASE_URL}/api/generate",
-                json={
-                    "model": OLLAMA_MODEL,
-                    "prompt": prompt,
-                    "system": system,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.3,
-                        "num_predict": 500  # Limit response length for bandwidth
-                    }
-                }
+                f"{OPENAI_BASE_URL}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
             )
-            if response.status_code == 200:
-                return response.json().get("response", "")
+
+            response.raise_for_status()
+            data = response.json()
+            content = (
+                data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+            return content.strip() if content else None
     except Exception as e:
         print(f"LLM call failed: {e}")
-    
-    # Fallback to rule-based if Ollama is not available
-    return None
+        return None
 
 
 def rule_based_classify(message: str) -> dict:
@@ -250,30 +344,42 @@ async def classify_node(state: AgentState) -> AgentState:
     """Step 2: Classify intent, urgency, and sentiment"""
     state["processing_step"] = "تصنيف"
     
-    # Try LLM first
-    prompt = f"""حلل الرسالة التالية وأعطني:
+    # Try LLM first – structured JSON output in Arabic business context
+    history_block = ""
+    if state.get("conversation_history"):
+        history_block = f"\nسياق المحادثة السابقة مع هذا العميل (من الأحدث إلى الأقدم):\n{state['conversation_history']}\n"
+
+    prompt = f"""أنت خبير خدمة عملاء يدعم العربية ولغات أخرى.
+حلل الرسالة التالية وأعطني:
 1. النية (intent): استفسار، طلب خدمة، شكوى، متابعة، عرض، أخرى
 2. الأهمية (urgency): عاجل، عادي، منخفض
 3. المشاعر (sentiment): إيجابي، محايد، سلبي
+4. اللغة (language): ar, en, fr, أو رمز ISO إن أمكن
+5. اللهجة (dialect): سوري، سعودي، مصري، خليجي، فصحى، أو Other
 
-الرسالة:
+استخدم السياق الطبيعي للمحادثة، وتجنب الحكم من كلمة واحدة فقط.
+{history_block}
+النص الحالي:
 {state['raw_message']}
 
-الرد بصيغة JSON فقط:
-{{"intent": "", "urgency": "", "sentiment": ""}}"""
+أرجع النتيجة بصيغة JSON فقط بهذا الشكل:
+{{"intent": "استفسار", "urgency": "عادي", "sentiment": "محايد", "language": "ar", "dialect": "شامي"}}"""
 
-    llm_response = await call_llm(prompt)
+    llm_response = await call_llm(
+        prompt,
+        system=build_system_prompt(state.get("preferences")),
+        json_mode=True,
+    )
     
     if llm_response:
         try:
-            # Extract JSON from response
-            json_match = re.search(r'\{[^}]+\}', llm_response)
-            if json_match:
-                classification = json.loads(json_match.group())
-                state["intent"] = classification.get("intent", "أخرى")
-                state["urgency"] = classification.get("urgency", "عادي")
-                state["sentiment"] = classification.get("sentiment", "محايد")
-                return state
+            classification = json.loads(llm_response)
+            state["intent"] = classification.get("intent", "أخرى")
+            state["urgency"] = classification.get("urgency", "عادي")
+            state["sentiment"] = classification.get("sentiment", "محايد")
+            state["language"] = classification.get("language") or "ar"
+            state["dialect"] = classification.get("dialect")
+            return state
         except json.JSONDecodeError:
             pass
     
@@ -303,26 +409,35 @@ async def extract_node(state: AgentState) -> AgentState:
         state["sender_contact"] = entities["phones"][0]
     
     # Try LLM for key points extraction
-    prompt = f"""من الرسالة التالية، استخرج:
-1. النقاط الرئيسية (3 نقاط كحد أقصى)
-2. الإجراءات المطلوبة
+    history_block = ""
+    if state.get("conversation_history"):
+        history_block = f"\nسياق المحادثة السابقة مع هذا العميل (من الأحدث إلى الأقدم):\n{state['conversation_history']}\n"
 
-الرسالة:
+    prompt = f"""أنت مساعد يدعم فريق خدمة العملاء.
+من الرسالة التالية استخرج باختصار:
+1. النقاط الرئيسية التي يذكرها العميل (3 نقاط كحد أقصى).
+2. أهم الإجراءات أو الخطوات التي ينبغي على الفريق القيام بها.
+
+يجب أن تكون اللغة عربية فصحى بسيطة ومباشرة.
+{history_block}
+نص الرسالة الحالية:
 {state['raw_message']}
 
-الرد بصيغة JSON:
-{{"key_points": ["نقطة 1", "نقطة 2"], "action_items": ["إجراء 1"]}}"""
+أرجع النتيجة بصيغة JSON فقط بهذا الشكل:
+{{"key_points": ["نقطة مختصرة 1", "نقطة مختصرة 2"], "action_items": ["إجراء واضح 1"]}}"""
 
-    llm_response = await call_llm(prompt)
+    llm_response = await call_llm(
+        prompt,
+        system=build_system_prompt(state.get("preferences")),
+        json_mode=True,
+    )
     
     if llm_response:
         try:
-            json_match = re.search(r'\{[^}]+\}', llm_response, re.DOTALL)
-            if json_match:
-                extracted = json.loads(json_match.group())
-                state["key_points"] = extracted.get("key_points", [])
-                state["action_items"] = extracted.get("action_items", [])
-                return state
+            extracted = json.loads(llm_response)
+            state["key_points"] = extracted.get("key_points", [])
+            state["action_items"] = extracted.get("action_items", [])
+            return state
         except json.JSONDecodeError:
             pass
     
@@ -342,20 +457,37 @@ async def draft_node(state: AgentState) -> AgentState:
     intent = state.get("intent", "أخرى")
     key_points = state.get("key_points", [])
     
-    # Try LLM for natural response
-    prompt = f"""اكتب رداً مهنياً مختصراً على الرسالة التالية.
-المرسل: {sender}
-نوع الرسالة: {intent}
-النقاط الرئيسية: {', '.join(key_points)}
+    # Try LLM for natural, personalized Arabic response
+    history_block = ""
+    if state.get("conversation_history"):
+        history_block = f"\nسياق المحادثة السابقة مع هذا العميل (من الأحدث إلى الأقدم):\n{state['conversation_history']}\n"
 
-الرسالة الأصلية:
+    prompt = f"""أنت موظف خدمة عملاء محترف في شركة عربية.
+اكتب رداً بشرياً طبيعياً باللغة العربية الفصحى المبسّطة (ليست رسمية جداً ولا عامية).
+
+المطلوب من الرد:
+- أن يكون موجهاً مباشرة إلى العميل ({sender}) إن أمكن ذكر الاسم.
+- أن يوضح أنك قرأت الرسالة وفهمت مضمونها (باختصار).
+- أن يقدم معلومات أو خطوات واضحة ومحددة.
+- أن يكون مشجعاً ولطيفاً، بدون مبالغة في المجاملات أو الجمل المتكررة.
+- الطول المتوقع: من 3 إلى 6 أسطر كحد أقصى.
+
+نوع الرسالة (نية العميل): {intent}
+النقاط الرئيسية المستخرجة: {', '.join(key_points) or 'لم يتم استخراج نقاط واضحة'}
+{history_block}
+نص رسالة العميل الحالية:
 {state['raw_message']}
 
-اكتب رداً مهذباً ومختصراً (لا يتجاوز 100 كلمة):"""
+اكتب الرد فقط بدون أي شرح إضافي أو تعداد نقطي."""
 
-    llm_response = await call_llm(prompt)
+    llm_response = await call_llm(
+        prompt,
+        system=build_system_prompt(state.get("preferences")),
+        json_mode=False,
+        max_tokens=400,
+    )
     
-    if llm_response and len(llm_response) > 50:
+    if llm_response and len(llm_response.strip()) > 40:
         state["draft_response"] = llm_response.strip()
     else:
         # Use template-based response
@@ -418,7 +550,9 @@ async def process_message(
     message: str,
     message_type: str = None,
     sender_name: str = None,
-    sender_contact: str = None
+    sender_contact: str = None,
+    preferences: Optional[Dict[str, Any]] = None,
+    conversation_history: Optional[str] = None,
 ) -> dict:
     """Process a message through the InboxCRM pipeline"""
     
@@ -440,7 +574,9 @@ async def process_message(
         "draft_response": "",
         "suggested_actions": [],
         "error": None,
-        "processing_step": ""
+        "processing_step": "",
+        "preferences": preferences,
+        "conversation_history": conversation_history,
     }
     
     try:
@@ -452,6 +588,8 @@ async def process_message(
                 "intent": final_state["intent"],
                 "urgency": final_state["urgency"],
                 "sentiment": final_state["sentiment"],
+                "language": final_state.get("language"),
+                "dialect": final_state.get("dialect"),
                 "sender_name": final_state["sender_name"],
                 "sender_contact": final_state["sender_contact"],
                 "key_points": final_state["key_points"],

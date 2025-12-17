@@ -121,6 +121,8 @@ async def init_enhanced_tables():
                 intent TEXT,
                 urgency TEXT,
                 sentiment TEXT,
+                language TEXT,
+                dialect TEXT,
                 ai_summary TEXT,
                 ai_draft_response TEXT,
                 status TEXT DEFAULT 'pending',
@@ -200,6 +202,11 @@ async def init_enhanced_tables():
             CREATE INDEX IF NOT EXISTS idx_outbox_license_status
             ON outbox_messages(license_key_id, status)
         """)
+        # Language/dialect quick filter
+        await execute_sql(db, """
+            CREATE INDEX IF NOT EXISTS idx_inbox_language
+            ON inbox_messages(language, dialect)
+        """)
 
         await commit_db(db)
         print("Enhanced tables initialized")
@@ -230,6 +237,9 @@ async def save_email_config(
     # For PostgreSQL (asyncpg), pass a real datetime object.
     # For SQLite, store ISO string for readability/backward compatibility.
     if token_expires_at:
+        # Normalize to naive UTC datetime for PostgreSQL, ISO for SQLite
+        if token_expires_at.tzinfo is not None:
+            token_expires_at = token_expires_at.astimezone(timezone.utc).replace(tzinfo=None)
         if DB_TYPE == "postgresql":
             expires_value = token_expires_at
         else:
@@ -708,6 +718,8 @@ async def update_inbox_analysis(
     intent: str,
     urgency: str,
     sentiment: str,
+    language: Optional[str],
+    dialect: Optional[str],
     summary: str,
     draft_response: str
 ):
@@ -723,11 +735,12 @@ async def update_inbox_analysis(
             """
             UPDATE inbox_messages SET
                 intent = ?, urgency = ?, sentiment = ?,
+                language = ?, dialect = ?,
                 ai_summary = ?, ai_draft_response = ?,
                 status = 'analyzed', processed_at = ?
             WHERE id = ?
             """,
-            [intent, urgency, sentiment, summary, draft_response, ts_value, message_id],
+            [intent, urgency, sentiment, language, dialect, summary, draft_response, ts_value, message_id],
         )
         await commit_db(db)
 
@@ -996,10 +1009,20 @@ async def init_customers_and_analytics():
                 last_contact_at TIMESTAMP,
                 sentiment_score REAL DEFAULT 0,
                 is_vip BOOLEAN DEFAULT FALSE,
+                segment TEXT,
+                lead_score INTEGER DEFAULT 0,
                 created_at {TIMESTAMP_NOW},
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
         """)
+        
+        # Add segment and lead_score columns if they don't exist (for existing databases)
+        try:
+            await execute_sql(db, "ALTER TABLE customers ADD COLUMN segment TEXT")
+        except: pass
+        try:
+            await execute_sql(db, "ALTER TABLE customers ADD COLUMN lead_score INTEGER DEFAULT 0")
+        except: pass
 
         # Link inbox messages to customers
         await execute_sql(db, """
@@ -1031,7 +1054,7 @@ async def init_customers_and_analytics():
             )
         """)
 
-        # User preferences (dark mode, notifications, etc.)
+        # User preferences (UI + AI behavior / tone)
         await execute_sql(db, """
             CREATE TABLE IF NOT EXISTS user_preferences (
                 license_key_id INTEGER PRIMARY KEY,
@@ -1041,6 +1064,14 @@ async def init_customers_and_analytics():
                 auto_reply_delay_seconds INTEGER DEFAULT 30,
                 language TEXT DEFAULT 'ar',
                 onboarding_completed BOOLEAN DEFAULT FALSE,
+                tone TEXT DEFAULT 'formal',
+                custom_tone_guidelines TEXT,
+                business_name TEXT,
+                industry TEXT,
+                products_services TEXT,
+                preferred_languages TEXT,
+                reply_length TEXT,
+                formality_level TEXT,
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
         """)
@@ -1071,45 +1102,71 @@ async def get_or_create_customer(
     email: str = None,
     name: str = None
 ) -> dict:
-    """Get existing customer or create new one"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        
+    """Get existing customer or create new one (SQLite & PostgreSQL compatible)."""
+    async with get_db() as db:
         # Try to find by phone or email
         if phone:
-            async with db.execute(
+            row = await fetch_one(
+                db,
                 "SELECT * FROM customers WHERE license_key_id = ? AND phone = ?",
-                (license_id, phone)
-            ) as cursor:
-                row = await cursor.fetchone()
-                if row:
-                    return dict(row)
+                [license_id, phone]
+            )
+            if row:
+                return dict(row)
         
         if email:
-            async with db.execute(
+            row = await fetch_one(
+                db,
                 "SELECT * FROM customers WHERE license_key_id = ? AND email = ?",
-                (license_id, email)
-            ) as cursor:
-                row = await cursor.fetchone()
-                if row:
-                    return dict(row)
+                [license_id, email]
+            )
+            if row:
+                return dict(row)
         
         # Create new customer
-        cursor = await db.execute("""
-            INSERT INTO customers (license_key_id, name, phone, email)
-            VALUES (?, ?, ?, ?)
-        """, (license_id, name, phone, email))
-        await db.commit()
-        
-        return {
-            "id": cursor.lastrowid,
-            "license_key_id": license_id,
-            "name": name,
-            "phone": phone,
-            "email": email,
-            "total_messages": 0,
-            "is_vip": False
-        }
+        from db_helper import DB_TYPE
+        if DB_TYPE == "postgresql":
+            # PostgreSQL: use RETURNING
+            row = await fetch_one(
+                db,
+                """
+                INSERT INTO customers (license_key_id, name, phone, email, lead_score, segment)
+                VALUES (?, ?, ?, ?, 0, 'New')
+                RETURNING *
+                """,
+                [license_id, name, phone, email]
+            )
+            await commit_db(db)
+            return dict(row) if row else {}
+        else:
+            # SQLite: insert then fetch
+            await execute_sql(
+                db,
+                """
+                INSERT INTO customers (license_key_id, name, phone, email, lead_score, segment)
+                VALUES (?, ?, ?, ?, 0, 'New')
+                """,
+                [license_id, name, phone, email]
+            )
+            await commit_db(db)
+            
+            # Get the inserted row
+            row = await fetch_one(
+                db,
+                "SELECT * FROM customers WHERE license_key_id = ? AND (phone = ? OR email = ?) ORDER BY id DESC LIMIT 1",
+                [license_id, phone or "", email or ""]
+            )
+            return dict(row) if row else {
+                "id": None,
+                "license_key_id": license_id,
+                "name": name,
+                "phone": phone,
+                "email": email,
+                "total_messages": 0,
+                "is_vip": False,
+                "lead_score": 0,
+                "segment": "New"
+            }
 
 
 async def get_customers(license_id: int, limit: int = 100) -> List[dict]:
@@ -1164,16 +1221,244 @@ async def update_customer(
         return True
 
 
+async def get_recent_conversation(
+    license_id: int,
+    sender_contact: str,
+    limit: int = 5,
+) -> str:
+    """
+    Get recent messages for a given customer (by sender_contact) as conversation context.
+    Returns a single concatenated string (most recent first).
+    """
+    if not sender_contact:
+        return ""
+
+    async with get_db() as db:
+        rows = await fetch_all(
+            db,
+            """
+            SELECT body, created_at, channel
+            FROM inbox_messages
+            WHERE license_key_id = ?
+              AND sender_contact = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            [license_id, sender_contact, limit],
+        )
+
+    if not rows:
+        return ""
+
+    parts = []
+    for row in rows:
+        channel = row.get("channel") or ""
+        ts = row.get("created_at") or ""
+        body = row.get("body") or ""
+        parts.append(f"[{channel} @ {ts}] {body}".strip())
+
+    return "\n".join(parts)
+
+
+async def get_customer_for_message(
+    license_id: int,
+    inbox_message_id: int,
+) -> Optional[dict]:
+    """
+    Get the customer associated with a specific inbox message via customer_messages.
+    """
+    async with get_db() as db:
+        row = await fetch_one(
+            db,
+            """
+            SELECT c.*
+            FROM customers c
+            JOIN customer_messages cm
+              ON cm.customer_id = c.id
+            WHERE cm.inbox_message_id = ?
+              AND c.license_key_id = ?
+            LIMIT 1
+            """,
+            [inbox_message_id, license_id],
+        )
+
+    return dict(row) if row else None
+
+
 async def increment_customer_messages(customer_id: int):
-    """Increment customer message count and update last contact"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute("""
+    """Increment customer message count and update last contact (SQLite & PostgreSQL compatible)."""
+    from db_helper import DB_TYPE
+    now = datetime.utcnow()
+    
+    if DB_TYPE == "postgresql":
+        ts_value = now
+    else:
+        ts_value = now.isoformat()
+    
+    async with get_db() as db:
+        await execute_sql(
+            db,
+            """
             UPDATE customers SET 
                 total_messages = total_messages + 1,
                 last_contact_at = ?
             WHERE id = ?
-        """, (datetime.now().isoformat(), customer_id))
-        await db.commit()
+            """,
+            [ts_value, customer_id]
+        )
+        await commit_db(db)
+
+
+def calculate_lead_score(
+    total_messages: int,
+    intent: str = None,
+    sentiment: str = None,
+    sentiment_score: float = 0.0,
+    days_since_last_contact: int = None
+) -> int:
+    """
+    Calculate lead score based on engagement metrics.
+    Returns a score from 0-100.
+    """
+    score = 0
+    
+    # Base score from message count (0-30 points)
+    if total_messages == 0:
+        score += 0
+    elif total_messages == 1:
+        score += 5
+    elif total_messages <= 3:
+        score += 10
+    elif total_messages <= 10:
+        score += 20
+    else:
+        score += 30
+    
+    # Intent-based scoring (0-30 points)
+    if intent:
+        intent_lower = intent.lower()
+        if "عرض" in intent_lower or "طلب خدمة" in intent_lower or "شراء" in intent_lower:
+            score += 30
+        elif "استفسار" in intent_lower or "متابعة" in intent_lower:
+            score += 20
+        elif "شكوى" in intent_lower:
+            score += 10
+        else:
+            score += 5
+    
+    # Sentiment-based scoring (0-25 points)
+    if sentiment:
+        sentiment_lower = sentiment.lower()
+        if "إيجابي" in sentiment_lower or "positive" in sentiment_lower:
+            score += 25
+        elif "محايد" in sentiment_lower or "neutral" in sentiment_lower:
+            score += 15
+        else:
+            score += 5
+    
+    # Sentiment score bonus (0-10 points)
+    if sentiment_score > 0.7:
+        score += 10
+    elif sentiment_score > 0.4:
+        score += 5
+    elif sentiment_score < -0.3:
+        score -= 5
+    
+    # Recency bonus (0-5 points) - recent contact is better
+    if days_since_last_contact is not None:
+        if days_since_last_contact <= 1:
+            score += 5
+        elif days_since_last_contact <= 7:
+            score += 3
+        elif days_since_last_contact <= 30:
+            score += 1
+    
+    # Ensure score is between 0-100
+    return max(0, min(100, score))
+
+
+def determine_segment(lead_score: int, total_messages: int, is_vip: bool = False) -> str:
+    """
+    Determine customer segment based on lead score and other factors.
+    """
+    if is_vip:
+        return "VIP"
+    
+    if lead_score >= 70:
+        return "High-Value"
+    elif lead_score >= 50:
+        return "Warm Lead"
+    elif lead_score >= 30:
+        return "Cold Lead"
+    elif total_messages == 0:
+        return "New"
+    else:
+        return "Low-Engagement"
+
+
+async def update_customer_lead_score(
+    license_id: int,
+    customer_id: int,
+    intent: str = None,
+    sentiment: str = None,
+    sentiment_score: float = 0.0
+) -> bool:
+    """
+    Update customer lead score and segment based on new message analysis.
+    Uses get_db() for cross-database compatibility.
+    """
+    async with get_db() as db:
+        # Get current customer data
+        customer = await fetch_one(
+            db,
+            "SELECT total_messages, sentiment_score, last_contact_at FROM customers WHERE id = ? AND license_key_id = ?",
+            [customer_id, license_id]
+        )
+        
+        if not customer:
+            return False
+        
+        total_messages = customer.get("total_messages", 0) or 0
+        current_sentiment_score = customer.get("sentiment_score", 0.0) or 0.0
+        
+        # Calculate days since last contact
+        last_contact = customer.get("last_contact_at")
+        days_since = None
+        if last_contact:
+            if isinstance(last_contact, str):
+                try:
+                    last_contact_dt = datetime.fromisoformat(last_contact.replace('Z', '+00:00'))
+                except:
+                    last_contact_dt = datetime.utcnow()
+            else:
+                last_contact_dt = last_contact
+            days_since = (datetime.utcnow() - last_contact_dt.replace(tzinfo=None)).days
+        
+        # Calculate new lead score
+        new_score = calculate_lead_score(
+            total_messages=total_messages,
+            intent=intent,
+            sentiment=sentiment,
+            sentiment_score=current_sentiment_score,
+            days_since_last_contact=days_since
+        )
+        
+        # Determine segment
+        new_segment = determine_segment(
+            lead_score=new_score,
+            total_messages=total_messages,
+            is_vip=customer.get("is_vip", False)
+        )
+        
+        # Update customer
+        await execute_sql(
+            db,
+            "UPDATE customers SET lead_score = ?, segment = ? WHERE id = ? AND license_key_id = ?",
+            [new_score, new_segment, customer_id, license_id]
+        )
+        await commit_db(db)
+        
+        return True
 
 
 # ============ Analytics ============
@@ -1303,26 +1588,58 @@ async def get_preferences(license_id: int) -> dict:
             row = await cursor.fetchone()
             if row:
                 return dict(row)
-        
-        # Create default preferences
+
+        # Create default preferences including AI tone defaults
         await db.execute(
-            "INSERT INTO user_preferences (license_key_id) VALUES (?)",
+            """
+            INSERT INTO user_preferences (
+                license_key_id,
+                tone,
+                language,
+                preferred_languages
+            ) VALUES (?, 'formal', 'ar', 'ar')
+            """,
             (license_id,)
         )
         await db.commit()
-        
+
         return {
             "license_key_id": license_id,
             "dark_mode": False,
             "notifications_enabled": True,
-            "onboarding_completed": False
+            "notification_sound": True,
+            "auto_reply_delay_seconds": 30,
+            "language": "ar",
+            "onboarding_completed": False,
+            "tone": "formal",
+            "custom_tone_guidelines": None,
+            "business_name": None,
+            "industry": None,
+            "products_services": None,
+            "preferred_languages": "ar",
+            "reply_length": None,
+            "formality_level": None,
         }
 
 
 async def update_preferences(license_id: int, **kwargs) -> bool:
     """Update user preferences"""
-    allowed = ['dark_mode', 'notifications_enabled', 'notification_sound', 
-               'auto_reply_delay_seconds', 'onboarding_completed']
+    allowed = [
+        'dark_mode',
+        'notifications_enabled',
+        'notification_sound',
+        'auto_reply_delay_seconds',
+        'onboarding_completed',
+        # AI / workspace tone & business profile
+        'tone',
+        'custom_tone_guidelines',
+        'business_name',
+        'industry',
+        'products_services',
+        'preferred_languages',
+        'reply_length',
+        'formality_level',
+    ]
     updates = {k: v for k, v in kwargs.items() if k in allowed}
     
     if not updates:

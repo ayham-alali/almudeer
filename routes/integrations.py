@@ -32,6 +32,8 @@ from models import (
     mark_outbox_sent,
     get_pending_outbox,
     init_enhanced_tables,
+    get_whatsapp_config,
+    get_customer_for_message,
 )
 from services import EmailService, EMAIL_PROVIDERS, TelegramService, TELEGRAM_SETUP_GUIDE, GmailOAuthService, GmailAPIService, TelegramPhoneService
 from models import get_email_oauth_tokens
@@ -94,12 +96,278 @@ class InboxMessageResponse(BaseModel):
     created_at: str
 
 
+class WorkerStatusResponse(BaseModel):
+    email_polling: dict
+    telegram_polling: dict
+
+
+class IntegrationAccount(BaseModel):
+    id: str
+    channel_type: str
+    display_name: str
+    is_active: bool
+    details: Optional[str] = None
+
+
+class InboxCustomerResponse(BaseModel):
+    customer: Optional[dict]
+
+
 # ============ Email Routes (Gmail OAuth 2.0) ============
 
 @router.get("/email/providers")
 async def get_email_providers():
     """Get list of supported email providers (Gmail only)"""
     return {"providers": EMAIL_PROVIDERS}
+
+
+@router.get("/workers/status", response_model=WorkerStatusResponse)
+async def workers_status():
+    """
+    Lightweight status endpoint used by the dashboard to display 24/7 system activity.
+    Does not require a license key; it's purely operational.
+    """
+    return get_worker_status()
+
+
+@router.get("/accounts")
+async def list_integration_accounts(license: dict = Depends(get_license_from_header)):
+    """
+    Unified view of all connected channels/accounts for a given workspace.
+
+    This currently aggregates:
+    - Email (Gmail OAuth config)
+    - Telegram bot
+    - Telegram phone session
+    - WhatsApp Business
+    """
+    license_id = license["license_id"]
+    accounts: List[IntegrationAccount] = []
+
+    # Email
+    email_cfg = await get_email_config(license_id)
+    if email_cfg:
+        accounts.append(
+            IntegrationAccount(
+                id="email",
+                channel_type="email",
+                display_name=email_cfg.get("email_address") or "Gmail",
+                is_active=bool(email_cfg.get("is_active")),
+                details="Gmail OAuth",
+            )
+        )
+
+    # Telegram bot
+    telegram_cfg = await get_telegram_config(license_id)
+    if telegram_cfg:
+        display = telegram_cfg.get("bot_username") or "Telegram Bot"
+        accounts.append(
+            IntegrationAccount(
+                id="telegram_bot",
+                channel_type="telegram_bot",
+                display_name=display,
+                is_active=bool(telegram_cfg.get("is_active")),
+                details=telegram_cfg.get("bot_token_masked"),
+            )
+        )
+
+    # Telegram phone
+    phone_cfg = await get_telegram_phone_session(license_id)
+    if phone_cfg:
+        display = phone_cfg.get("phone_number_masked") or phone_cfg.get("phone_number") or "Telegram Phone"
+        accounts.append(
+            IntegrationAccount(
+                id="telegram_phone",
+                channel_type="telegram_phone",
+                display_name=display,
+                is_active=bool(phone_cfg.get("is_active", True)),
+                details=phone_cfg.get("user_username"),
+            )
+        )
+
+    # WhatsApp
+    whatsapp_cfg = await get_whatsapp_config(license_id)
+    if whatsapp_cfg:
+        display = whatsapp_cfg.get("phone_number_id") or "WhatsApp Business"
+        accounts.append(
+            IntegrationAccount(
+                id="whatsapp",
+                channel_type="whatsapp",
+                display_name=str(display),
+                is_active=bool(whatsapp_cfg.get("is_active")),
+                details=whatsapp_cfg.get("business_account_id"),
+            )
+        )
+
+    return {"accounts": accounts}
+
+
+@router.post("/accounts")
+async def create_integration_account(
+    request: dict,
+    license: dict = Depends(get_license_from_header)
+):
+    """
+    Create/link a new integration account.
+    
+    Request body should contain:
+    - channel_type: "email" | "telegram_bot" | "telegram_phone" | "whatsapp"
+    - Additional fields depending on channel_type
+    
+    For email: redirects to OAuth flow
+    For others: requires config data
+    """
+    license_id = license["license_id"]
+    channel_type = request.get("channel_type")
+    
+    if not channel_type:
+        raise HTTPException(status_code=400, detail="channel_type مطلوب")
+    
+    if channel_type == "email":
+        # For email, return OAuth URL
+        oauth_service = GmailOAuthService()
+        state = GmailOAuthService.encode_state(license_id)
+        auth_url = oauth_service.get_authorization_url(state)
+        return {
+            "success": True,
+            "action": "oauth_redirect",
+            "authorization_url": auth_url,
+            "message": "يرجى فتح هذا الرابط وتسجيل الدخول بحساب Google الخاص بك"
+        }
+    elif channel_type == "telegram_bot":
+        bot_token = request.get("bot_token")
+        if not bot_token:
+            raise HTTPException(status_code=400, detail="bot_token مطلوب لربط Telegram Bot")
+        
+        # Save telegram config
+        await save_telegram_config(
+            license_id=license_id,
+            bot_token=bot_token,
+            auto_reply_enabled=request.get("auto_reply_enabled", False)
+        )
+        return {
+            "success": True,
+            "message": "تم ربط Telegram Bot بنجاح",
+            "account_id": "telegram_bot"
+        }
+    elif channel_type == "whatsapp":
+        phone_number_id = request.get("phone_number_id")
+        access_token = request.get("access_token")
+        if not phone_number_id or not access_token:
+            raise HTTPException(status_code=400, detail="phone_number_id و access_token مطلوبان لربط WhatsApp")
+        
+        # Use WhatsApp service to save config
+        from services.whatsapp_service import save_whatsapp_config
+        import os
+        verify_token = os.urandom(16).hex()
+        
+        await save_whatsapp_config(
+            license_id=license_id,
+            phone_number_id=phone_number_id,
+            access_token=access_token,
+            business_account_id=request.get("business_account_id"),
+            verify_token=verify_token,
+            auto_reply_enabled=request.get("auto_reply_enabled", False)
+        )
+        return {
+            "success": True,
+            "message": "تم ربط WhatsApp Business بنجاح",
+            "account_id": "whatsapp",
+            "verify_token": verify_token
+        }
+    elif channel_type == "telegram_phone":
+        # Telegram phone requires a multi-step flow, return instructions
+        return {
+            "success": True,
+            "action": "multi_step",
+            "message": "استخدم /telegram-phone/start لبدء عملية ربط Telegram Phone",
+            "steps": [
+                "استدعي POST /api/integrations/telegram-phone/start مع رقم الهاتف",
+                "استلم رمز التحقق من Telegram",
+                "استدعي POST /api/integrations/telegram-phone/verify مع الرمز"
+            ]
+        }
+    else:
+        raise HTTPException(status_code=400, detail=f"نوع القناة غير مدعوم: {channel_type}")
+
+
+@router.delete("/accounts/{account_id}")
+async def delete_integration_account(
+    account_id: str,
+    license: dict = Depends(get_license_from_header)
+):
+    """
+    Delete/disconnect an integration account.
+    
+    account_id can be: "email", "telegram_bot", "telegram_phone", "whatsapp"
+    """
+    license_id = license["license_id"]
+    
+    if account_id == "email":
+        # Deactivate email config
+        email_cfg = await get_email_config(license_id)
+        if email_cfg:
+            await update_email_config_settings(
+                license_id=license_id,
+                is_active=False
+            )
+            return {"success": True, "message": "تم إلغاء تفعيل حساب البريد الإلكتروني"}
+        else:
+            raise HTTPException(status_code=404, detail="لا يوجد حساب بريد إلكتروني مرتبط")
+    
+    elif account_id == "telegram_bot":
+        # Delete telegram config (we'd need a delete function, or just deactivate)
+        telegram_cfg = await get_telegram_config(license_id)
+        if telegram_cfg:
+            # For now, we'll deactivate it (full deletion would require a delete function)
+            from db_helper import get_db, execute_sql, commit_db
+            async with get_db() as db:
+                await execute_sql(
+                    db,
+                    "UPDATE telegram_configs SET is_active = 0 WHERE license_key_id = ?",
+                    [license_id]
+                )
+                await commit_db(db)
+            return {"success": True, "message": "تم إلغاء تفعيل Telegram Bot"}
+        else:
+            raise HTTPException(status_code=404, detail="لا يوجد Telegram Bot مرتبط")
+    
+    elif account_id == "telegram_phone":
+        # Disconnect telegram phone session
+        await deactivate_telegram_phone_session(license_id)
+        return {"success": True, "message": "تم قطع الاتصال بـ Telegram Phone"}
+    
+    elif account_id == "whatsapp":
+        # Deactivate WhatsApp config
+        whatsapp_cfg = await get_whatsapp_config(license_id)
+        if whatsapp_cfg:
+            from db_helper import get_db, execute_sql, commit_db
+            async with get_db() as db:
+                await execute_sql(
+                    db,
+                    "UPDATE whatsapp_configs SET is_active = 0 WHERE license_key_id = ?",
+                    [license_id]
+                )
+                await commit_db(db)
+            return {"success": True, "message": "تم إلغاء تفعيل WhatsApp Business"}
+        else:
+            raise HTTPException(status_code=404, detail="لا يوجد WhatsApp Business مرتبط")
+    
+    else:
+        raise HTTPException(status_code=400, detail=f"معرف الحساب غير صالح: {account_id}")
+
+
+@router.get("/inbox/{message_id}/customer", response_model=InboxCustomerResponse)
+async def get_inbox_customer(
+    message_id: int,
+    license: dict = Depends(get_license_from_header),
+):
+    """
+    Get the customer linked to a specific inbox message (if any).
+    """
+    license_id = license["license_id"]
+    customer = await get_customer_for_message(license_id, message_id)
+    return {"customer": customer}
 
 
 @router.get("/email/oauth/authorize")
@@ -466,9 +734,9 @@ async def fetch_emails(
             oauth_service
         )
         
-        # Fetch emails using Gmail API
+        # Fetch emails using Gmail API (last 72 hours only)
         emails = await gmail_service.fetch_new_emails(
-            since_hours=24,
+            since_hours=72,
             limit=50
         )
         
@@ -858,7 +1126,7 @@ async def analyze_inbox_message(
     try:
         # Process with AI
         result = await process_message(body)
-        
+
         if result["success"]:
             data = result["data"]
             await update_inbox_analysis(
@@ -866,8 +1134,10 @@ async def analyze_inbox_message(
                 intent=data["intent"],
                 urgency=data["urgency"],
                 sentiment=data["sentiment"],
+                language=data.get("language"),
+                dialect=data.get("dialect"),
                 summary=data["summary"],
-                draft_response=data["draft_response"]
+                draft_response=data["draft_response"],
             )
             
             # Auto-reply if enabled

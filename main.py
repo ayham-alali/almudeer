@@ -54,7 +54,12 @@ from schemas import (
     HealthCheck
 )
 from agent import process_message
-from models import init_enhanced_tables, init_customers_and_analytics
+from models import (
+    init_enhanced_tables,
+    init_customers_and_analytics,
+    get_preferences,
+    get_recent_conversation,
+)
 from routes import integrations_router, features_router, whatsapp_router, team_router, export_router, notifications_router
 from routes.subscription import router as subscription_router
 from security import sanitize_message, sanitize_string
@@ -373,19 +378,35 @@ async def analyze_message(
     sanitized_sender_name = sanitize_string(data.sender_name) if data.sender_name else None
     sanitized_sender_contact = sanitize_string(data.sender_contact) if data.sender_contact else None
     
+    license_id = license["license_id"]
+
     # Increment usage
     await increment_usage(
-        license["license_id"],
+        license_id,
         "analyze",
         sanitized_message[:100]
     )
     
+    # Load workspace preferences for tone & business profile
+    prefs = await get_preferences(license_id)
+
+    # Load recent conversation history for this sender (if available)
+    conversation_history = ""
+    if sanitized_sender_contact:
+        conversation_history = await get_recent_conversation(
+            license_id=license_id,
+            sender_contact=sanitized_sender_contact,
+            limit=5,
+        )
+
     # Process the message
     result = await process_message(
         message=sanitized_message,
         message_type=data.message_type,
         sender_name=sanitized_sender_name,
-        sender_contact=sanitized_sender_contact
+        sender_contact=sanitized_sender_contact,
+        preferences=prefs,
+        conversation_history=conversation_history,
     )
     
     if result["success"]:
@@ -423,17 +444,32 @@ async def draft_response(
     sanitized_sender_name = sanitize_string(data.sender_name) if data.sender_name else None
     sanitized_sender_contact = sanitize_string(data.sender_contact) if data.sender_contact else None
     
+    license_id = license["license_id"]
+
     await increment_usage(
-        license["license_id"],
+        license_id,
         "draft",
         sanitized_message[:100]
     )
     
+    prefs = await get_preferences(license_id)
+
+    # Load recent conversation history for this sender (if available)
+    conversation_history = ""
+    if sanitized_sender_contact:
+        conversation_history = await get_recent_conversation(
+            license_id=license_id,
+            sender_contact=sanitized_sender_contact,
+            limit=5,
+        )
+
     result = await process_message(
         message=sanitized_message,
         message_type=data.message_type,
         sender_name=sanitized_sender_name,
-        sender_contact=sanitized_sender_contact
+        sender_contact=sanitized_sender_contact,
+        preferences=prefs,
+        conversation_history=conversation_history,
     )
     
     if result["success"]:

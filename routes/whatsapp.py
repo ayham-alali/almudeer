@@ -278,7 +278,7 @@ async def receive_webhook(request: Request):
                         continue  # Skip status updates for now
                     
                     # Save to inbox
-                    await save_inbox_message(
+                    inbox_id = await save_inbox_message(
                         license_id=license_id,
                         channel="whatsapp",
                         channel_message_id=msg.get("message_id"),
@@ -288,6 +288,27 @@ async def receive_webhook(request: Request):
                         body=msg.get("body", ""),
                         received_at=msg.get("timestamp")
                     )
+
+                    # Analyze with AI (WhatsApp auto-analysis; auto-reply can be added later)
+                    try:
+                        from routes.integrations import analyze_inbox_message  # local import to avoid cycles
+                        from models import get_whatsapp_config
+                        from fastapi import BackgroundTasks
+
+                        # Determine auto_reply from config if available
+                        config = await get_whatsapp_config(license_id)
+                        auto_reply_enabled = bool(config and config.get("auto_reply_enabled"))
+
+                        background_tasks = BackgroundTasks()
+                        background_tasks.add_task(
+                            analyze_inbox_message,
+                            inbox_id,
+                            msg.get("body", ""),
+                            license_id,
+                            auto_reply_enabled,
+                        )
+                    except Exception as e:
+                        print(f"WhatsApp auto-analysis scheduling failed: {e}")
                     
                     # Create notification
                     await create_smart_notification(

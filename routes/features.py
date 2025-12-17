@@ -154,6 +154,85 @@ async def get_chart_data(
     return {"data": rows}
 
 
+@router.get("/analytics/by-channel")
+async def get_channel_analytics(
+    days: int = 30,
+    license: dict = Depends(get_license_from_header)
+):
+    """Get message counts per channel for the given period."""
+    cutoff_ts = datetime.utcnow() - timedelta(days=days)
+
+    async with get_db() as db:
+        rows = await fetch_all(
+            db,
+            """
+            SELECT channel, COUNT(*) as messages
+            FROM inbox_messages
+            WHERE license_key_id = ?
+              AND created_at >= ?
+            GROUP BY channel
+            ORDER BY messages DESC
+            """,
+            [license["license_id"], cutoff_ts],
+        )
+
+    return {"data": rows}
+
+
+@router.get("/analytics/by-intent")
+async def get_intent_analytics(
+    days: int = 30,
+    license: dict = Depends(get_license_from_header)
+):
+    """Get message counts per intent for the given period."""
+    cutoff_ts = datetime.utcnow() - timedelta(days=days)
+
+    async with get_db() as db:
+        rows = await fetch_all(
+            db,
+            """
+            SELECT intent, COUNT(*) as messages
+            FROM inbox_messages
+            WHERE license_key_id = ?
+              AND created_at >= ?
+              AND intent IS NOT NULL
+              AND intent != ''
+            GROUP BY intent
+            ORDER BY messages DESC
+            """,
+            [license["license_id"], cutoff_ts],
+        )
+
+    return {"data": rows}
+
+
+@router.get("/analytics/by-language")
+async def get_language_analytics(
+    days: int = 30,
+    license: dict = Depends(get_license_from_header)
+):
+    """Get message counts per language for the given period."""
+    cutoff_ts = datetime.utcnow() - timedelta(days=days)
+
+    async with get_db() as db:
+        rows = await fetch_all(
+            db,
+            """
+            SELECT language, COUNT(*) as messages
+            FROM inbox_messages
+            WHERE license_key_id = ?
+              AND created_at >= ?
+              AND language IS NOT NULL
+              AND language != ''
+            GROUP BY language
+            ORDER BY messages DESC
+            """,
+            [license["license_id"], cutoff_ts],
+        )
+
+    return {"data": rows}
+
+
 # ============ Preferences Schemas ============
 
 class PreferencesUpdate(BaseModel):

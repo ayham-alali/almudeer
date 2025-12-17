@@ -58,6 +58,9 @@ from models import (
     approve_outbox_message,
     mark_outbox_sent,
     get_telegram_phone_session_data,
+    get_or_create_customer,
+    update_customer_lead_score,
+    increment_customer_messages,
     update_telegram_phone_session_sync_time,
     deactivate_telegram_phone_session,
 )
@@ -71,10 +74,24 @@ class MessagePoller:
     def __init__(self):
         self.running = False
         self.tasks: Dict[int, asyncio.Task] = {}
+        # Lightweight in‑memory status used by /api/integrations/workers/status
+        self.status: Dict[str, Dict[str, Optional[str]]] = {
+            "email_polling": {
+                "last_check": None,
+                "status": "stopped",
+                "next_check": None,
+            },
+            "telegram_polling": {
+                "last_check": None,
+                "status": "stopped",
+            },
+        }
     
     async def start(self):
         """Start all polling workers"""
         self.running = True
+        self.status["email_polling"]["status"] = "running"
+        self.status["telegram_polling"]["status"] = "running"
         logger.info("Starting message polling workers...")
         
         # Start polling loop
@@ -86,6 +103,8 @@ class MessagePoller:
         for task in self.tasks.values():
             task.cancel()
         self.tasks.clear()
+        self.status["email_polling"]["status"] = "stopped"
+        self.status["telegram_polling"]["status"] = "stopped"
         logger.info("Stopped message polling workers")
     
     async def _polling_loop(self):
@@ -94,6 +113,9 @@ class MessagePoller:
             try:
                 # Get all active licenses with integrations
                 active_licenses = await self._get_active_licenses()
+                now_iso = datetime.utcnow().isoformat()
+                self.status["email_polling"]["last_check"] = now_iso
+                self.status["telegram_polling"]["last_check"] = now_iso
                 
                 for license_id in active_licenses:
                     # Poll each integration type
@@ -102,10 +124,14 @@ class MessagePoller:
                     # WhatsApp uses webhooks, so no polling needed
                 
                 # Wait 60 seconds before next poll
+                next_ts = (datetime.utcnow() + timedelta(seconds=60)).isoformat()
+                self.status["email_polling"]["next_check"] = next_ts
                 await asyncio.sleep(60)
                 
             except Exception as e:
                 logger.error(f"Error in polling loop: {e}", exc_info=True)
+                self.status["email_polling"]["status"] = "error"
+                self.status["telegram_polling"]["status"] = "error"
                 await asyncio.sleep(60)  # Wait before retry
     
     async def _get_active_licenses(self) -> List[int]:
@@ -212,8 +238,8 @@ class MessagePoller:
                 oauth_service
             )
             
-            # Fetch new emails using Gmail API
-            emails = await gmail_service.fetch_new_emails(since_hours=24, limit=50)
+            # Fetch new emails using Gmail API (last 72 hours only)
+            emails = await gmail_service.fetch_new_emails(since_hours=72, limit=50)
             
             # Get recent messages for duplicate detection
             recent_messages = await get_inbox_messages(license_id, limit=50)
@@ -264,7 +290,8 @@ class MessagePoller:
                     license_id,
                     config.get("auto_reply_enabled", False),
                     "email",
-                    email_data.get("sender_contact")
+                    email_data.get("sender_contact"),
+                    email_data.get("sender_name")
                 )
             
             # Update last_checked_at
@@ -284,11 +311,11 @@ class MessagePoller:
 
             phone_service = TelegramPhoneService()
 
-            # Fetch recent messages from Telegram phone account
+            # Fetch recent messages from Telegram phone account (last 72 hours only)
             try:
                 messages = await phone_service.get_recent_messages(
                     session_string=session_string,
-                    since_hours=24,
+                    since_hours=72,
                     limit=50,
                 )
             except Exception as e:
@@ -361,6 +388,7 @@ class MessagePoller:
                     False,  # auto_reply for Telegram phone can be added later
                     "telegram",
                     msg.get("sender_contact"),
+                    msg.get("sender_name")
                 )
 
             # Update last sync time
@@ -393,7 +421,8 @@ class MessagePoller:
         license_id: int,
         auto_reply: bool,
         channel: str,
-        recipient: Optional[str] = None
+        recipient: Optional[str] = None,
+        sender_name: Optional[str] = None
     ):
         """Analyze message with AI and optionally auto-reply"""
         try:
@@ -405,16 +434,95 @@ class MessagePoller:
                 return
             
             data = result["data"]
-            
-            # Update inbox with analysis
+
+            # Update inbox with analysis (including language/dialect)
             await update_inbox_analysis(
                 message_id=message_id,
                 intent=data["intent"],
                 urgency=data["urgency"],
                 sentiment=data["sentiment"],
+                language=data.get("language"),
+                dialect=data.get("dialect"),
                 summary=data["summary"],
-                draft_response=data["draft_response"]
+                draft_response=data["draft_response"],
             )
+            
+            # Link message to customer and update lead score
+            try:
+                # Get message details to extract sender info
+                async with get_db() as db:
+                    message = await fetch_one(
+                        db,
+                        "SELECT sender_name, sender_contact FROM inbox_messages WHERE id = ?",
+                        [message_id]
+                    )
+                    
+                    if message:
+                        sender_contact = message.get("sender_contact") or recipient
+                        sender_name = message.get("sender_name") or sender_name
+                        
+                        if sender_contact:
+                            # Extract email or phone from contact
+                            email = None
+                            phone = None
+                            if "@" in sender_contact:
+                                email = sender_contact
+                            elif sender_contact.replace("+", "").replace("-", "").replace(" ", "").isdigit():
+                                phone = sender_contact
+                            
+                            # Get or create customer
+                            customer = await get_or_create_customer(
+                                license_id=license_id,
+                                phone=phone,
+                                email=email,
+                                name=sender_name
+                            )
+                            
+                            if customer and customer.get("id"):
+                                customer_id = customer["id"]
+                                
+                                # Increment message count
+                                await increment_customer_messages(customer_id)
+                                
+                                # Link message to customer (check if exists first to avoid duplicates)
+                                existing = await fetch_one(
+                                    db,
+                                    "SELECT 1 FROM customer_messages WHERE customer_id = ? AND inbox_message_id = ?",
+                                    [customer_id, message_id]
+                                )
+                                if not existing:
+                                    from db_helper import DB_TYPE
+                                    if DB_TYPE == "postgresql":
+                                        await execute_sql(
+                                            db,
+                                            """
+                                            INSERT INTO customer_messages (customer_id, inbox_message_id)
+                                            VALUES (?, ?)
+                                            ON CONFLICT (customer_id, inbox_message_id) DO NOTHING
+                                            """,
+                                            [customer_id, message_id]
+                                        )
+                                    else:
+                                        await execute_sql(
+                                            db,
+                                            """
+                                            INSERT OR IGNORE INTO customer_messages (customer_id, inbox_message_id)
+                                            VALUES (?, ?)
+                                            """,
+                                            [customer_id, message_id]
+                                        )
+                                    await commit_db(db)
+                                
+                                # Update lead score based on analysis
+                                await update_customer_lead_score(
+                                    license_id=license_id,
+                                    customer_id=customer_id,
+                                    intent=data.get("intent"),
+                                    sentiment=data.get("sentiment"),
+                                    sentiment_score=0.0  # Could be calculated from sentiment history
+                                )
+            except Exception as crm_error:
+                logger.warning(f"Error updating CRM for message {message_id}: {crm_error}")
             
             # Auto-reply if enabled
             if auto_reply and data["draft_response"]:

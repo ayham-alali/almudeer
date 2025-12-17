@@ -284,7 +284,7 @@ class TelegramPhoneService:
         self,
         session_string: str,
         limit: int = 50,
-        since_hours: int = 24
+        since_hours: int = 72
     ) -> List[Dict]:
         """
         Get recent messages from Telegram account
