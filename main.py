@@ -60,7 +60,15 @@ from models import (
     get_preferences,
     get_recent_conversation,
 )
-from routes import integrations_router, features_router, whatsapp_router, team_router, export_router, notifications_router
+# Debug logging for imports
+import logging
+logger = logging.getLogger("startup")
+try:
+    from routes import integrations_router, features_router, whatsapp_router, team_router, export_router, notifications_router
+    logger.info("Successfully imported integration routes")
+except ImportError as e:
+    logger.error(f"Failed to import routes: {e}")
+    raise e
 from routes.subscription import router as subscription_router
 from security import sanitize_message, sanitize_string
 from workers import start_message_polling, stop_message_polling
@@ -204,6 +212,7 @@ app.add_middleware(
 )
 
 # Include routes (legacy /api/ prefix for backward compatibility)
+logger.info(f"Including integrations_router with {len(integrations_router.routes)} routes")
 app.include_router(integrations_router)    # Email & Telegram
 app.include_router(features_router)        # Customers, Analytics
 app.include_router(whatsapp_router)        # WhatsApp Business
@@ -215,6 +224,21 @@ app.include_router(subscription_router)    # Subscription Key Management
 # Health check endpoints (no prefix, accessible at root level)
 from health_check import router as health_router
 app.include_router(health_router)
+
+@app.get("/debug/routes")
+def list_all_routes():
+    """List all registered routes for debugging"""
+    import logging
+    logger = logging.getLogger("debug")
+    routes = []
+    for route in app.routes:
+        routes.append({
+            "path": route.path,
+            "name": route.name,
+            "methods": list(route.methods) if hasattr(route, "methods") else None
+        })
+    logger.info(f"Listing {len(routes)} routes")
+    return {"count": len(routes), "routes": routes}
 
 # Style Learning API (adaptive AI) - optional, may require additional setup
 try:
