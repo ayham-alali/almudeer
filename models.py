@@ -1257,32 +1257,44 @@ async def create_notification(
     link: str = None
 ) -> int:
     """Create a new notification"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        cursor = await db.execute("""
+    async with get_db() as db:
+        await execute_sql(
+            db,
+            """
             INSERT INTO notifications (license_key_id, type, priority, title, message, link)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, (license_id, notification_type, priority, title, message, link))
-        await db.commit()
-        return cursor.lastrowid
+            """,
+            [license_id, notification_type, priority, title, message, link],
+        )
+
+        row = await fetch_one(
+            db,
+            """
+            SELECT id FROM notifications
+            WHERE license_key_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            [license_id],
+        )
+        await commit_db(db)
+        return row["id"] if row else 0
 
 
 async def get_notifications(license_id: int, unread_only: bool = False, limit: int = 50) -> List[dict]:
     """Get notifications for a user"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        
+    async with get_db() as db:
         query = "SELECT * FROM notifications WHERE license_key_id = ?"
         params = [license_id]
-        
+
         if unread_only:
             query += " AND is_read = FALSE"
-        
+
         query += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
-        
-        async with db.execute(query, params) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+
+        rows = await fetch_all(db, query, params)
+        return rows
 
 
 async def get_unread_count(license_id: int) -> int:
