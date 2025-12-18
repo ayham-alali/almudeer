@@ -112,6 +112,14 @@ async def lifespan(app: FastAPI):
             await init_customers_and_analytics()  # Customers, Analytics
         except Exception as e:
             logger.warning(f"Customers/analytics initialization warning (may already exist): {e}")
+        
+        # Ensure language/dialect columns exist in inbox_messages
+        try:
+            from migrations import ensure_inbox_columns
+            await ensure_inbox_columns()
+            logger.info("Inbox columns verified (language, dialect)")
+        except Exception as e:
+            logger.warning(f"Inbox column migration warning: {e}")
         demo_key = await create_demo_license()
         if demo_key:
             logger.info(f"Demo license key created: {demo_key[:20]}...")

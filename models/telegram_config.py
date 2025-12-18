@@ -227,9 +227,11 @@ async def update_telegram_phone_session_sync_time(license_id: int) -> bool:
 async def get_whatsapp_config(license_id: int) -> Optional[dict]:
     """Get WhatsApp configuration for a license (SQLite & PostgreSQL compatible)."""
     async with get_db() as db:
+        # Use TRUE for PostgreSQL, 1 for SQLite
+        is_active_value = "TRUE" if DB_TYPE == "postgresql" else "1"
         config = await fetch_one(
             db,
-            "SELECT * FROM whatsapp_configs WHERE license_key_id = ? AND is_active = 1",
+            f"SELECT * FROM whatsapp_configs WHERE license_key_id = ? AND is_active = {is_active_value}",
             [license_id],
         )
         if config and config.get("access_token"):

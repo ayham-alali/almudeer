@@ -123,3 +123,45 @@ migration_manager.register_migration(
     """
 )
 
+# Migration to add language and dialect columns
+migration_manager.register_migration(
+    version=3,
+    name="add_language_and_dialect_columns",
+    up_sql="""
+        -- Add language and dialect columns to inbox_messages
+        -- These columns are used for language analytics
+    """
+)
+
+
+async def ensure_inbox_columns():
+    """Ensure inbox_messages has language and dialect columns (run on startup)."""
+    from db_helper import get_db, execute_sql, commit_db, DB_TYPE
+    
+    async with get_db() as db:
+        if DB_TYPE == "postgresql":
+            # PostgreSQL - check if column exists and add if not
+            try:
+                await execute_sql(db, """
+                    ALTER TABLE inbox_messages ADD COLUMN IF NOT EXISTS language TEXT
+                """)
+                await execute_sql(db, """
+                    ALTER TABLE inbox_messages ADD COLUMN IF NOT EXISTS dialect TEXT
+                """)
+                await commit_db(db)
+            except Exception as e:
+                # Column might already exist
+                pass
+        else:
+            # SQLite - try to add column, ignore error if exists
+            try:
+                await execute_sql(db, "ALTER TABLE inbox_messages ADD COLUMN language TEXT")
+                await commit_db(db)
+            except:
+                pass
+            try:
+                await execute_sql(db, "ALTER TABLE inbox_messages ADD COLUMN dialect TEXT")
+                await commit_db(db)
+            except:
+                pass
+

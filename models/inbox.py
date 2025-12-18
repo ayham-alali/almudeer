@@ -97,19 +97,41 @@ async def update_inbox_analysis(
     ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
 
     async with get_db() as db:
-        await execute_sql(
-            db,
-            """
-            UPDATE inbox_messages SET
-                intent = ?, urgency = ?, sentiment = ?,
-                language = ?, dialect = ?,
-                ai_summary = ?, ai_draft_response = ?,
-                status = 'analyzed', processed_at = ?
-            WHERE id = ?
-            """,
-            [intent, urgency, sentiment, language, dialect, summary, draft_response, ts_value, message_id],
-        )
-        await commit_db(db)
+        try:
+            # Try to update with all columns including language/dialect
+            await execute_sql(
+                db,
+                """
+                UPDATE inbox_messages SET
+                    intent = ?, urgency = ?, sentiment = ?,
+                    language = ?, dialect = ?,
+                    ai_summary = ?, ai_draft_response = ?,
+                    status = 'analyzed', processed_at = ?
+                WHERE id = ?
+                """,
+                [intent, urgency, sentiment, language, dialect, summary, draft_response, ts_value, message_id],
+            )
+            await commit_db(db)
+        except Exception as e:
+            # If language/dialect columns don't exist, update without them
+            if "language" in str(e).lower() or "dialect" in str(e).lower():
+                from logging_config import get_logger
+                logger = get_logger(__name__)
+                logger.warning(f"Language/dialect columns not found, updating without them: {e}")
+                await execute_sql(
+                    db,
+                    """
+                    UPDATE inbox_messages SET
+                        intent = ?, urgency = ?, sentiment = ?,
+                        ai_summary = ?, ai_draft_response = ?,
+                        status = 'analyzed', processed_at = ?
+                    WHERE id = ?
+                    """,
+                    [intent, urgency, sentiment, summary, draft_response, ts_value, message_id],
+                )
+                await commit_db(db)
+            else:
+                raise
 
 
 async def get_inbox_messages(
