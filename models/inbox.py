@@ -138,9 +138,10 @@ async def get_inbox_messages(
     license_id: int,
     status: str = None,
     channel: str = None,
-    limit: int = 50
+    limit: int = 50,
+    offset: int = 0
 ) -> List[dict]:
-    """Get inbox messages for a license (SQLite & PostgreSQL compatible)."""
+    """Get inbox messages for a license with pagination (SQLite & PostgreSQL compatible)."""
 
     query = "SELECT * FROM inbox_messages WHERE license_key_id = ?"
     params = [license_id]
@@ -153,12 +154,36 @@ async def get_inbox_messages(
         query += " AND channel = ?"
         params.append(channel)
 
-    query += " ORDER BY created_at DESC LIMIT ?"
+    query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
     params.append(limit)
+    params.append(offset)
 
     async with get_db() as db:
         rows = await fetch_all(db, query, params)
         return rows
+
+
+async def get_inbox_messages_count(
+    license_id: int,
+    status: str = None,
+    channel: str = None
+) -> int:
+    """Get total count of inbox messages for pagination."""
+    
+    query = "SELECT COUNT(*) as count FROM inbox_messages WHERE license_key_id = ?"
+    params = [license_id]
+
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+
+    if channel:
+        query += " AND channel = ?"
+        params.append(channel)
+
+    async with get_db() as db:
+        row = await fetch_one(db, query, params)
+        return row["count"] if row else 0
 
 
 async def update_inbox_status(message_id: int, status: str):

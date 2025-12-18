@@ -26,6 +26,7 @@ from models import (
     save_inbox_message,
     update_inbox_analysis,
     get_inbox_messages,
+    get_inbox_messages_count,
     update_inbox_status,
     create_outbox_message,
     approve_outbox_message,
@@ -842,6 +843,29 @@ async def get_telegram_configuration(license: dict = Depends(get_license_from_he
     return {"config": config}
 
 
+@router.get("/telegram/webhook-status")
+async def get_telegram_webhook_status(license: dict = Depends(get_license_from_header)):
+    """Debug endpoint: Check Telegram webhook status from Telegram's API"""
+    config = await get_telegram_config(license["license_id"])
+    if not config or not config.get("bot_token"):
+        return {"error": "Telegram bot not configured"}
+    
+    import httpx
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"https://api.telegram.org/bot{config['bot_token']}/getWebhookInfo"
+            )
+            data = resp.json()
+            return {
+                "success": True,
+                "webhook_info": data.get("result", {}),
+                "configured_correctly": bool(data.get("result", {}).get("url"))
+            }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @router.post("/telegram/webhook/{license_id}")
 async def telegram_webhook(
     license_id: int,
@@ -849,26 +873,38 @@ async def telegram_webhook(
     background_tasks: BackgroundTasks
 ):
     """Receive Telegram webhook updates"""
+    from logging_config import get_logger
+    logger = get_logger("telegram_webhook")
+    
     try:
         update = await request.json()
+        logger.info(f"Telegram webhook received for license {license_id}: {update.get('update_id', 'unknown')}")
     except:
         raise HTTPException(status_code=400, detail="Invalid JSON")
     
     # Parse the update
     parsed = TelegramService.parse_update(update)
-    if not parsed or parsed["is_bot"]:
+    if not parsed:
+        logger.warning(f"Could not parse Telegram update: {update}")
+        return {"ok": True}
+    
+    if parsed["is_bot"]:
+        logger.debug("Ignoring bot message")
         return {"ok": True}  # Ignore bot messages
     
     # Only process private messages for now
     if parsed["chat_type"] != "private":
+        logger.debug(f"Ignoring non-private message, chat_type: {parsed['chat_type']}")
         return {"ok": True}
     
     # Get config to check if auto-reply is enabled
     config = await get_telegram_config(license_id)
     if not config or not config.get("is_active"):
+        logger.warning(f"Telegram config not active for license {license_id}")
         return {"ok": True}
     
     # Save to inbox
+    logger.info(f"Saving Telegram message to inbox: {parsed['text'][:50]}...")
     msg_id = await save_inbox_message(
         license_id=license_id,
         channel="telegram",
@@ -879,6 +915,7 @@ async def telegram_webhook(
         channel_message_id=str(parsed["message_id"]),
         received_at=parsed["date"]
     )
+    logger.info(f"Telegram message saved with id {msg_id}")
     
     # Analyze in background
     background_tasks.add_task(
@@ -1004,16 +1041,32 @@ async def get_inbox(
     status: Optional[str] = None,
     channel: Optional[str] = None,
     limit: int = 50,
+    offset: int = 0,
     license: dict = Depends(get_license_from_header)
 ):
-    """Get inbox messages"""
+    """Get inbox messages with pagination support for infinite scroll"""
     messages = await get_inbox_messages(
         license_id=license["license_id"],
         status=status,
         channel=channel,
-        limit=limit
+        limit=limit,
+        offset=offset
     )
-    return {"messages": messages, "total": len(messages)}
+    
+    # Get total count for pagination
+    total = await get_inbox_messages_count(
+        license_id=license["license_id"],
+        status=status,
+        channel=channel
+    )
+    
+    return {
+        "messages": messages,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(messages) < total
+    }
 
 
 @router.get("/inbox/{message_id}")
