@@ -37,8 +37,9 @@ class LLMConfig:
     openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o"))
     
     google_api_key: str = field(default_factory=lambda: os.getenv("GOOGLE_API_KEY", ""))
-    # gemini-pro is most stable for free tier; gemini-1.5-flash requires specific quota
-    google_model: str = field(default_factory=lambda: os.getenv("GOOGLE_MODEL", "gemini-pro"))
+    # gemini-2.5-flash is the latest working model for free tier API keys
+    # Older models like gemini-pro, gemini-1.5-flash are retired/unavailable
+    google_model: str = field(default_factory=lambda: os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"))
     
     # Retry settings - more aggressive for rate limit handling
     max_retries: int = 3
