@@ -41,6 +41,12 @@ class LLMConfig:
     # Older models like gemini-pro, gemini-1.5-flash are retired/unavailable
     google_model: str = field(default_factory=lambda: os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"))
     
+    # OpenRouter - aggregates many LLM providers with free tier
+    # Sign up at https://openrouter.ai for free API key
+    openrouter_api_key: str = field(default_factory=lambda: os.getenv("OPENROUTER_API_KEY", ""))
+    # Free models: google/gemini-2.0-flash-exp:free, meta-llama/llama-3.2-3b-instruct:free
+    openrouter_model: str = field(default_factory=lambda: os.getenv("OPENROUTER_MODEL", "google/gemini-2.0-flash-exp:free"))
+    
     # Retry settings - more aggressive for rate limit handling
     max_retries: int = 3
     base_delay: float = 2.0  # Increased from 1.0 for better rate limit recovery
@@ -401,6 +407,109 @@ class GeminiProvider(LLMProvider):
         self._last_error_time = time.time()
 
 
+class OpenRouterProvider(LLMProvider):
+    """OpenRouter API Provider - aggregates many LLM providers with free tier"""
+    
+    OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+    
+    def __init__(self, config: LLMConfig):
+        self.config = config
+        self._last_error_time: Optional[float] = None
+        self._error_count = 0
+    
+    @property
+    def name(self) -> str:
+        return "openrouter"
+    
+    @property
+    def is_available(self) -> bool:
+        if not self.config.openrouter_api_key:
+            return False
+        if self._error_count >= 5 and self._last_error_time:
+            if time.time() - self._last_error_time < 60:
+                return False
+            self._error_count = 0
+        return True
+    
+    async def generate(
+        self,
+        prompt: str,
+        system: Optional[str] = None,
+        json_mode: bool = False,
+        max_tokens: int = 600,
+        temperature: float = 0.3
+    ) -> Optional[LLMResponse]:
+        if not self.is_available:
+            return None
+        
+        start_time = time.time()
+        
+        for attempt in range(self.config.max_retries):
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    messages = []
+                    if system:
+                        messages.append({"role": "system", "content": system})
+                    messages.append({"role": "user", "content": prompt})
+                    
+                    body = {
+                        "model": self.config.openrouter_model,
+                        "messages": messages,
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
+                    }
+                    
+                    response = await client.post(
+                        self.OPENROUTER_API_URL,
+                        headers={
+                            "Authorization": f"Bearer {self.config.openrouter_api_key}",
+                            "Content-Type": "application/json",
+                            "HTTP-Referer": "https://almudeer.app",
+                            "X-Title": "Al-Mudeer",
+                        },
+                        json=body,
+                    )
+                    
+                    if response.status_code == 429:
+                        if attempt < self.config.max_retries - 1:
+                            delay = self.config.base_delay * (2 ** attempt)
+                            logger.warning(f"OpenRouter rate limited, retry {attempt + 1}/{self.config.max_retries}")
+                            await asyncio.sleep(delay)
+                            continue
+                        else:
+                            self._record_error()
+                            return None
+                    
+                    response.raise_for_status()
+                    data = response.json()
+                    
+                    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    latency = int((time.time() - start_time) * 1000)
+                    
+                    self._error_count = 0
+                    
+                    return LLMResponse(
+                        content=content.strip(),
+                        provider=self.name,
+                        model=self.config.openrouter_model,
+                        latency_ms=latency
+                    )
+                    
+            except Exception as e:
+                self._record_error()
+                logger.error(f"OpenRouter error: {e}")
+                if attempt < self.config.max_retries - 1:
+                    await asyncio.sleep(self.config.base_delay * (2 ** attempt))
+                    continue
+                return None
+        
+        return None
+    
+    def _record_error(self):
+        self._error_count += 1
+        self._last_error_time = time.time()
+
+
 # ============ Main Service ============
 
 class LLMService:
@@ -422,9 +531,12 @@ class LLMService:
         ) if self.config.cache_enabled else None
         
         # Initialize providers in priority order
+        # If user has OpenAI key, use it first (best quality)
+        # Then Gemini (free), then OpenRouter (free backup)
         self.providers: List[LLMProvider] = [
             OpenAIProvider(self.config),
             GeminiProvider(self.config),
+            OpenRouterProvider(self.config),
         ]
         
         # Track statistics
