@@ -214,23 +214,28 @@ async def get_language_analytics(
     """Get message counts per language for the given period."""
     cutoff_ts = datetime.utcnow() - timedelta(days=days)
 
-    async with get_db() as db:
-        rows = await fetch_all(
-            db,
-            """
-            SELECT language, COUNT(*) as messages
-            FROM inbox_messages
-            WHERE license_key_id = ?
-              AND created_at >= ?
-              AND language IS NOT NULL
-              AND language != ''
-            GROUP BY language
-            ORDER BY messages DESC
-            """,
-            [license["license_id"], cutoff_ts],
-        )
-
-    return {"data": rows}
+    try:
+        async with get_db() as db:
+            rows = await fetch_all(
+                db,
+                """
+                SELECT language, COUNT(*) as messages
+                FROM inbox_messages
+                WHERE license_key_id = ?
+                  AND created_at >= ?
+                  AND language IS NOT NULL
+                  AND language != ''
+                GROUP BY language
+                ORDER BY messages DESC
+                """,
+                [license["license_id"], cutoff_ts],
+            )
+        return {"data": rows}
+    except Exception as e:
+        # Column may not exist in older schemas
+        if "language" in str(e).lower() and "does not exist" in str(e).lower():
+            return {"data": [], "note": "Language analytics not available - database schema update required"}
+        raise
 
 
 # ============ Preferences Schemas ============

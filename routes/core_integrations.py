@@ -336,7 +336,7 @@ async def delete_integration_account(
             async with get_db() as db:
                 await execute_sql(
                     db,
-                    "UPDATE telegram_configs SET is_active = 0 WHERE license_key_id = ?",
+                    "UPDATE telegram_configs SET is_active = FALSE WHERE license_key_id = ?",
                     [license_id]
                 )
                 await commit_db(db)
@@ -357,7 +357,7 @@ async def delete_integration_account(
             async with get_db() as db:
                 await execute_sql(
                     db,
-                    "UPDATE whatsapp_configs SET is_active = 0 WHERE license_key_id = ?",
+                    "UPDATE whatsapp_configs SET is_active = FALSE WHERE license_key_id = ?",
                     [license_id]
                 )
                 await commit_db(db)
