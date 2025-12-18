@@ -5,8 +5,10 @@ Automatic message polling and processing for Email, WhatsApp, and Telegram
 
 import asyncio
 import os
+import random
+import hashlib
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Set
 
 from logging_config import get_logger
 from db_helper import (
@@ -74,6 +76,9 @@ class MessagePoller:
     def __init__(self):
         self.running = False
         self.tasks: Dict[int, asyncio.Task] = {}
+        # Track recently processed message hashes to avoid duplicate AI calls
+        self._processed_hashes: Set[str] = set()
+        self._hash_cache_max_size = 1000  # Limit memory usage
         # Lightweight in‑memory status used by /api/integrations/workers/status
         self.status: Dict[str, Dict[str, Optional[str]]] = {
             "email_polling": {
@@ -118,21 +123,23 @@ class MessagePoller:
                 self.status["telegram_polling"]["last_check"] = now_iso
                 
                 for license_id in active_licenses:
+                    # Stagger polling: random delay between licenses to spread AI load
+                    await asyncio.sleep(random.uniform(1.0, 3.0))
                     # Poll each integration type
                     asyncio.create_task(self._poll_email(license_id))
                     asyncio.create_task(self._poll_telegram(license_id))
                     # WhatsApp uses webhooks, so no polling needed
                 
-                # Wait 60 seconds before next poll
-                next_ts = (datetime.utcnow() + timedelta(seconds=60)).isoformat()
+                # Wait 120 seconds before next poll (doubled to reduce AI API usage)
+                next_ts = (datetime.utcnow() + timedelta(seconds=120)).isoformat()
                 self.status["email_polling"]["next_check"] = next_ts
-                await asyncio.sleep(60)
+                await asyncio.sleep(120)
                 
             except Exception as e:
                 logger.error(f"Error in polling loop: {e}", exc_info=True)
                 self.status["email_polling"]["status"] = "error"
                 self.status["telegram_polling"]["status"] = "error"
-                await asyncio.sleep(60)  # Wait before retry
+                await asyncio.sleep(120)  # Wait before retry
     
     async def _get_active_licenses(self) -> List[int]:
         """Get list of license IDs with active integrations"""
@@ -401,6 +408,33 @@ class MessagePoller:
         except Exception as e:
             logger.error(f"Error polling Telegram phone for license {license_id}: {e}", exc_info=True)
     
+    def _get_message_hash(self, body: str, sender: Optional[str] = None) -> str:
+        """
+        Create a hash to detect duplicate/similar messages.
+        Uses first 500 chars of body to reduce false negatives from signatures.
+        """
+        content = f"{sender or 'unknown'}:{body[:500].strip().lower()}"
+        return hashlib.md5(content.encode()).hexdigest()
+    
+    def _is_duplicate_content(self, body: str, sender: Optional[str] = None) -> bool:
+        """
+        Check if we've recently processed a similar message.
+        This prevents duplicate AI calls for the same content.
+        """
+        msg_hash = self._get_message_hash(body, sender)
+        
+        if msg_hash in self._processed_hashes:
+            logger.debug(f"Duplicate content detected, skipping AI: {msg_hash[:8]}...")
+            return True
+        
+        # Add to cache and limit size
+        self._processed_hashes.add(msg_hash)
+        if len(self._processed_hashes) > self._hash_cache_max_size:
+            # Remove oldest entries (convert to list, remove first half)
+            self._processed_hashes = set(list(self._processed_hashes)[self._hash_cache_max_size // 2:])
+        
+        return False
+    
     async def _check_existing_message(self, license_id: int, channel: str, channel_message_id: Optional[str]) -> bool:
         """Check if a message already exists in inbox"""
         if not channel_message_id:
@@ -430,6 +464,11 @@ class MessagePoller:
     ):
         """Analyze message with AI and optionally auto-reply"""
         try:
+            # Check for duplicate content to avoid wasting AI quota
+            if self._is_duplicate_content(body, sender_name):
+                logger.info(f"Skipping AI for message {message_id}: duplicate content detected")
+                return
+            
             # Process with AI agent
             result = await process_message(body)
             

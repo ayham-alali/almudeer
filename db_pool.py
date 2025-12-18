@@ -49,12 +49,13 @@ class DatabasePool:
         if not self.postgres_url:
             raise ValueError("DATABASE_URL environment variable required for PostgreSQL")
         
-        # Create connection pool
+        # Create connection pool with optimized settings for scalability
         self.pool = await asyncpg.create_pool(
             self.postgres_url,
-            min_size=2,
-            max_size=10,
-            command_timeout=60
+            min_size=5,  # Keep 5 connections warm (was 2)
+            max_size=20,  # Allow up to 20 concurrent (was 10)
+            command_timeout=60,
+            statement_cache_size=100,  # Cache prepared statements
         )
         self.db_type = "postgresql"
     

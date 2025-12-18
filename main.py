@@ -200,6 +200,10 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# Gzip Compression (reduces bandwidth by 60-80% for JSON responses)
+from starlette.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=500)  # Compress responses > 500 bytes
+
 # Performance & Security Middleware (Order matters!)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(PerformanceMiddleware)

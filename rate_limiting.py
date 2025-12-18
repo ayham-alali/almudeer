@@ -42,7 +42,7 @@ class RateLimits:
     API = os.getenv("RATE_LIMIT_API", "60/minute")
     
     # AI processing endpoints (expensive operations)
-    AI_PROCESS = os.getenv("RATE_LIMIT_AI", "10/minute")
+    AI_PROCESS = os.getenv("RATE_LIMIT_AI", "5/minute")
     
     # Message sending endpoints
     SEND_MESSAGE = os.getenv("RATE_LIMIT_SEND", "30/minute")

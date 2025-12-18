@@ -14,6 +14,10 @@ router = APIRouter(tags=["Health"])
 # Track application start time
 _start_time = time.time()
 
+# Health check cache (reduces redundant checks from load balancers)
+_health_cache: Dict[str, Any] = {}
+_health_cache_ttl = 30  # Cache for 30 seconds
+
 
 def get_uptime_seconds() -> float:
     """Get application uptime in seconds"""
@@ -72,12 +76,28 @@ async def health_check():
     """
     Basic health check endpoint for load balancers.
     Returns 200 if the service is running.
+    Cached for 30 seconds to reduce overhead.
     """
-    return {
+    global _health_cache
+    cache_key = "basic"
+    now = time.time()
+    
+    # Return cached result if valid
+    if cache_key in _health_cache:
+        cached_time, cached_result = _health_cache[cache_key]
+        if now - cached_time < _health_cache_ttl:
+            return cached_result
+    
+    # Generate fresh result
+    result = {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
         "uptime": format_uptime(get_uptime_seconds()),
     }
+    
+    # Cache result
+    _health_cache[cache_key] = (now, result)
+    return result
 
 
 @router.get("/health/live")
