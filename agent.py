@@ -16,7 +16,7 @@ from langgraph.graph import StateGraph, END
 
 # Configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
 # Base system prompt for Arabic business context
@@ -123,83 +123,88 @@ async def call_llm(
     max_tokens: int = 600,
 ) -> Optional[str]:
     """
-    Call OpenAI Chat Completions API.
+    Call LLM using multi-provider service with automatic failover.
 
-    - Uses Arabic business system prompt.
-    - Supports JSON-mode responses for structured outputs.
-    - Falls back to None if the call fails so that rule-based logic can run.
-    - Retries on 429 (rate limit) errors with exponential backoff.
+    Provider chain: OpenAI -> Google Gemini -> Rule-based fallback
+    
+    Features:
+    - Automatic failover between providers
+    - Response caching to reduce API calls
+    - Circuit breaker for failing providers
+    - Exponential backoff for rate limiting
+    
+    Returns None if all providers fail (caller should use rule-based logic).
     """
-    if not OPENAI_API_KEY:
-        # No API key configured; caller should fall back to rule-based logic
+    try:
+        from services.llm_provider import llm_generate
+        
+        effective_system = system or BASE_SYSTEM_PROMPT
+        
+        response = await llm_generate(
+            prompt=prompt,
+            system=effective_system,
+            json_mode=json_mode,
+            max_tokens=max_tokens,
+            temperature=0.3
+        )
+        
+        return response
+    except ImportError:
+        # Fallback to direct OpenAI call if service not available
+        print("LLM service not available, using direct OpenAI call")
+        return await _direct_openai_call(prompt, system, json_mode, max_tokens)
+    except Exception as e:
+        print(f"LLM service error: {e}")
         return None
 
+
+async def _direct_openai_call(
+    prompt: str,
+    system: Optional[str] = None,
+    json_mode: bool = False,
+    max_tokens: int = 600,
+) -> Optional[str]:
+    """Direct OpenAI call fallback (if llm_provider service unavailable)"""
+    if not OPENAI_API_KEY:
+        return None
+    
     effective_system = system or BASE_SYSTEM_PROMPT
     
-    # Retry configuration for rate limiting
-    max_retries = 3
-    base_delay = 1.0  # seconds
-    
-    import asyncio
-
-    for attempt in range(max_retries):
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                body: dict = {
-                    "model": OPENAI_MODEL,
-                    "messages": [
-                        {"role": "system", "content": effective_system},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": max_tokens,
-                }
-
-                if json_mode:
-                    # Ask OpenAI to produce valid JSON
-                    body["response_format"] = {"type": "json_object"}
-
-                response = await client.post(
-                    f"{OPENAI_BASE_URL}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {OPENAI_API_KEY}",
-                        "Content-Type": "application/json",
-                    },
-                    json=body,
-                )
-
-                # Handle rate limiting with retry
-                if response.status_code == 429:
-                    if attempt < max_retries - 1:
-                        delay = base_delay * (2 ** attempt)  # Exponential backoff
-                        print(f"Rate limited (429), retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
-                        await asyncio.sleep(delay)
-                        continue
-                    else:
-                        print("Rate limit exceeded after max retries")
-                        return None
-
-                response.raise_for_status()
-                data = response.json()
-                content = (
-                    data.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                )
-                return content.strip() if content else None
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429 and attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                print(f"Rate limited (429), retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
-                await asyncio.sleep(delay)
-                continue
-            print(f"LLM call failed: {e}")
-            return None
-        except Exception as e:
-            print(f"LLM call failed: {e}")
-            return None
-    
-    return None
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            body: dict = {
+                "model": OPENAI_MODEL,
+                "messages": [
+                    {"role": "system", "content": effective_system},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.3,
+                "max_tokens": max_tokens,
+            }
+            
+            if json_mode:
+                body["response_format"] = {"type": "json_object"}
+            
+            response = await client.post(
+                f"{OPENAI_BASE_URL}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+            )
+            
+            response.raise_for_status()
+            data = response.json()
+            content = (
+                data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+            return content.strip() if content else None
+    except Exception as e:
+        print(f"Direct OpenAI call failed: {e}")
+        return None
 
 
 def rule_based_classify(message: str) -> dict:

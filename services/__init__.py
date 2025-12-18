@@ -5,6 +5,7 @@ from .telegram_service import TelegramService, TelegramBotManager, TELEGRAM_SETU
 from .gmail_oauth_service import GmailOAuthService
 from .gmail_api_service import GmailAPIService
 from .telegram_phone_service import TelegramPhoneService
+from .llm_provider import LLMService, get_llm_service, llm_generate
 
 __all__ = [
     'EmailService',
@@ -15,5 +16,8 @@ __all__ = [
     'GmailOAuthService',
     'GmailAPIService',
     'TelegramPhoneService',
+    'LLMService',
+    'get_llm_service',
+    'llm_generate',
 ]
 
