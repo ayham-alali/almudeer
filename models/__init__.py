@@ -31,6 +31,7 @@ from .email_config import (
 from .telegram_config import (
     save_telegram_config,
     get_telegram_config,
+    get_telegram_bot_token,
     save_telegram_phone_session,
     get_telegram_phone_session,
     get_telegram_phone_session_data,
@@ -122,6 +123,7 @@ __all__ = [
     # Telegram
     "save_telegram_config",
     "get_telegram_config",
+    "get_telegram_bot_token",
     "save_telegram_phone_session",
     "get_telegram_phone_session",
     "get_telegram_phone_session_data",

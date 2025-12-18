@@ -64,7 +64,11 @@ async def save_telegram_config(
 
 
 async def get_telegram_config(license_id: int) -> Optional[dict]:
-    """Get Telegram configuration for a license (SQLite & PostgreSQL compatible)."""
+    """Get Telegram configuration for a license (SQLite & PostgreSQL compatible).
+    
+    Note: bot_token is masked for security in API responses.
+    Use get_telegram_bot_token() for internal backend use.
+    """
     async with get_db() as db:
         config = await fetch_one(
             db,
@@ -76,6 +80,20 @@ async def get_telegram_config(license_id: int) -> Optional[dict]:
             config["bot_token_masked"] = token[:10] + "..." + token[-5:]
             config.pop("bot_token", None)
         return config
+
+
+async def get_telegram_bot_token(license_id: int) -> Optional[str]:
+    """Get the actual bot token for internal use (e.g., API calls to Telegram).
+    
+    This returns the unmasked token - only use within backend code, never expose to API.
+    """
+    async with get_db() as db:
+        config = await fetch_one(
+            db,
+            "SELECT bot_token FROM telegram_configs WHERE license_key_id = ? AND is_active = TRUE",
+            [license_id],
+        )
+        return config["bot_token"] if config else None
 
 
 # ============ Telegram Phone Sessions Functions ============

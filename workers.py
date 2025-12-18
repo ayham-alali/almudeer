@@ -238,11 +238,13 @@ class MessagePoller:
                 oauth_service
             )
             
-            # Fetch new emails using Gmail API (last 72 hours only)
-            emails = await gmail_service.fetch_new_emails(since_hours=72, limit=50)
+            # Fetch new emails using Gmail API (last 72 hours)
+            # Increased limit to 200 to capture more messages per poll
+            emails = await gmail_service.fetch_new_emails(since_hours=72, limit=200)
             
             # Get recent messages for duplicate detection
-            recent_messages = await get_inbox_messages(license_id, limit=50)
+            # Use higher limit to avoid missing duplicates when inbox is large
+            recent_messages = await get_inbox_messages(license_id, limit=500)
             
             # Process each email
             for email_data in emails:
@@ -311,12 +313,13 @@ class MessagePoller:
 
             phone_service = TelegramPhoneService()
 
-            # Fetch recent messages from Telegram phone account (last 72 hours only)
+            # Fetch recent messages from Telegram phone account (last 72 hours)
+            # Increased limit to 200 to capture more messages per poll
             try:
                 messages = await phone_service.get_recent_messages(
                     session_string=session_string,
                     since_hours=72,
-                    limit=50,
+                    limit=200,
                 )
             except Exception as e:
                 # If the underlying Telethon client or session is invalid, avoid
@@ -340,7 +343,8 @@ class MessagePoller:
                 return
 
             # Get recent inbox messages for duplicate detection
-            recent_messages = await get_inbox_messages(license_id, limit=50)
+            # Use higher limit to avoid missing duplicates when inbox is large
+            recent_messages = await get_inbox_messages(license_id, limit=500)
 
             for msg in messages:
                 # Check if we already have this message

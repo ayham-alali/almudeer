@@ -846,15 +846,17 @@ async def get_telegram_configuration(license: dict = Depends(get_license_from_he
 @router.get("/telegram/webhook-status")
 async def get_telegram_webhook_status(license: dict = Depends(get_license_from_header)):
     """Debug endpoint: Check Telegram webhook status from Telegram's API"""
-    config = await get_telegram_config(license["license_id"])
-    if not config or not config.get("bot_token"):
-        return {"error": "Telegram bot not configured"}
+    from models import get_telegram_bot_token
+    
+    bot_token = await get_telegram_bot_token(license["license_id"])
+    if not bot_token:
+        return {"error": "Telegram bot not configured or inactive"}
     
     import httpx
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(
-                f"https://api.telegram.org/bot{config['bot_token']}/getWebhookInfo"
+                f"https://api.telegram.org/bot{bot_token}/getWebhookInfo"
             )
             data = resp.json()
             return {
@@ -1040,7 +1042,7 @@ async def disconnect_telegram_phone(license: dict = Depends(get_license_from_hea
 async def get_inbox(
     status: Optional[str] = None,
     channel: Optional[str] = None,
-    limit: int = 50,
+    limit: int = 25,
     offset: int = 0,
     license: dict = Depends(get_license_from_header)
 ):
