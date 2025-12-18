@@ -39,9 +39,9 @@ class LLMConfig:
     google_api_key: str = field(default_factory=lambda: os.getenv("GOOGLE_API_KEY", ""))
     google_model: str = field(default_factory=lambda: os.getenv("GOOGLE_MODEL", "gemini-2.0-flash"))
     
-    # Retry settings
+    # Retry settings - more aggressive for rate limit handling
     max_retries: int = 3
-    base_delay: float = 1.0
+    base_delay: float = 2.0  # Increased from 1.0 for better rate limit recovery
     
     # Cache settings
     cache_enabled: bool = field(default_factory=lambda: os.getenv("LLM_CACHE_ENABLED", "true").lower() == "true")
@@ -49,8 +49,11 @@ class LLMConfig:
     cache_max_size: int = 1000
     
     # Concurrency control - CRITICAL for preventing rate limits
-    # Max 3 concurrent LLM requests at a time (prevents burst rate limiting)
-    max_concurrent_requests: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_CONCURRENT", "3")))
+    # Default to 2 concurrent requests (reduced from 3 for better rate limit handling)
+    max_concurrent_requests: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_CONCURRENT", "2")))
+    
+    # Post-request delay in seconds - adds breathing room between requests
+    post_request_delay: float = field(default_factory=lambda: float(os.getenv("LLM_REQUEST_DELAY", "0.5")))
 
 
 # ============ Global Concurrency Control ============
@@ -562,4 +565,10 @@ async def llm_generate(
             max_tokens=max_tokens,
             temperature=temperature
         )
+        
+        # Add post-request delay to prevent burst rate limits
+        # This gives the API time to recover between sequential requests
+        if service.config.post_request_delay > 0:
+            await asyncio.sleep(service.config.post_request_delay)
+        
         return response.content if response else None
