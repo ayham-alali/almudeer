@@ -49,6 +49,7 @@ from .inbox import (
     get_inbox_conversations,
     get_inbox_conversations_count,
     get_conversation_messages,
+    get_full_chat_history,
     update_inbox_status,
     ignore_chat,
     create_outbox_message,
