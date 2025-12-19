@@ -31,17 +31,20 @@ logger = get_logger(__name__)
 @dataclass
 class LLMConfig:
     """LLM service configuration - Free Production Setup"""
+    # OpenAI (DISABLED - kept for code compatibility, empty by default)
+    openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
+    openai_base_url: str = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"))
+    openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o"))
+    
     # Provider 1: Google Gemini (PRIMARY - Free tier)
-    # Get free key: https://aistudio.google.com/app/apikey
     google_api_key: str = field(default_factory=lambda: os.getenv("GOOGLE_API_KEY", ""))
     google_model: str = field(default_factory=lambda: os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"))
     
     # Provider 2: OpenRouter (BACKUP - Free models)
-    # Get free key: https://openrouter.ai
     openrouter_api_key: str = field(default_factory=lambda: os.getenv("OPENROUTER_API_KEY", ""))
     openrouter_model: str = field(default_factory=lambda: os.getenv("OPENROUTER_MODEL", "google/gemini-2.0-flash-exp:free"))
     
-    # Failover chain: Gemini → OpenRouter → Rule-based (offline)
+    # Failover: OpenAI (if key set) → Gemini → OpenRouter → Rule-based
     
     # Retry settings - more aggressive for rate limit handling
     max_retries: int = 3

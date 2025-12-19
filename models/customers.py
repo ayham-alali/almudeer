@@ -46,18 +46,30 @@ async def get_or_create_customer(
         
         # Create new customer
         if DB_TYPE == "postgresql":
-            # PostgreSQL: use RETURNING
-            row = await fetch_one(
+            # PostgreSQL: insert then fetch the last inserted row
+            # Note: Using separate INSERT + SELECT to work around RETURNING issues
+            await execute_sql(
                 db,
                 """
                 INSERT INTO customers (license_key_id, name, phone, email, lead_score, segment)
                 VALUES (?, ?, ?, ?, 0, 'New')
-                RETURNING *
                 """,
                 [license_id, name, phone, email]
             )
             await commit_db(db)
-            return dict(row) if row else {}
+            
+            # Fetch the created customer
+            row = await fetch_one(
+                db,
+                """
+                SELECT * FROM customers 
+                WHERE license_key_id = ? 
+                AND (phone = ? OR email = ? OR (phone IS NULL AND email IS NULL))
+                ORDER BY id DESC LIMIT 1
+                """,
+                [license_id, phone or '', email or '']
+            )
+            return dict(row) if row else {"id": None}
         else:
             # SQLite: insert then fetch
             await execute_sql(
