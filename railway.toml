@@ -1,5 +1,5 @@
 # Railway Configuration for Al-Mudeer
-# Optimized for Arab World users
+# Optimized for Arab World users + Horizontal Scaling
 
 [build]
 builder = "nixpacks"  # Railway's default builder
@@ -10,6 +10,8 @@ healthcheckPath = "/health"
 healthcheckTimeout = 100
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 10
+# Scaling: Railway supports multiple replicas in paid plans
+# numReplicas = 2  # Uncomment for horizontal scaling (paid)
 
 # Performance optimization for Arab World
 [env]
@@ -18,14 +20,11 @@ REGION = "EU-West"
 OPTIMIZED_FOR = "Arab-World"
 
 # Database configuration
-# For PostgreSQL (recommended for production):
 DB_TYPE = "postgresql"
-# DATABASE_URL is automatically set by Railway when you add PostgreSQL service
-
-# For SQLite (development only):
-# DATABASE_PATH = "/app/data/almudeer.db"
 
 # Performance settings
-WORKERS = "2"  # Optimal for Railway's resources
+WORKERS = "2"  # Per instance
 KEEP_ALIVE = "5"
 
+# Horizontal scaling settings (sessions stored in Redis)
+SESSION_TTL_HOURS = "24"

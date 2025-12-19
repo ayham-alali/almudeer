@@ -73,6 +73,11 @@ from routes.subscription import router as subscription_router
 from security import sanitize_message, sanitize_string
 from workers import start_message_polling, stop_message_polling
 from db_pool import db_pool
+from services.task_queue import get_task_queue, enqueue_ai_task, get_ai_task_status
+from services.websocket_manager import get_websocket_manager, broadcast_new_message
+from services.pagination import paginate_inbox, paginate_crm, paginate_customers, PaginationParams
+from services.request_batcher import get_request_batcher, batch_analyze
+from services.db_indexes import create_indexes
 
 
 # ============ App Lifecycle ============
@@ -113,6 +118,20 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Customers/analytics initialization warning (may already exist): {e}")
         
+        # Create database indexes for query optimization
+        try:
+            await create_indexes()
+            logger.info("Database indexes created/verified")
+        except Exception as e:
+            logger.warning(f"Index creation warning: {e}")
+        
+        # Create users table for JWT auth
+        try:
+            from migrations.users_table import create_users_table
+            await create_users_table()
+        except Exception as e:
+            logger.warning(f"Users table creation note: {e}")
+        
         # Ensure language/dialect columns exist in inbox_messages
         try:
             from migrations import ensure_inbox_columns
@@ -141,6 +160,26 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to start message polling workers: {e}")
         
+        # Initialize task queue for async AI processing
+        try:
+            task_queue = await get_task_queue()
+            
+            # Handler for queued AI tasks
+            async def handle_ai_task(task_type: str, payload: dict):
+                if task_type == "analyze":
+                    return await process_message(
+                        message=payload.get("message"),
+                        message_type=payload.get("message_type"),
+                        sender_name=payload.get("sender_name"),
+                        sender_contact=payload.get("sender_contact"),
+                    )
+                return {"success": False, "error": f"Unknown task: {task_type}"}
+            
+            await task_queue.start_worker(handle_ai_task)
+            logger.info("Task queue and worker started")
+        except Exception as e:
+            logger.warning(f"Task queue initialization warning: {e}")
+        
         logger.info("Al-Mudeer backend initialized successfully")
         print("Al-Mudeer Premium Backend Ready!")
         print("Customers & Analytics - All Ready!")
@@ -155,6 +194,12 @@ async def lifespan(app: FastAPI):
         logger.info("Message polling workers stopped")
     except Exception as e:
         logger.warning(f"Error stopping workers: {e}")
+    try:
+        task_queue = await get_task_queue()
+        await task_queue.stop_worker()
+        logger.info("Task queue worker stopped")
+    except Exception as e:
+        logger.warning(f"Error stopping task queue: {e}")
     try:
         await db_pool.close()
         logger.info("Database pool closed")
@@ -239,6 +284,10 @@ app.include_router(team_router)            # Team Management
 app.include_router(export_router)          # Export & Reports
 app.include_router(notifications_router)   # Smart Notifications & Integrations
 app.include_router(subscription_router)    # Subscription Key Management
+
+# JWT Authentication routes
+from routes.auth import router as auth_router
+app.include_router(auth_router)
 
 # Health check endpoints (no prefix, accessible at root level)
 from health_check import router as health_router
@@ -488,6 +537,189 @@ async def analyze_message(
             error=result["error"]
         )
 
+
+# ============ Async Processing (Non-blocking AI) ============
+
+@app.post("/api/analyze/async", tags=["Analysis"])
+@limiter.limit("60/minute")  # Higher limit for async requests
+async def analyze_message_async(
+    request: Request,
+    data: MessageInput,
+    license: dict = Depends(verify_license)
+):
+    """
+    Queue a message for async AI analysis (non-blocking).
+    
+    Returns a task_id immediately. Poll /api/task/{task_id} for results.
+    Better for high-load scenarios where you don't need immediate results.
+    """
+    sanitized_message = sanitize_message(data.message)
+    
+    task_id = await enqueue_ai_task("analyze", {
+        "message": sanitized_message,
+        "message_type": data.message_type,
+        "sender_name": data.sender_name,
+        "sender_contact": data.sender_contact,
+        "license_id": license["license_id"],
+    })
+    
+    return {
+        "success": True,
+        "task_id": task_id,
+        "status": "queued",
+        "message": "Task queued for processing. Poll /api/task/{task_id} for results."
+    }
+
+
+@app.get("/api/task/{task_id}", tags=["Analysis"])
+async def get_task_status_endpoint(
+    task_id: str,
+    license: dict = Depends(verify_license)
+):
+    """
+    Get the status of an async task.
+    
+    Returns:
+        - status: pending, processing, completed, or failed
+        - result: The analysis result if completed
+        - error: Error message if failed
+    """
+    task = await get_ai_task_status(task_id)
+    
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    return {
+        "success": True,
+        "task_id": task_id,
+        "status": task.get("status"),
+        "result": task.get("result"),
+        "error": task.get("error"),
+        "created_at": task.get("created_at"),
+        "completed_at": task.get("completed_at"),
+    }
+
+
+# ============ Batched AI Processing ============
+
+@app.post("/api/analyze/batch", tags=["Analysis"])
+@limiter.limit("20/minute")
+async def analyze_batch(
+    request: Request,
+    data: MessageInput,
+    license: dict = Depends(verify_license)
+):
+    """
+    Analyze a message using request batching.
+    Groups similar requests for more efficient AI processing.
+    """
+    result = await batch_analyze(
+        message=sanitize_message(data.message),
+        message_type=data.message_type,
+        sender_name=data.sender_name,
+        license_id=license["license_id"],
+    )
+    return ProcessingResponse(
+        success=result.get("success", False),
+        data=AnalysisResult(**result["data"]) if result.get("success") else None,
+        error=result.get("error")
+    )
+
+
+# ============ WebSocket Real-time Updates ============
+
+from fastapi import WebSocket, WebSocketDisconnect
+
+@app.websocket("/ws/{license_key}")
+async def websocket_endpoint(websocket: WebSocket, license_key: str):
+    """
+    WebSocket for real-time updates (new messages, notifications).
+    
+    Connect with: ws://host/ws/{license_key}
+    
+    Events pushed:
+    - new_message: When new inbox message arrives
+    - notification: When notification is created
+    - task_complete: When async task finishes
+    """
+    # Validate license key
+    license_result = await validate_license_key(license_key)
+    if not license_result["valid"]:
+        await websocket.close(code=4001, reason="Invalid license key")
+        return
+    
+    license_id = license_result["license_id"]
+    manager = get_websocket_manager()
+    
+    await manager.connect(websocket, license_id)
+    try:
+        while True:
+            # Keep connection alive, handle pings
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text('{"event":"pong"}')
+    except WebSocketDisconnect:
+        await manager.disconnect(websocket, license_id)
+
+
+# ============ Paginated Endpoints ============
+
+@app.get("/api/inbox/paginated", tags=["CRM"])
+async def get_inbox_paginated(
+    page: int = 1,
+    page_size: int = 20,
+    channel: str = None,
+    is_read: bool = None,
+    license: dict = Depends(verify_license)
+):
+    """
+    Get inbox messages with pagination.
+    
+    Returns:
+        - items: List of messages
+        - pagination: {total, page, page_size, total_pages, has_next, has_prev}
+    """
+    return await paginate_inbox(
+        license_id=license["license_id"],
+        page=page,
+        page_size=page_size,
+        channel=channel,
+        is_read=is_read,
+    )
+
+
+@app.get("/api/crm/paginated", tags=["CRM"])
+async def get_crm_paginated(
+    page: int = 1,
+    page_size: int = 20,
+    license: dict = Depends(verify_license)
+):
+    """
+    Get CRM entries with pagination.
+    """
+    return await paginate_crm(
+        license_id=license["license_id"],
+        page=page,
+        page_size=page_size,
+    )
+
+
+@app.get("/api/customers/paginated", tags=["CRM"])
+async def get_customers_paginated(
+    page: int = 1,
+    page_size: int = 20,
+    search: str = None,
+    license: dict = Depends(verify_license)
+):
+    """
+    Get customers with pagination and optional search.
+    """
+    return await paginate_customers(
+        license_id=license["license_id"],
+        page=page,
+        page_size=page_size,
+        search=search,
+    )
 
 @app.post("/api/draft", response_model=ProcessingResponse, tags=["Analysis"])
 @limiter.limit("30/minute")  # Rate limit: 30 requests per minute per IP
