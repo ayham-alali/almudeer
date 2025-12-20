@@ -292,6 +292,7 @@ async def enhanced_draft_node(state: EnhancedAgentState) -> EnhancedAgentState:
     intent = state.get("intent", "أخرى")
     sentiment = state.get("sentiment", "محايد")
     key_points = state.get("key_points", [])
+    dialect = state.get("dialect", "فصحى")
     
     # Build persona-aware system prompt
     system_prompt = build_persona_prompt(
@@ -314,6 +315,18 @@ async def enhanced_draft_node(state: EnhancedAgentState) -> EnhancedAgentState:
 استخدم هذا الأسلوب في كتابة الرد."""
         except Exception:
             pass
+    
+    # Build dialect instructions based on detected dialect
+    dialect_instruction = ""
+    if dialect and dialect != "فصحى":
+        dialect_examples = {
+            "سعودي": "استخدم اللهجة السعودية/الخليجية في الرد. مثال: 'وش تحتاج؟'، 'تمام'، 'إن شاء الله'، 'يعطيك العافية'، 'كيف أقدر أساعدك؟'",
+            "خليجي": "استخدم اللهجة الخليجية في الرد. مثال: 'شلونك؟'، 'زين'، 'واجد'، 'يا هلا'، 'كيف أقدر أخدمك؟'",
+            "مصري": "استخدم اللهجة المصرية في الرد. مثال: 'إزيك؟'، 'تمام'، 'عايز إيه؟'، 'أقدر أساعدك إزاي؟'، 'الحقيقة'",
+            "شامي": "استخدم اللهجة الشامية في الرد. مثال: 'كيفك؟'، 'شو بدك؟'، 'منيح'، 'هلق'، 'كتير منيح'",
+            "سوري": "استخدم اللهجة السورية في الرد. مثال: 'شو بدك؟'، 'كيفك؟'، 'منيح'، 'هلق'، 'ليك'",
+        }
+        dialect_instruction = dialect_examples.get(dialect, f"استخدم لهجة {dialect} في الرد إن أمكن.")
     
     # Get dynamic temperature
     temperature = get_dynamic_temperature(
@@ -338,9 +351,14 @@ async def enhanced_draft_node(state: EnhancedAgentState) -> EnhancedAgentState:
 بدلاً منها، استخدم لغة طبيعية وعفوية."""
     
     prompt = f"""{few_shot}
+
+🗣️ اللهجة المطلوبة: {dialect}
+{dialect_instruction if dialect_instruction else "استخدم عربية فصحى مبسّطة وسهلة الفهم."}
+
 اكتب رداً للعميل ({sender}) بناءً على:
 - نوع الرسالة: {intent}
 - المشاعر: {sentiment}
+- اللهجة المكتشفة: {dialect}
 - النقاط الرئيسية: {', '.join(key_points) or 'غير محددة'}
 {relationship_context}
 {style_instructions}
@@ -349,7 +367,9 @@ async def enhanced_draft_node(state: EnhancedAgentState) -> EnhancedAgentState:
 {state['raw_message']}
 {anti_robotic}
 
-اكتب الرد فقط (3-6 أسطر)، بدون شرح:"""
+⚠️ مهم جداً: طابق لهجة العميل في ردك! إذا كتب بالسعودي، رد بالسعودي. إذا كتب بالمصري، رد بالمصري.
+
+اكتب الرد فقط بنفس لهجة العميل (3-6 أسطر)، بدون شرح:"""
 
     llm_response = await call_llm_enhanced(
         prompt,
@@ -374,7 +394,7 @@ async def enhanced_draft_node(state: EnhancedAgentState) -> EnhancedAgentState:
 {closing}"""
     
     # Generate summary
-    state["summary"] = f"رسالة {intent} من {sender}. المشاعر: {sentiment}."
+    state["summary"] = f"رسالة {intent} من {sender}. المشاعر: {sentiment}. اللهجة: {dialect}."
     
     # Check response quality
     quality = check_response_quality(state["draft_response"])
