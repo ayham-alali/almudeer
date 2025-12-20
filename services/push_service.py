@@ -11,10 +11,13 @@ from logging_config import get_logger
 logger = get_logger(__name__)
 
 # VAPID keys for Web Push (generate once and store in environment)
-# Generate with: from pywebpush import webpush; webpush.generate_vapid_keys()
-VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY")
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY")
 VAPID_CLAIMS_EMAIL = os.getenv("VAPID_CLAIMS_EMAIL", "mailto:admin@almudeer.com")
+
+# Handle VAPID_PRIVATE_KEY - convert escaped newlines and handle PEM format
+_raw_private_key = os.getenv("VAPID_PRIVATE_KEY", "")
+# Convert literal \n to actual newlines if stored escaped in env
+VAPID_PRIVATE_KEY = _raw_private_key.replace("\\n", "\n") if _raw_private_key else None
 
 # Check if pywebpush is available
 try:
