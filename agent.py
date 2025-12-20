@@ -7,6 +7,7 @@ Optimized for low bandwidth with text-only responses
 import json
 import re
 from typing import TypedDict, Literal, Optional, Dict, Any
+from models import update_daily_analytics
 from dataclasses import dataclass
 import httpx
 import os
@@ -174,6 +175,11 @@ def rule_based_classify(message: str) -> dict:
         intent = "متابعة"
     elif any(word in message for word in ["عرض", "خصم", "تخفيض", "فرصة"]):
         intent = "عرض"
+    # Marketing/Spam/Automated detection
+    elif any(word in message for word in ["كود", "رمز تحقق", "otp", "code", "verification"]):
+        intent = "آلي"
+    elif any(word in message for word in ["اشترك", "اربح", "مجانا", "سحب", "جوائز", "تصفية"]):
+        intent = "تسويق"
     # Detect greetings/casual messages
     elif any(word in message for word in ["مرحب", "السلام", "أهلا", "صباح", "مساء", "hi", "hello"]):
         intent = "تحية"
@@ -335,6 +341,19 @@ async def ingest_node(state: AgentState) -> AgentState:
     """Step 1: Ingest and clean the message"""
     state["processing_step"] = "استلام"
     
+    # Update analytics for received message
+    if state.get("preferences") and state["preferences"].get("license_key_id"):
+        try:
+            from models import update_daily_analytics
+            # Note: We use asyncio.create_task to not block the agent flow
+            import asyncio
+            asyncio.create_task(update_daily_analytics(
+                license_id=state["preferences"]["license_key_id"],
+                messages_received=1
+            ))
+        except Exception as e:
+            print(f"Analytics update failed: {e}")
+    
     # Clean the message
     raw = state["raw_message"].strip()
     
@@ -361,7 +380,8 @@ async def classify_node(state: AgentState) -> AgentState:
 
     prompt = f"""أنت خبير خدمة عملاء يدعم العربية ولغات أخرى.
 حلل الرسالة التالية وأعطني:
-1. النية (intent): استفسار، طلب خدمة، شكوى، متابعة، عرض، أخرى
+3. حلل الرسالة التالية وأعطني:
+4. 1. النية (intent): استفسار، طلب خدمة، شكوى، متابعة، عرض، تسويق (للمتطفلين)، آلي (OTP/تنبيهات)، أو أخرى
 2. الأهمية (urgency): عاجل، عادي، منخفض
 3. المشاعر (sentiment): إيجابي، محايد، سلبي
 4. اللغة (language): ar, en, fr, أو رمز ISO إن أمكن
@@ -589,6 +609,20 @@ async def draft_node(state: AgentState) -> AgentState:
     else:
         # Use human-like template-based response
         state["draft_response"] = generate_rule_based_response(state)
+        
+    # Update analytics for reply generation
+    if state.get("preferences") and state["preferences"].get("license_key_id"):
+        try:
+            from models import update_daily_analytics
+            # Note: We use asyncio.create_task to not block the agent flow
+            import asyncio
+            asyncio.create_task(update_daily_analytics(
+                license_id=state["preferences"]["license_key_id"],
+                messages_replied=1,
+                sentiment=state.get("sentiment", "محايد")
+            ))
+        except Exception as e:
+            print(f"Analytics reply update failed: {e}")
     
     # Generate a cleaner summary (avoid showing "None")
     sender_display = sender if sender else "عميل"
@@ -625,9 +659,25 @@ def create_inbox_agent():
     workflow.add_node("draft", draft_node)
     
     # Define edges (linear pipeline)
+    # Define conditional routing
+    def route_after_classify(state: AgentState):
+        """Route to extract or END based on intent"""
+        intent = state.get("intent", "أخرى")
+        if intent in ["تسويق", "آلي", "spam", "marketing", "automated"]:
+            return "end"
+        return "extract"
+
+    # Define edges
     workflow.set_entry_point("ingest")
     workflow.add_edge("ingest", "classify")
-    workflow.add_edge("classify", "extract")
+    workflow.add_conditional_edges(
+        "classify",
+        route_after_classify,
+        {
+            "extract": "extract",
+            "end": END
+        }
+    )
     workflow.add_edge("extract", "draft")
     workflow.add_edge("draft", END)
     

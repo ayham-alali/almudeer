@@ -25,6 +25,8 @@ from humanize import (
     check_response_quality,
     ROBOTIC_PHRASES,
 )
+from models import update_daily_analytics
+import asyncio
 
 
 # Note: LLM configuration is centralized in services/llm_provider.py
@@ -116,6 +118,16 @@ async def enhanced_classify_node(state: EnhancedAgentState) -> EnhancedAgentStat
     """Classify with advanced analysis and dialect awareness"""
     state["processing_step"] = "تصنيف"
     
+    # Update analytics (received)
+    if state.get("preferences") and state["preferences"].get("license_key_id"):
+        try:
+            asyncio.create_task(update_daily_analytics(
+                license_id=state["preferences"]["license_key_id"],
+                messages_received=1
+            ))
+        except Exception as e:
+            print(f"Analytics update failed: {e}")
+    
     # First, run advanced rule-based analysis (fast, reliable)
     try:
         from analysis_advanced import analyze_message_advanced, analysis_to_dict
@@ -160,7 +172,7 @@ async def enhanced_classify_node(state: EnhancedAgentState) -> EnhancedAgentStat
             history_block = f"\nسياق المحادثة السابقة:\n{state['conversation_history']}\n"
         
         prompt = f"""حلل الرسالة التالية:
-1. النية (intent): استفسار، طلب خدمة، شكوى، متابعة، عرض، أخرى
+1. النية (intent): استفسار، طلب خدمة، شكوى، متابعة، عرض، تسويق، آلي، أخرى
 2. الأهمية (urgency): عاجل، عادي، منخفض
 3. المشاعر (sentiment): إيجابي، محايد، سلبي
 4. اللغة: ar, en, أو أخرى
@@ -447,6 +459,17 @@ Write only the response in {lang_name} (3-6 lines), no explanation:"""
     }
     state["suggested_actions"] = actions_map.get(intent, ["مراجعة"])
     
+    # Update analytics (replied)
+    if state.get("preferences") and state["preferences"].get("license_key_id"):
+        try:
+            asyncio.create_task(update_daily_analytics(
+                license_id=state["preferences"]["license_key_id"],
+                messages_replied=1,
+                sentiment=state.get("sentiment", "محايد")
+            ))
+        except Exception as e:
+            print(f"Analytics reply update failed: {e}")
+
     return state
 
 
@@ -460,8 +483,22 @@ def create_enhanced_agent():
     workflow.add_node("extract", enhanced_extract_node)
     workflow.add_node("draft", enhanced_draft_node)
     
+    # Routing logic
+    def route_enhanced(state: EnhancedAgentState):
+        intent = state.get("intent", "أخرى")
+        if intent in ["تسويق", "آلي", "spam", "marketing", "automated"]:
+            return "end"
+        return "extract"
+
     workflow.set_entry_point("classify")
-    workflow.add_edge("classify", "extract")
+    workflow.add_conditional_edges(
+        "classify",
+        route_enhanced,
+        {
+            "extract": "extract",
+            "end": END
+        }
+    )
     workflow.add_edge("extract", "draft")
     workflow.add_edge("draft", END)
     
