@@ -163,6 +163,18 @@ async def get_inbox_messages(
         return rows
 
 
+async def get_inbox_message_by_id(message_id: int, license_id: int) -> Optional[dict]:
+    """Get a single inbox message by ID (efficient direct lookup)."""
+    async with get_db() as db:
+        row = await fetch_one(
+            db,
+            "SELECT * FROM inbox_messages WHERE id = ? AND license_key_id = ?",
+            [message_id, license_id]
+        )
+        return row
+
+
+
 async def get_inbox_messages_count(
     license_id: int,
     status: str = None,

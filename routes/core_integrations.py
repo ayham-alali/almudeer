@@ -1262,8 +1262,8 @@ async def get_inbox_message(
     license: dict = Depends(get_license_from_header)
 ):
     """Get single inbox message"""
-    messages = await get_inbox_messages(license["license_id"])
-    message = next((m for m in messages if m["id"] == message_id), None)
+    from models.inbox import get_inbox_message_by_id
+    message = await get_inbox_message_by_id(message_id, license["license_id"])
     if not message:
         raise HTTPException(status_code=404, detail="الرسالة غير موجودة")
     return {"message": message}
@@ -1347,8 +1347,8 @@ async def analyze_message(
     license: dict = Depends(get_license_from_header)
 ):
     """Re-analyze a message with AI"""
-    messages = await get_inbox_messages(license["license_id"])
-    message = next((m for m in messages if m["id"] == message_id), None)
+    from models.inbox import get_inbox_message_by_id
+    message = await get_inbox_message_by_id(message_id, license["license_id"])
     if not message:
         raise HTTPException(status_code=404, detail="الرسالة غير موجودة")
     
@@ -1372,9 +1372,9 @@ async def approve_message(
 ):
     """Approve or ignore a message/chat"""
     from models import ignore_chat
+    from models.inbox import get_inbox_message_by_id
     
-    messages = await get_inbox_messages(license["license_id"])
-    message = next((m for m in messages if m["id"] == message_id), None)
+    message = await get_inbox_message_by_id(message_id, license["license_id"])
     if not message:
         raise HTTPException(status_code=404, detail="الرسالة غير موجودة")
     
@@ -1476,8 +1476,8 @@ async def analyze_inbox_message(
             # Auto-reply if enabled
             if auto_reply and data["draft_response"]:
                 # Get message details for sending
-                messages = await get_inbox_messages(license_id)
-                message = next((m for m in messages if m["id"] == message_id), None)
+                from models.inbox import get_inbox_message_by_id
+                message = await get_inbox_message_by_id(message_id, license_id)
                 
                 if message:
                     outbox_id = await create_outbox_message(
