@@ -4,7 +4,7 @@ Customer profiles, lead scoring, analytics, preferences, notifications, and team
 """
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Optional, List
 
 from db_helper import get_db, execute_sql, fetch_all, fetch_one, commit_db, DB_TYPE
@@ -389,8 +389,14 @@ async def update_customer_lead_score(
                     last_contact_dt = datetime.fromisoformat(last_contact.replace('Z', '+00:00'))
                 except:
                     last_contact_dt = datetime.utcnow()
-            else:
+            elif isinstance(last_contact, datetime):
                 last_contact_dt = last_contact
+            elif isinstance(last_contact, date):
+                # Convert date to datetime (start of day)
+                last_contact_dt = datetime.combine(last_contact, datetime.min.time())
+            else:
+                last_contact_dt = datetime.utcnow()
+            
             days_since = (datetime.utcnow() - last_contact_dt.replace(tzinfo=None)).days
         
         # Calculate new lead score
