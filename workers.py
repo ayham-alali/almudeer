@@ -91,6 +91,13 @@ class MessagePoller:
                 "status": "stopped",
             },
         }
+        
+        # Keep references to background tasks to prevent garbage collection
+        self.background_tasks: Set[asyncio.Task] = set()
+        
+        # Limit concurrent AI requests to prevent hitting free tier rate limits
+        # Using 1 concurrent request max to be extra safe with Google/OpenRouter free tiers
+        self.ai_semaphore = asyncio.Semaphore(1)
     
     async def start(self):
         """Start all polling workers"""
@@ -100,14 +107,17 @@ class MessagePoller:
         logger.info("Starting message polling workers...")
         
         # Start polling loop
-        asyncio.create_task(self._polling_loop())
+        # Start polling loop
+        task = asyncio.create_task(self._polling_loop())
+        self.background_tasks.add(task)
+        task.add_done_callback(self.background_tasks.discard)
     
     async def stop(self):
         """Stop all polling workers"""
         self.running = False
-        for task in self.tasks.values():
+        for task in self.background_tasks:
             task.cancel()
-        self.tasks.clear()
+        self.background_tasks.clear()
         self.status["email_polling"]["status"] = "stopped"
         self.status["telegram_polling"]["status"] = "stopped"
         logger.info("Stopped message polling workers")
@@ -126,8 +136,13 @@ class MessagePoller:
                     # Stagger polling: random delay between licenses to spread AI load
                     await asyncio.sleep(random.uniform(1.0, 3.0))
                     # Poll each integration type
-                    asyncio.create_task(self._poll_email(license_id))
-                    asyncio.create_task(self._poll_telegram(license_id))
+                    t1 = asyncio.create_task(self._poll_email(license_id))
+                    self.background_tasks.add(t1)
+                    t1.add_done_callback(self.background_tasks.discard)
+                    
+                    t2 = asyncio.create_task(self._poll_telegram(license_id))
+                    self.background_tasks.add(t2)
+                    t2.add_done_callback(self.background_tasks.discard)
                     # WhatsApp uses webhooks, so no polling needed
                 
                 # Wait 120 seconds before next poll (doubled to reduce AI API usage)
@@ -480,7 +495,17 @@ class MessagePoller:
                 return
             
             # Process with AI agent
-            result = await process_message(body)
+            try:
+                # Use semaphore to limit global concurrency for free LLM tiers
+                async with self.ai_semaphore:
+                    # Add timeout to prevent hanging if AI service stalls
+                    result = await asyncio.wait_for(process_message(body), timeout=60.0)
+            except asyncio.TimeoutError:
+                logger.warning(f"AI processing timed out for message {message_id}")
+                return
+            except Exception as ai_e:
+                logger.error(f"AI processing error for message {message_id}: {ai_e}")
+                return
             
             if not result["success"]:
                 logger.warning(f"AI processing failed for message {message_id}: {result.get('error')}")

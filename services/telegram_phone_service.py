@@ -383,20 +383,19 @@ class TelegramPhoneService:
                     # Skip this dialog if error
                     continue
             
-            await client.disconnect()
-            
             # Sort by received_at, newest first
             messages_data.sort(key=lambda x: x.get("received_at", datetime.min), reverse=True)
             
             return messages_data[:limit]
         
         except Exception as e:
+            raise ValueError(f"خطأ في جلب الرسائل: {str(e)}")
+        finally:
             if client:
                 try:
                     await client.disconnect()
                 except:
                     pass
-            raise ValueError(f"خطأ في جلب الرسائل: {str(e)}")
     
     async def send_message(
         self,
@@ -454,7 +453,11 @@ class TelegramPhoneService:
                 reply_to=reply_to_message_id
             )
             
-            await client.disconnect()
+            sent_message = await client.send_message(
+                entity,
+                text,
+                reply_to=reply_to_message_id
+            )
             
             return {
                 "id": sent_message.id,
@@ -464,10 +467,11 @@ class TelegramPhoneService:
             }
         
         except Exception as e:
+            raise ValueError(f"خطأ في إرسال الرسالة: {str(e)}")
+        finally:
             if client:
                 try:
                     await client.disconnect()
                 except:
                     pass
-            raise ValueError(f"خطأ في إرسال الرسالة: {str(e)}")
 
