@@ -227,8 +227,14 @@ class TelegramPhoneService:
         client = None
         try:
             # Use StringSession directly - no temp file needed
+            # flood_sleep_threshold=0 means raise FloodWaitError immediately instead of sleeping
             session = StringSession(session_string)
-            client = TelegramClient(session, int(self.api_id), self.api_hash)
+            client = TelegramClient(
+                session, 
+                int(self.api_id), 
+                self.api_hash,
+                flood_sleep_threshold=0
+            )
             await client.connect()
             
             if not await client.is_user_authorized():
