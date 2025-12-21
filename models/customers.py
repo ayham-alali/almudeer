@@ -48,14 +48,37 @@ async def get_or_create_customer(
         if DB_TYPE == "postgresql":
             # PostgreSQL: insert then fetch the last inserted row
             # Note: Using separate INSERT + SELECT to work around RETURNING issues
-            await execute_sql(
-                db,
-                """
-                INSERT INTO customers (license_key_id, name, phone, email, lead_score, segment)
-                VALUES (?, ?, ?, ?, 0, 'New')
-                """,
-                [license_id, name, phone, email]
-            )
+            try:
+                await execute_sql(
+                    db,
+                    """
+                    INSERT INTO customers (license_key_id, name, phone, email, lead_score, segment)
+                    VALUES (?, ?, ?, ?, 0, 'New')
+                    """,
+                    [license_id, name, phone, email]
+                )
+            except Exception as e:
+                # Fallback check for missing auto-increment/serial on 'id' column
+                if "null value in column \"id\"" in str(e):
+                    import logging
+                    logger = logging.getLogger("models.customers")
+                    logger.warning(f"Auto-increment missing on customers table. Using manual ID generation fallback. Error: {e}")
+                    
+                    # Manual ID generation (not concurrency safe but prevents crash)
+                    max_row = await fetch_one(db, "SELECT MAX(id) as max_id FROM customers")
+                    next_id = (max_row["max_id"] or 0) + 1
+                    
+                    await execute_sql(
+                        db,
+                        """
+                        INSERT INTO customers (id, license_key_id, name, phone, email, lead_score, segment)
+                        VALUES (?, ?, ?, ?, ?, 0, 'New')
+                        """,
+                        [next_id, license_id, name, phone, email]
+                    )
+                else:
+                    raise e
+                    
             await commit_db(db)
             
             # Fetch the created customer

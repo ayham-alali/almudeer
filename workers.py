@@ -692,21 +692,26 @@ class MessagePoller:
                 
                 # Fall back to Bot API if phone session didn't work or doesn't exist
                 if not sent:
-                    async with get_db() as db:
-                        row = await fetch_one(
-                            db,
-                            "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?",
-                            [license_id],
-                        )
-                        if row and row.get("bot_token"):
-                            telegram_service = TelegramService(row["bot_token"])
-                            await telegram_service.send_message(
-                                chat_id=message["recipient_id"],
-                                text=message["body"]
+                    try:
+                        async with get_db() as db:
+                            row = await fetch_one(
+                                db,
+                                "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?",
+                                [license_id],
                             )
-                            
-                            await mark_outbox_sent(outbox_id)
-                            logger.info(f"Sent Telegram bot reply for outbox {outbox_id}")
+                            if row and row.get("bot_token"):
+                                telegram_service = TelegramService(row["bot_token"])
+                                await telegram_service.send_message(
+                                    chat_id=message["recipient_id"],
+                                    text=message["body"]
+                                )
+                                
+                                await mark_outbox_sent(outbox_id)
+                                logger.info(f"Sent Telegram bot reply for outbox {outbox_id}")
+                            else:
+                                logger.warning(f"No bot token found for fallback for license {license_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to send via Telegram bot fallback for outbox {outbox_id}: {e}")
 
             
             elif channel == "whatsapp":

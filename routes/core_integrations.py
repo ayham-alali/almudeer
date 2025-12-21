@@ -1534,7 +1534,8 @@ async def send_approved_message(outbox_id: int, license_id: int):
             
             if session_string:
                 try:
-                    phone_service = get_telegram_phone_service()
+                    # Fix: Use class directly, not non-existent factory function
+                    phone_service = TelegramPhoneService()
                     # Use recipient_id or sender_id as the chat we're replying to
                     recipient = message.get("recipient_id") or message.get("sender_id")
                     if recipient:
@@ -1550,20 +1551,24 @@ async def send_approved_message(outbox_id: int, license_id: int):
             
             # Fall back to Bot API if phone session didn't work or doesn't exist
             if not sent:
-                from db_helper import get_db, fetch_one
-                async with get_db() as db:
-                    row = await fetch_one(
-                        db,
-                        "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?",
-                        [license_id],
-                    )
-                    if row and row.get("bot_token"):
-                        telegram_service = TelegramService(row["bot_token"])
-                        await telegram_service.send_message(
-                            chat_id=message["recipient_id"],
-                            text=message["body"]
+                try:
+                    from db_helper import get_db, fetch_one
+                    async with get_db() as db:
+                        row = await fetch_one(
+                            db,
+                            "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?",
+                            [license_id],
                         )
-                        await mark_outbox_sent(outbox_id)
+                        if row and row.get("bot_token"):
+                            telegram_service = TelegramService(row["bot_token"])
+                            await telegram_service.send_message(
+                                chat_id=message["recipient_id"],
+                                text=message["body"]
+                            )
+                            await mark_outbox_sent(outbox_id)
+                            print(f"Sent Telegram bot reply for outbox {outbox_id}")
+                except Exception as e:
+                    print(f"Failed to send via Telegram bot fallback for outbox {outbox_id}: {e}")
     
     except Exception as e:
         print(f"Error sending message {outbox_id}: {e}")

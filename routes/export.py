@@ -129,8 +129,10 @@ async def get_export_data(license_id: int, start: datetime, end: datetime):
 
 
 def generate_csv(data: dict, data_type: str) -> str:
-    """Generate CSV content"""
+    """Generate CSV content with UTF-8 BOM for Excel compatibility"""
     output = io.StringIO()
+    # Add UTF-8 BOM for Excel to properly recognize Arabic text
+    output.write('\ufeff')
     
     if data_type == "customers":
         fieldnames = ["id", "name", "phone", "email", "company", "total_messages", "is_vip", "created_at"]
@@ -307,7 +309,7 @@ async def export_customers(
         csv_content = generate_csv(data, "customers")
         return StreamingResponse(
             io.StringIO(csv_content),
-            media_type="text/csv",
+            media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": "attachment; filename=customers.csv"}
         )
     
@@ -332,7 +334,7 @@ async def export_messages(
         csv_content = generate_csv(data, "messages")
         return StreamingResponse(
             io.StringIO(csv_content),
-            media_type="text/csv",
+            media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": "attachment; filename=messages.csv"}
         )
     
@@ -357,7 +359,7 @@ async def export_crm(
         csv_content = generate_csv(data, "crm")
         return StreamingResponse(
             io.StringIO(csv_content),
-            media_type="text/csv",
+            media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": "attachment; filename=crm.csv"}
         )
     
@@ -382,7 +384,7 @@ async def export_analytics(
         csv_content = generate_csv(data, "analytics")
         return StreamingResponse(
             io.StringIO(csv_content),
-            media_type="text/csv",
+            media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": "attachment; filename=analytics.csv"}
         )
     
