@@ -179,6 +179,200 @@ async def update_customer(
         return True
 
 
+async def get_customer_sentiment_history(
+    license_id: int,
+    customer_id: int,
+    limit: int = 10
+) -> List[float]:
+    """
+    Get sentiment history for a customer based on analyzed messages.
+    Returns a list of sentiment scores from oldest to newest.
+    """
+    async with get_db() as db:
+        # Get customer contact info
+        customer = await fetch_one(
+            db,
+            "SELECT phone, email FROM customers WHERE id = ? AND license_key_id = ?",
+            [customer_id, license_id]
+        )
+        
+        if not customer:
+            return []
+        
+        phone = customer.get("phone")
+        email = customer.get("email")
+        
+        # Build query to find messages from this customer
+        conditions = []
+        params = [license_id]
+        
+        if phone:
+            conditions.append("sender_contact = ?")
+            params.append(phone)
+        if email:
+            conditions.append("sender_contact = ?")
+            params.append(email)
+        
+        if not conditions:
+            return []
+        
+        where_clause = " OR ".join(conditions)
+        params.append(limit)
+        
+        rows = await fetch_all(
+            db,
+            f"""
+            SELECT sentiment, created_at
+            FROM inbox_messages
+            WHERE license_key_id = ? AND ({where_clause}) AND sentiment IS NOT NULL
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            params
+        )
+        
+        # Map sentiment strings to scores
+        sentiment_map = {
+            "إيجابي": 0.7,
+            "positive": 0.7,
+            "محايد": 0.0,
+            "neutral": 0.0,
+            "سلبي": -0.7,
+            "negative": -0.7
+        }
+        
+        return [sentiment_map.get(row.get("sentiment", "").lower(), 0.0) for row in rows]
+
+
+async def get_customer_avg_response_time(
+    license_id: int,
+    customer_id: int
+) -> Optional[int]:
+    """
+    Calculate average response time for a customer in seconds.
+    This measures how quickly we respond to their messages.
+    """
+    async with get_db() as db:
+        # Get customer contact info
+        customer = await fetch_one(
+            db,
+            "SELECT phone, email FROM customers WHERE id = ? AND license_key_id = ?",
+            [customer_id, license_id]
+        )
+        
+        if not customer:
+            return None
+        
+        phone = customer.get("phone")
+        email = customer.get("email")
+        
+        # For now, calculate based on message timestamps
+        # A more accurate implementation would track outbound message times
+        conditions = []
+        params = [license_id]
+        
+        if phone:
+            conditions.append("sender_contact = ?")
+            params.append(phone)
+        if email:
+            conditions.append("sender_contact = ?")
+            params.append(email)
+        
+        if not conditions:
+            return None
+        
+        where_clause = " OR ".join(conditions)
+        
+        # Get messages that have been replied to
+        rows = await fetch_all(
+            db,
+            f"""
+            SELECT created_at, replied_at
+            FROM inbox_messages
+            WHERE license_key_id = ? AND ({where_clause}) 
+              AND replied_at IS NOT NULL
+            ORDER BY created_at DESC
+            LIMIT 20
+            """,
+            params
+        )
+        
+        if not rows:
+            return None
+        
+        total_seconds = 0
+        count = 0
+        
+        for row in rows:
+            created = row.get("created_at")
+            replied = row.get("replied_at")
+            if created and replied:
+                try:
+                    if isinstance(created, str):
+                        created = datetime.fromisoformat(created.replace('Z', '+00:00'))
+                    if isinstance(replied, str):
+                        replied = datetime.fromisoformat(replied.replace('Z', '+00:00'))
+                    
+                    diff = (replied - created).total_seconds()
+                    if diff > 0:
+                        total_seconds += diff
+                        count += 1
+                except Exception:
+                    pass
+        
+        return int(total_seconds / count) if count > 0 else None
+
+
+async def get_customer_with_analytics(
+    license_id: int,
+    customer_id: int
+) -> Optional[dict]:
+    """
+    Get customer with computed analytics: sentiment history, response time, lifetime value.
+    """
+    customer = await get_customer(license_id, customer_id)
+    if not customer:
+        return None
+    
+    # Get sentiment history
+    sentiment_history = await get_customer_sentiment_history(license_id, customer_id)
+    
+    # Get average response time
+    avg_response_time = await get_customer_avg_response_time(license_id, customer_id)
+    
+    # Get purchases (import here to avoid circular import)
+    try:
+        from models.purchases import get_customer_purchases, get_customer_lifetime_value
+        purchases = await get_customer_purchases(license_id, customer_id, limit=10)
+        lifetime_value = await get_customer_lifetime_value(license_id, customer_id)
+    except Exception:
+        purchases = []
+        lifetime_value = customer.get("lifetime_value", 0) or 0
+    
+    # Calculate interaction count (messages * 2 for rough estimate of back-and-forth)
+    interaction_count = (customer.get("total_messages", 0) or 0) * 2
+    
+    # Format response time
+    avg_response_time_str = None
+    if avg_response_time:
+        hours = avg_response_time // 3600
+        if hours > 0:
+            avg_response_time_str = f"{hours} ساعة"
+        else:
+            minutes = avg_response_time // 60
+            avg_response_time_str = f"{minutes} دقيقة" if minutes > 0 else "أقل من دقيقة"
+    
+    return {
+        **customer,
+        "sentiment_history": sentiment_history,
+        "purchase_history": purchases,
+        "interaction_count": interaction_count,
+        "avg_response_time": avg_response_time_str,
+        "avg_response_time_seconds": avg_response_time,
+        "lifetime_value": lifetime_value
+    }
+
+
 async def get_recent_conversation(
     license_id: int,
     sender_contact: str,

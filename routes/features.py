@@ -66,15 +66,12 @@ async def get_customer_detail(
     customer_id: int,
     license: dict = Depends(get_license_from_header)
 ):
-    """Get customer details with message history"""
-    customer = await get_customer(license["license_id"], customer_id)
+    """Get customer details with analytics (sentiment history, purchases, etc.)"""
+    from models.customers import get_customer_with_analytics
+    
+    customer = await get_customer_with_analytics(license["license_id"], customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="العميل غير موجود")
-    
-    # Get customer's messages
-    from models import get_inbox_messages
-    # Note: We'd need to join with customer_messages table
-    # For now, return customer data
     
     return {"customer": customer}
 

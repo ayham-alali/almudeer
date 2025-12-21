@@ -64,7 +64,7 @@ from models import (
 import logging
 logger = logging.getLogger("startup")
 try:
-    from routes import integrations_router, features_router, whatsapp_router, team_router, export_router, notifications_router
+    from routes import integrations_router, features_router, whatsapp_router, team_router, export_router, notifications_router, purchases_router
     logger.info("Successfully imported integration routes")
 except ImportError as e:
     logger.error(f"Failed to import routes: {e}")
@@ -138,6 +138,13 @@ async def lifespan(app: FastAPI):
             await fix_customers_serial()
         except Exception as e:
             logger.warning(f"Customers serial fix note: {e}")
+
+        # Create purchases table and analytics columns
+        try:
+            from migrations.purchases_table import create_purchases_table
+            await create_purchases_table()
+        except Exception as e:
+            logger.warning(f"Purchases table creation note: {e}")
 
         
         # Ensure language/dialect columns exist in inbox_messages
@@ -303,6 +310,7 @@ app.include_router(whatsapp_router)        # WhatsApp Business
 app.include_router(team_router)            # Team Management
 app.include_router(export_router)          # Export & Reports
 app.include_router(notifications_router)   # Smart Notifications & Integrations
+app.include_router(purchases_router)       # Customer Purchases
 app.include_router(subscription_router)    # Subscription Key Management
 
 # JWT Authentication routes

@@ -599,6 +599,57 @@ class MessagePoller:
                                     sentiment=data.get("sentiment"),
                                     sentiment_score=0.0  # Could be calculated from sentiment history
                                 )
+                                
+                                # === Auto-Purchase Detection ===
+                                # If intent is order-related and we find money amounts, auto-create a pending purchase
+                                intent = data.get("intent", "").lower()
+                                order_intents = ["طلب", "طلب خدمة", "order", "شراء", "اشتراك"]
+                                
+                                if any(oi in intent for oi in order_intents):
+                                    # Extract entities to find money and product info
+                                    from analysis_advanced import extract_entities
+                                    entities = extract_entities(body)
+                                    
+                                    money = entities.get("money", [])
+                                    quantities = entities.get("quantity", [])
+                                    
+                                    if money:
+                                        # Create auto-purchase for detected amounts
+                                        from models.purchases import create_purchase
+                                        for m in money[:1]:  # Only first amount detected
+                                            try:
+                                                amount_str = m.get("amount", "0").replace(",", "")
+                                                amount = float(amount_str)
+                                                
+                                                # Try to extract product name from message
+                                                # Look for common product indicators
+                                                product_name = "طلب من المحادثة"
+                                                product_patterns = [
+                                                    r'(?:اشتراك|خدمة|منتج|طلب)\s+([^\d\n,،]{3,30})',
+                                                    r'(?:أريد|أبغى|بدي)\s+([^\d\n,،]{3,30})',
+                                                ]
+                                                import re
+                                                for pattern in product_patterns:
+                                                    match = re.search(pattern, body)
+                                                    if match:
+                                                        product_name = match.group(1).strip()[:50]
+                                                        break
+                                                
+                                                # Auto-create pending purchase
+                                                await create_purchase(
+                                                    license_id=license_id,
+                                                    customer_id=customer_id,
+                                                    product_name=product_name,
+                                                    amount=amount,
+                                                    currency="SYP",  # Default to SYP
+                                                    status="pending",  # Pending for human review
+                                                    notes=f"تم إنشاؤها تلقائياً من الرسالة - {body[:100]}..."
+                                                )
+                                                logger.info(f"Auto-created pending purchase for customer {customer_id}: {amount} SYP")
+                                            except Exception as pe:
+                                                logger.warning(f"Error auto-creating purchase: {pe}")
+                                # === End Auto-Purchase Detection ===
+                                
             except Exception as crm_error:
                 logger.warning(f"Error updating CRM for message {message_id}: {crm_error}")
             
