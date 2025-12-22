@@ -293,19 +293,28 @@ class MessagePoller:
             
             async with get_db() as db:
                 # Query messages with placeholder ai_draft_response
-                rows = await fetch_all(
-                    db,
+                # Use different datetime syntax for PostgreSQL vs SQLite
+                if DB_TYPE == "postgresql":
+                    query = """
+                        SELECT id, body, sender_contact, sender_name, channel
+                        FROM inbox_messages
+                        WHERE license_key_id = $1
+                          AND (ai_draft_response = $2 OR ai_draft_response IS NULL OR ai_draft_response = '')
+                          AND created_at > NOW() - INTERVAL '24 hours'
+                        ORDER BY created_at DESC
+                        LIMIT 5
                     """
-                    SELECT id, body, sender_contact, sender_name, channel
-                    FROM inbox_messages
-                    WHERE license_key_id = ?
-                      AND (ai_draft_response = ? OR ai_draft_response IS NULL OR ai_draft_response = '')
-                      AND created_at > datetime('now', '-24 hours')
-                    ORDER BY created_at DESC
-                    LIMIT 5
-                    """,
-                    [license_id, placeholder]
-                )
+                else:
+                    query = """
+                        SELECT id, body, sender_contact, sender_name, channel
+                        FROM inbox_messages
+                        WHERE license_key_id = ?
+                          AND (ai_draft_response = ? OR ai_draft_response IS NULL OR ai_draft_response = '')
+                          AND created_at > datetime('now', '-24 hours')
+                        ORDER BY created_at DESC
+                        LIMIT 5
+                    """
+                rows = await fetch_all(db, query, [license_id, placeholder])
                 
                 if not rows:
                     return
