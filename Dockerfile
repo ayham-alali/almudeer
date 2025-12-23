@@ -29,4 +29,4 @@ COPY . .
 
 # Run application
 # Shell form allows $PORT expansion
-CMD uvicorn main:app --host 0.0.0.0 --port $PORT
+CMD python -m uvicorn main:app --host 0.0.0.0 --port $PORT
