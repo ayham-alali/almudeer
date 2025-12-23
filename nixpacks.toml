@@ -1,8 +1,14 @@
+# Nixpacks Configuration for Al-Mudeer
+# Explicitly defining phases to ensure SSL and Crypto libraries are present
+
 [phases.setup]
 nixPkgs = ["python311", "openssl", "gcc", "stdenv.cc"]
 
 [phases.install]
-cmds = ["python -m venv /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt"]
+cmds = [
+    "python -m venv .venv", 
+    ". .venv/bin/activate && pip install -r requirements.txt"
+]
 
-[phases.start]
-cmds = [". /opt/venv/bin/activate && uvicorn main:app --host 0.0.0.0 --port $PORT --workers 2"]
+[start]
+cmd = ". .venv/bin/activate && uvicorn main:app --host 0.0.0.0 --port $PORT --workers 2"
