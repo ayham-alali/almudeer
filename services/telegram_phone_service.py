@@ -233,7 +233,7 @@ class TelegramPhoneService:
                 "يرجى طلب كود جديد والمحاولة مرة أخرى."
             )
     
-    async def create_client_from_session(self, session_string: str) -> TelegramClient:
+    async def create_client_from_session(self, session_string: str) -> "TelegramClient":
         """
         Create TelegramClient from session string
         
