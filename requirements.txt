@@ -60,3 +60,6 @@ py-vapid==1.9.1
 pytest==7.4.4
 pytest-asyncio==0.23.3
 ruff==0.1.9
+
+# Telethon Optimization
+cryptg>=0.4.0
