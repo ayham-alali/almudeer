@@ -23,23 +23,30 @@ from collections import OrderedDict
 
 import httpx
 
-# Vertex AI imports (lazy loaded for startup performance)
-vertexai = None
-GenerativeModel = None
+# Google GenAI imports (lazy loaded for startup performance)
+# Using the lightweight google-genai SDK instead of heavy google-cloud-aiplatform
+genai_client = None
 
-def _init_vertex_ai():
-    """Lazy initialize Vertex AI SDK"""
-    global vertexai, GenerativeModel
-    if vertexai is None:
+def _init_genai(project_id: str, location: str):
+    """Lazy initialize Google GenAI SDK with Vertex AI backend"""
+    global genai_client
+    if genai_client is None:
         try:
-            import vertexai as vai
-            from vertexai.generative_models import GenerativeModel as GM
-            vertexai = vai
-            GenerativeModel = GM
-            return True
-        except ImportError:
-            return False
-    return True
+            from google import genai
+            from google.genai import types
+            
+            # Initialize with Vertex AI backend
+            genai_client = genai.Client(
+                vertexai=True,
+                project=project_id,
+                location=location,
+            )
+            return genai_client
+        except ImportError as e:
+            return None
+        except Exception as e:
+            return None
+    return genai_client
 
 from logging_config import get_logger
 
@@ -438,23 +445,23 @@ class OpenAIProvider(LLMProvider):
 
 
 class GeminiProvider(LLMProvider):
-    """Google Gemini via Vertex AI Provider"""
+    """Google Gemini via Vertex AI Provider (using lightweight google-genai SDK)"""
     
-    _vertex_initialized = False
+    _initialized = False
+    _client = None
     _temp_cred_file = None
     
     def __init__(self, config: LLMConfig):
         self.config = config
         self._last_error_time: Optional[float] = None
         self._error_count = 0
-        self._model = None
         
-        # Initialize Vertex AI on first use
-        self._ensure_vertex_initialized()
+        # Initialize on first use
+        self._ensure_initialized()
     
-    def _ensure_vertex_initialized(self) -> bool:
-        """Initialize Vertex AI SDK with proper credentials"""
-        if GeminiProvider._vertex_initialized:
+    def _ensure_initialized(self) -> bool:
+        """Initialize Google GenAI SDK with Vertex AI backend"""
+        if GeminiProvider._initialized and GeminiProvider._client is not None:
             return True
         
         try:
@@ -472,34 +479,24 @@ class GeminiProvider(LLMProvider):
                     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = path
                     logger.info(f"Set GOOGLE_APPLICATION_CREDENTIALS from GCP_SERVICE_ACCOUNT_KEY")
             
-            # Lazy load the Vertex AI SDK
-            if not _init_vertex_ai():
-                logger.warning("Vertex AI SDK not installed, Gemini provider unavailable")
-                return False
-            
-            # Initialize Vertex AI
-            vertexai.init(
-                project=self.config.gcp_project_id,
+            # Initialize the GenAI client with Vertex AI backend
+            client = _init_genai(
+                project_id=self.config.gcp_project_id,
                 location=self.config.gcp_location
             )
             
-            GeminiProvider._vertex_initialized = True
-            logger.info(f"Vertex AI initialized: project={self.config.gcp_project_id}, location={self.config.gcp_location}")
+            if client is None:
+                logger.warning("Google GenAI SDK not available, Gemini provider unavailable")
+                return False
+            
+            GeminiProvider._client = client
+            GeminiProvider._initialized = True
+            logger.info(f"Google GenAI initialized: project={self.config.gcp_project_id}, location={self.config.gcp_location}")
             return True
             
         except Exception as e:
-            logger.error(f"Failed to initialize Vertex AI: {e}")
+            logger.error(f"Failed to initialize Google GenAI: {e}")
             return False
-    
-    def _get_model(self):
-        """Get or create the GenerativeModel instance"""
-        if self._model is None and GenerativeModel is not None:
-            try:
-                self._model = GenerativeModel(self.config.google_model)
-                logger.info(f"Created Gemini model: {self.config.google_model}")
-            except Exception as e:
-                logger.error(f"Failed to create Gemini model: {e}")
-        return self._model
     
     @property
     def name(self) -> str:
@@ -507,8 +504,8 @@ class GeminiProvider(LLMProvider):
     
     @property
     def is_available(self) -> bool:
-        # Check if Vertex AI is properly initialized
-        if not self._ensure_vertex_initialized():
+        # Check if GenAI is properly initialized
+        if not self._ensure_initialized():
             return False
         if self._error_count >= 5 and self._last_error_time:
             if time.time() - self._last_error_time < 60:
@@ -528,9 +525,9 @@ class GeminiProvider(LLMProvider):
         if not self.is_available:
             return None
         
-        model = self._get_model()
-        if model is None:
-            logger.warning("Gemini model not available")
+        client = GeminiProvider._client
+        if client is None:
+            logger.warning("Gemini client not available")
             return None
         
         # CRITICAL: Enforce global rate limit HERE for Gemini only
@@ -542,8 +539,8 @@ class GeminiProvider(LLMProvider):
         # Build the prompt content
         full_prompt = f"{system}\n\n{prompt}" if system else prompt
         
-        # Build content parts for Vertex AI
-        from vertexai.generative_models import Part
+        # Build content parts
+        from google.genai import types
         
         content_parts = [full_prompt]
         
@@ -555,18 +552,16 @@ class GeminiProvider(LLMProvider):
                     if "base64" in att:
                         import base64
                         data = base64.b64decode(att["base64"])
-                        content_parts.append(Part.from_data(data=data, mime_type=mime_type))
+                        content_parts.append(types.Part.from_bytes(data=data, mime_type=mime_type))
         
         # Configure generation
-        from vertexai.generative_models import GenerationConfig
-        
-        generation_config = GenerationConfig(
+        config = types.GenerateContentConfig(
             temperature=temperature,
             max_output_tokens=max_tokens,
         )
         
         if json_mode:
-            generation_config = GenerationConfig(
+            config = types.GenerateContentConfig(
                 temperature=temperature,
                 max_output_tokens=max_tokens,
                 response_mime_type="application/json",
@@ -574,20 +569,21 @@ class GeminiProvider(LLMProvider):
         
         for attempt in range(self.config.max_retries):
             try:
-                # Use async generation
+                # Use async generation via executor (google-genai is sync)
                 response = await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: model.generate_content(
-                        content_parts,
-                        generation_config=generation_config,
+                    lambda: client.models.generate_content(
+                        model=self.config.google_model,
+                        contents=content_parts,
+                        config=config,
                     )
                 )
                 
                 # Extract content from response
-                if response.candidates and len(response.candidates) > 0:
-                    content = response.candidates[0].content.parts[0].text
+                if response.text:
+                    content = response.text
                 else:
-                    logger.warning("Gemini returned no candidates")
+                    logger.warning("Gemini returned empty response")
                     return None
                 
                 latency = int((time.time() - start_time) * 1000)
