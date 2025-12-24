@@ -618,7 +618,6 @@ class OpenRouterProvider(LLMProvider):
             self.config.openrouter_model,  # Primary from config
             "google/gemini-2.0-flash-exp:free", # User preferred
             "google/gemini-2.0-pro-exp-02-05:free", # Pro fallback
-            "meta-llama/llama-3.3-70b-instruct:free", # High quality open weights
         ]
         
         # Max global timeout for all attempts
@@ -686,22 +685,26 @@ class OpenRouterProvider(LLMProvider):
                             try:
                                 if "response_format" in body:
                                     del body["response_format"]
-                                response = await client.post(
-                                    self.OPENROUTER_API_URL,
-                                    headers=headers,
-                                    json=body,
-                                )
-                                response.raise_for_status()
-                                data = response.json()
-                                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                                latency = int((time.time() - start_time) * 1000)
-                                self._error_count = 0
-                                return LLMResponse(
-                                    content=content.strip(),
-                                    provider=self.name,
-                                    model=model,
-                                    latency_ms=latency
-                                )
+                                
+                                # CRITICAL FIX: Use a FRESH client for the retry
+                                # The previous client might be in a bad state after the 400 error
+                                async with httpx.AsyncClient(timeout=45.0) as retry_client:
+                                    response = await retry_client.post(
+                                        self.OPENROUTER_API_URL,
+                                        headers=headers,
+                                        json=body,
+                                    )
+                                    response.raise_for_status()
+                                    data = response.json()
+                                    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                                    latency = int((time.time() - start_time) * 1000)
+                                    self._error_count = 0
+                                    return LLMResponse(
+                                        content=content.strip(),
+                                        provider=self.name,
+                                        model=model,
+                                        latency_ms=latency
+                                    )
                             except Exception as retry_e:
                                 logger.error(f"Smart Retry failed on {model}: {retry_e}")
                                 break 
