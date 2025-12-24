@@ -55,7 +55,9 @@ from models import (
     get_telegram_config,
     get_whatsapp_config,
     save_inbox_message,
+    update_inbox_status,
     update_inbox_analysis,
+    get_preferences,
     get_inbox_messages,
     create_outbox_message,
     approve_outbox_message,
@@ -886,6 +888,13 @@ class MessagePoller:
                 except Exception as hist_e:
                     logger.warning(f"Failed to load conversation history: {hist_e}")
             
+            # Fetch user preferences for AI personalization (tone, style, etc.)
+            preferences = None
+            try:
+                preferences = await get_preferences(license_id)
+            except Exception as pref_e:
+                logger.warning(f"Failed to load preferences for license {license_id}: {pref_e}")
+            
             # Process with AI agent
             try:
                 # Use semaphore to limit global concurrency for free LLM tiers
@@ -898,6 +907,7 @@ class MessagePoller:
                             message=body,
                             sender_name=sender_name,
                             sender_contact=recipient,
+                            preferences=preferences,
                             conversation_history=conversation_history,
                             attachments=attachments
                         ),

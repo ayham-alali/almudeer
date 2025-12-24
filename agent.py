@@ -759,58 +759,133 @@ async def process_message(
     conversation_history: Optional[str] = None,
     attachments: Optional[List[Dict[str, Any]]] = None,
 ) -> dict:
-    """Process a message through the InboxCRM pipeline"""
+    """Process a message using a Single-Call Unified AI approach (Optimization: 1 Call)"""
     
-    agent = get_agent()
+    # --- Step 1: Ingestion (Local Processing) ---
+    clean_message = message.strip()
     
-    # Initial state
-    initial_state: AgentState = {
-        "raw_message": message,
-        "message_type": message_type or "general",
-        "intent": "",
-        "urgency": "",
-        "sentiment": "",
-        "sender_name": sender_name,
-        "sender_contact": sender_contact,
-        "key_points": [],
-        "action_items": [],
-        "extracted_entities": {},
-        "summary": "",
-        "draft_response": "",
-        "suggested_actions": [],
-        "error": None,
-        "processing_step": "",
-        "preferences": preferences,
-        "preferences": preferences,
-        "conversation_history": conversation_history,
-        "attachments": attachments,
-    }
+    # Analytics: Update received count
+    if preferences and preferences.get("license_key_id"):
+        try:
+            # Fire-and-forget analytics update
+            asyncio.create_task(update_daily_analytics(
+                license_id=preferences["license_key_id"],
+                messages_received=1
+            ))
+        except Exception as e:
+            print(f"Analytics update failed: {e}")
     
+    # URL Fetching Logic (from ingest_node)
+    url_pattern = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
+    urls = re.findall(url_pattern, clean_message)
+    if urls:
+        try:
+            url = urls[0]
+            content = await fetch_url_content(url)
+            if content:
+                clean_message += f"\n\n[System: Content fetching from {url}]\n{content}"
+        except Exception as e:
+            print(f"URL fetch failed: {e}")
+
+    # --- Step 2: Unified Mega-Prompt Construction ---
+    history_block = ""
+    if conversation_history:
+        history_block = f"\nسياق المحادثة السابقة (الأحدث أولاً):\n{conversation_history}\n"
+
+    system_prompt = build_system_prompt(preferences)
+    
+    mega_prompt = f"""أنت خبير خدمة عملاء ذكي وشامل.
+مهمتك: تحليل الرسالة، استخراج البيانات، وصياغة الرد المناسب في خطوة واحدة.
+
+1. التحليل (Analysis):
+   - النية: استفسار، طلب خدمة، شكوى، متابعة، عرض، تسويق، آلي، أخرى
+   - مشاعر العميل: إيجابي، محايد، سلبي
+   - الأهمية: عاجل، عادي، منخفض
+   - اللغة واللهجة: حدد لغة العميل (ar, en, etc) ولهجته بدقة (سعودي، مصري، شامي...)
+
+2. الاستخراج (Extraction):
+   - اسم العميل (إن وجد)
+   - معلومات الاتصال (رقم/إيميل)
+   - النقاط الرئيسية (ملخص سريع)
+   - الإجراءات المطلوبة من الفريق
+
+3. الرد (Drafting):
+   - اكتب رداً احترافياً وطبيعياً (غير روبوتي)
+   - استخدم نفس لغة ولهجة العميل بالضبط (مهم جداً!)
+   - كن موجزاً ومباشراً (3-5 أسطر)
+   - تجنب العبارات الروتينية المملة مثل "تم استلام رسالتك"
+
+الرسالة الحالية:
+{clean_message}
+
+{history_block}
+
+أرجع النتيجة بصيغة JSON فقط:
+{{
+    "intent": "...",
+    "sentiment": "...",
+    "urgency": "...",
+    "language": "...",
+    "dialect": "...",
+    "sender_name": "...",
+    "sender_contact": "...",
+    "key_points": ["..."],
+    "action_items": ["..."],
+    "summary": "ملخص من سطر واحد",
+    "draft_response": "..."
+}}"""
+
+    # --- Step 3: Single API Call ---
     try:
-        # Run the agent
-        final_state = await agent.ainvoke(initial_state)
+        response_json = await call_llm(
+            mega_prompt,
+            system=system_prompt,
+            json_mode=True,
+            max_tokens=1500, # Increased for single long response
+            attachments=attachments
+        )
+        
+        if not response_json:
+             raise ValueError("LLM returned None (Rate Limit or Error)")
+
+        data = json.loads(response_json)
+        
+        # --- Step 4: Post-Processing & Normalization ---
+        # Analytics: Update replied count if draft generated
+        if preferences and preferences.get("license_key_id") and data.get("draft_response"):
+            try:
+                asyncio.create_task(update_daily_analytics(
+                    license_id=preferences["license_key_id"],
+                    messages_replied=1,
+                    sentiment=data.get("sentiment", "neutral")
+                ))
+            except Exception as e:
+                print(f"Analytics reply update failed: {e}")
+
+        # Ensure critical fields exist
         return {
             "success": True,
             "data": {
-                "intent": final_state["intent"],
-                "urgency": final_state["urgency"],
-                "sentiment": final_state["sentiment"],
-                "language": final_state.get("language"),
-                "dialect": final_state.get("dialect"),
-                "sender_name": final_state["sender_name"],
-                "sender_contact": final_state["sender_contact"],
-                "key_points": final_state["key_points"],
-                "action_items": final_state["action_items"],
-                "extracted_entities": final_state["extracted_entities"],
-                "summary": final_state["summary"],
-                "draft_response": final_state["draft_response"],
-                "suggested_actions": final_state["suggested_actions"],
-                "message_type": final_state["message_type"]
+                "intent": data.get("intent", "أخرى"),
+                "urgency": data.get("urgency", "عادي"),
+                "sentiment": data.get("sentiment", "محايد"),
+                "language": data.get("language", "ar"),
+                "dialect": data.get("dialect", "فصحى"),
+                "sender_name": data.get("sender_name") or sender_name,
+                "sender_contact": data.get("sender_contact") or sender_contact,
+                "key_points": data.get("key_points", []),
+                "action_items": data.get("action_items", []),
+                "extracted_entities": {}, # Legacy field, can be empty
+                "summary": data.get("summary", "رسالة جديدة"),
+                "draft_response": data.get("draft_response", ""),
+                "suggested_actions": [], # Can be inferred or left empty
+                "message_type": message_type or "general"
             }
         }
+
     except Exception as e:
         return {
             "success": False,
-            "error": f"حدث خطأ في المعالجة: {str(e)}"
+            "error": f"AI Processing Failed: {str(e)}"
         }
 
