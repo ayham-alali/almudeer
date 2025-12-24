@@ -514,9 +514,19 @@ class GeminiProvider(LLMProvider):
                         
                         if attempt < self.config.max_retries - 1:
                             # Patient Retry: Wait it out!
-                            # User explicitly requested waiting >15m if needed
-                            delay = self.config.base_delay * (1.5 ** attempt) # Slower exponential backoff
-                            logger.warning(f"Gemini 429 (Patient Retry {attempt+1}/{self.config.max_retries}), waiting {delay:.1f}s...")
+                            # CRITICAL FIX: Respect Global Limiter Cooldown
+                            # If Global Limiter says "Wait 5 mins", we must wait 5 mins, not 30s.
+                            global_remaining = get_rate_limiter().get_cooldown_remaining()
+                            backoff_delay = self.config.base_delay * (1.5 ** attempt) # Slower exponential backoff
+                            
+                            # Take the maximum of the two delays
+                            delay = max(backoff_delay, global_remaining)
+                            
+                            if global_remaining > backoff_delay:
+                                logger.warning(f"Gemini 429: Global cooldown ({global_remaining:.1f}s) > Backoff ({backoff_delay:.1f}s). Waiting {delay:.1f}s...")
+                            else:
+                                logger.warning(f"Gemini 429 (Patient Retry {attempt+1}/{self.config.max_retries}), waiting {delay:.1f}s...")
+                                
                             await asyncio.sleep(delay)
                             continue
                         else:
