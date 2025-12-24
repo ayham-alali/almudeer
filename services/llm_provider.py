@@ -509,15 +509,20 @@ class GeminiProvider(LLMProvider):
                     )
                     
                     if response.status_code == 429:
-                        # CRITICAL: Report 429 to global rate limiter to extend cooldown
+                        # CRITICAL: Report 429 to global rate limiter
                         get_rate_limiter().report_rate_limit_hit()
                         
-                        # DON'T RETRY INTERNALLY - return None immediately
-                        # The worker's retry mechanism will retry the whole message later,
-                        # going through wait_for_capacity() which respects the cooldown
-                        logger.warning(f"Gemini rate limited (429), cooldown set, will retry via worker")
-                        self._record_error()
-                        return None
+                        if attempt < self.config.max_retries - 1:
+                            # Patient Retry: Wait it out!
+                            # User explicitly requested waiting >15m if needed
+                            delay = self.config.base_delay * (1.5 ** attempt) # Slower exponential backoff
+                            logger.warning(f"Gemini 429 (Patient Retry {attempt+1}/{self.config.max_retries}), waiting {delay:.1f}s...")
+                            await asyncio.sleep(delay)
+                            continue
+                        else:
+                            logger.error("Gemini failed after maximum patient retries")
+                            self._record_error()
+                            return None
                     
                     response.raise_for_status()
                     data = response.json()
@@ -607,87 +612,112 @@ class OpenRouterProvider(LLMProvider):
         ]
         
         # Max global timeout for all attempts
-        for model in models_to_try:
-            # Try each model up to 2 times
-            for attempt in range(2):
-                try:
-                    async with httpx.AsyncClient(timeout=45.0) as client: # Reduced timeout per attempt
-                        messages = []
-                        if system:
-                            messages.append({"role": "system", "content": system})
-                        messages.append({"role": "user", "content": prompt})
-                        
-                        body = {
-                            "model": model,
-                            "messages": messages,
-                            "max_tokens": max_tokens,
-                            "temperature": temperature,
-                        }
-                        
-                        # Add HTTP referer for OpenRouter rankings
-                        headers = {
-                            "Authorization": f"Bearer {self.config.openrouter_api_key}",
-                            "Content-Type": "application/json",
-                            "HTTP-Referer": "https://almudeer.royaraqamia.com",
-                            "X-Title": "Al-Mudeer",
-                        }
-                        
-                        response = await client.post(
-                            self.OPENROUTER_API_URL,
-                            headers=headers,
-                            json=body,
-                        )
-                        
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code == 429:
-                        # If rate limited, immediately try next model
-                        logger.warning(f"OpenRouter 429 on {model}. Switching model...")
-                        await asyncio.sleep(2)
-                        break # Break inner loop to try next model
-                    
-                    if e.response.status_code == 400 and json_mode:
-                        # Smart Retry: Some models don't support json_mode (response_format)
-                        # We retry WITHOUT json_mode relying on the prompt to enforce JSON
-                        logger.warning(f"OpenRouter 400 on {model} with json_mode=True. Retrying without json_mode...")
-                        try:
-                            # Modify body to remove response_format
-                            if "response_format" in body:
-                                del body["response_format"]
+        # Outer loop for Patient Retry of the ENTIRE model list
+        for loop_attempt in range(self.config.max_retries):
+            # Try each model in the list
+            for model in models_to_try:
+                # Try each model up to 2 times (short retry)
+                for attempt in range(2):
+                    try:
+                        async with httpx.AsyncClient(timeout=45.0) as client: # Reduced timeout per attempt
+                            messages = []
+                            if system:
+                                messages.append({"role": "system", "content": system})
+                            messages.append({"role": "user", "content": prompt})
+                            
+                            body = {
+                                "model": model,
+                                "messages": messages,
+                                "max_tokens": max_tokens,
+                                "temperature": temperature,
+                            }
+                            
+                            # Add HTTP referer for OpenRouter rankings
+                            headers = {
+                                "Authorization": f"Bearer {self.config.openrouter_api_key}",
+                                "Content-Type": "application/json",
+                                "HTTP-Referer": "https://almudeer.royaraqamia.com",
+                                "X-Title": "Al-Mudeer",
+                            }
                             
                             response = await client.post(
                                 self.OPENROUTER_API_URL,
                                 headers=headers,
                                 json=body,
                             )
+                            
+                            if response.status_code == 429:
+                                # If rate limited, try next model immediately
+                                logger.warning(f"OpenRouter 429 on {model}. Switching model...")
+                                break # Break inner loop to try next model
+                            
                             response.raise_for_status()
                             data = response.json()
+                            
                             content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
                             latency = int((time.time() - start_time) * 1000)
+                            
                             self._error_count = 0
+                            
                             return LLMResponse(
                                 content=content.strip(),
                                 provider=self.name,
                                 model=model,
                                 latency_ms=latency
                             )
-                        except Exception as retry_e:
-                            logger.error(f"Smart Retry failed on {model}: {retry_e}")
-                            break # Move to next model
-                    
-                    logger.warning(f"OpenRouter HTTP {e.response.status_code} on {model}: {e}")
-                    break # Move to next model
+                            
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 429:
+                            logger.warning(f"OpenRouter 429 on {model}. Switching model...")
+                            break 
+                        
+                        if e.response.status_code == 400 and json_mode:
+                            logger.warning(f"OpenRouter 400 on {model} with json_mode=True. Retrying without json_mode...")
+                            try:
+                                if "response_format" in body:
+                                    del body["response_format"]
+                                response = await client.post(
+                                    self.OPENROUTER_API_URL,
+                                    headers=headers,
+                                    json=body,
+                                )
+                                response.raise_for_status()
+                                data = response.json()
+                                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                                latency = int((time.time() - start_time) * 1000)
+                                self._error_count = 0
+                                return LLMResponse(
+                                    content=content.strip(),
+                                    provider=self.name,
+                                    model=model,
+                                    latency_ms=latency
+                                )
+                            except Exception as retry_e:
+                                logger.error(f"Smart Retry failed on {model}: {retry_e}")
+                                break 
 
-                except Exception as e:
-                    logger.warning(f"OpenRouter error on {model}: {e}")
-                    # If network error, maybe retry same model, otherwise next
-                    if attempt == 0:
-                        await asyncio.sleep(1)
-                        continue
-                    else:
-                        break # Try next model
+                        logger.warning(f"OpenRouter HTTP {e.response.status_code} on {model}: {e}")
+                        break 
+
+                    except Exception as e:
+                        logger.warning(f"OpenRouter error on {model}: {e}")
+                        if attempt == 0:
+                            await asyncio.sleep(1)
+                            continue
+                        else:
+                            break 
+            
+            # If we're here, ALL models failed for this loop_attempt
+            # Wait and retry the whole list (Patient Retry)
+            if loop_attempt < self.config.max_retries - 1:
+                delay = self.config.base_delay * (1.5 ** loop_attempt)
+                logger.warning(f"OpenRouter: ALL models failed/busy. Patient Retry {loop_attempt+1}/{self.config.max_retries} in {delay:.1f}s...")
+                await asyncio.sleep(delay)
+                continue
+            else:
+                self._record_error()
+                return None
         
-        # If all models failed
-        self._record_error()
         return None
 
     
