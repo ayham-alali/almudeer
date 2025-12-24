@@ -33,24 +33,32 @@ class Channels:
 # ============ Message Status ============
 
 class MessageStatus:
+    # Status before AI responds - message received, waiting for AI analysis
+    PENDING = "pending"
     NEW = "new"
+    # Status after AI responds - AI analyzed, waiting for human approval
     ANALYZED = "analyzed"
     DRAFT_READY = "draft_ready"
     APPROVED = "approved"
     SENT = "sent"
     FAILED = "failed"
     ARCHIVED = "archived"
+    IGNORED = "ignored"
     
-    ALL = [NEW, ANALYZED, DRAFT_READY, APPROVED, SENT, FAILED, ARCHIVED]
+    ALL = [PENDING, NEW, ANALYZED, DRAFT_READY, APPROVED, SENT, FAILED, ARCHIVED, IGNORED]
     
     DISPLAY_NAMES = {
+        # PENDING = before AI responds (قيد الانتظار)
+        PENDING: "قيد الانتظار",
         NEW: "جديد",
-        ANALYZED: "تم التحليل",
+        # ANALYZED = after AI responds, awaiting human approval (بانتظار الموافقة)
+        ANALYZED: "بانتظار الموافقة",
         DRAFT_READY: "مسودة جاهزة",
         APPROVED: "تمت الموافقة",
         SENT: "تم الإرسال",
         FAILED: "فشل",
         ARCHIVED: "مؤرشف",
+        IGNORED: "تم التجاهل",
     }
 
 

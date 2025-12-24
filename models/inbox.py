@@ -153,9 +153,16 @@ async def get_inbox_messages(
     limit: int = 50,
     offset: int = 0
 ) -> List[dict]:
-    """Get inbox messages for a license with pagination (SQLite & PostgreSQL compatible)."""
+    """
+    Get inbox messages for a license with pagination (SQLite & PostgreSQL compatible).
+    
+    NOTE: Excludes 'pending' status messages from UI.
+    Pending = before AI responds (should not show in UI)
+    Analyzed = after AI responds (shows as 'بانتظار الموافقة')
+    """
 
-    query = "SELECT * FROM inbox_messages WHERE license_key_id = ?"
+    # Exclude 'pending' status - only show messages after AI responds
+    query = "SELECT * FROM inbox_messages WHERE license_key_id = ? AND status != 'pending'"
     params = [license_id]
 
     if status:
@@ -192,9 +199,14 @@ async def get_inbox_messages_count(
     status: str = None,
     channel: str = None
 ) -> int:
-    """Get total count of inbox messages for pagination."""
+    """
+    Get total count of inbox messages for pagination.
     
-    query = "SELECT COUNT(*) as count FROM inbox_messages WHERE license_key_id = ?"
+    NOTE: Excludes 'pending' status messages from count.
+    """
+    
+    # Exclude 'pending' status - only count messages after AI responds
+    query = "SELECT COUNT(*) as count FROM inbox_messages WHERE license_key_id = ? AND status != 'pending'"
     params = [license_id]
 
     if status:
@@ -351,6 +363,7 @@ async def get_inbox_conversations(
         base_params.append(channel)
     
     # Build status filter (applied AFTER grouping)
+    # NOTE: Always exclude 'pending' - messages before AI responds should not show in UI
     status_filter = ""
     status_params = []
     if status == 'sent':
@@ -359,9 +372,18 @@ async def get_inbox_conversations(
         status_filter = "status = ?"
         status_params.append(status)
     
+    # Always exclude 'pending' status (before AI responds)
+    pending_filter = "status != 'pending'"
+    
     # Use database-specific query for grouping
     if DB_TYPE == "postgresql":
         # PostgreSQL: First get latest message per sender, THEN filter by status
+        # Build combined WHERE for final filter (always exclude pending + optional status filter)
+        final_where_parts = [pending_filter]
+        if status_filter:
+            final_where_parts.append(status_filter)
+        final_where = " AND ".join(final_where_parts)
+        
         query = f"""
             WITH latest_per_sender AS (
                 SELECT DISTINCT ON (COALESCE(sender_contact, sender_id::text, 'unknown'))
@@ -369,11 +391,12 @@ async def get_inbox_conversations(
                     (SELECT COUNT(*) FROM inbox_messages m2 
                      WHERE m2.license_key_id = inbox_messages.license_key_id 
                      AND COALESCE(m2.sender_contact, m2.sender_id::text, 'unknown') = COALESCE(inbox_messages.sender_contact, inbox_messages.sender_id::text, 'unknown')
+                     AND m2.status != 'pending'
                     ) as message_count,
                     (SELECT COUNT(*) FROM inbox_messages m2 
                      WHERE m2.license_key_id = inbox_messages.license_key_id 
                      AND COALESCE(m2.sender_contact, m2.sender_id::text, 'unknown') = COALESCE(inbox_messages.sender_contact, inbox_messages.sender_id::text, 'unknown')
-                     AND m2.status = 'pending'
+                     AND m2.status = 'analyzed'
                     ) as unread_count
                 FROM inbox_messages
                 WHERE {base_where}
@@ -385,24 +408,31 @@ async def get_inbox_conversations(
                 status, created_at, received_at,
                 message_count, unread_count
             FROM latest_per_sender
-            {"WHERE " + status_filter if status_filter else ""}
+            WHERE {final_where}
             ORDER BY created_at DESC
             LIMIT ? OFFSET ?
         """
         params = base_params + status_params + [limit, offset]
     else:
         # SQLite version - get latest message per sender, then filter by status
+        # Build combined WHERE for final filter (always exclude pending + optional status filter)
+        final_filter_parts = [pending_filter]
+        if status_filter:
+            final_filter_parts.append(status_filter)
+        final_filter = " AND ".join(final_filter_parts)
+        
         query = f"""
             SELECT 
                 m.*,
                 (SELECT COUNT(*) FROM inbox_messages m2 
                  WHERE m2.license_key_id = m.license_key_id 
                  AND COALESCE(m2.sender_contact, m2.sender_id, 'unknown') = COALESCE(m.sender_contact, m.sender_id, 'unknown')
+                 AND m2.status != 'pending'
                 ) as message_count,
                 (SELECT COUNT(*) FROM inbox_messages m2 
                  WHERE m2.license_key_id = m.license_key_id 
                  AND COALESCE(m2.sender_contact, m2.sender_id, 'unknown') = COALESCE(m.sender_contact, m.sender_id, 'unknown')
-                 AND m2.status = 'pending'
+                 AND m2.status = 'analyzed'
                 ) as unread_count
             FROM inbox_messages m
             WHERE {base_where}
@@ -413,7 +443,7 @@ async def get_inbox_conversations(
                 ORDER BY m3.created_at DESC
                 LIMIT 1
             )
-            {"AND " + status_filter if status_filter else ""}
+            AND {final_filter}
             ORDER BY m.created_at DESC
             LIMIT ? OFFSET ?
         """
@@ -445,6 +475,7 @@ async def get_inbox_conversations_count(
         base_params.append(channel)
     
     # Build status filter (applied AFTER grouping)
+    # NOTE: Always exclude 'pending' - messages before AI responds should not be counted
     status_filter = ""
     status_params = []
     if status == 'sent':
@@ -453,8 +484,17 @@ async def get_inbox_conversations_count(
         status_filter = "status = ?"
         status_params.append(status)
     
+    # Always exclude 'pending' status (before AI responds)
+    pending_filter = "status != 'pending'"
+    
     if DB_TYPE == "postgresql":
         # PostgreSQL: Count unique senders where latest message matches status
+        # Build combined WHERE for final filter
+        final_where_parts = [pending_filter]
+        if status_filter:
+            final_where_parts.append(status_filter)
+        final_where = " AND ".join(final_where_parts)
+        
         query = f"""
             WITH latest_per_sender AS (
                 SELECT DISTINCT ON (COALESCE(sender_contact, sender_id::text, 'unknown'))
@@ -465,11 +505,17 @@ async def get_inbox_conversations_count(
             )
             SELECT COUNT(*) as count
             FROM latest_per_sender
-            {"WHERE " + status_filter if status_filter else ""}
+            WHERE {final_where}
         """
         params = base_params + status_params
     else:
         # SQLite version - count conversations where latest message matches status
+        # Build combined WHERE for final filter
+        final_filter_parts = [pending_filter]
+        if status_filter:
+            final_filter_parts.append(status_filter)
+        final_filter = " AND ".join(final_filter_parts)
+        
         query = f"""
             SELECT COUNT(*) as count
             FROM inbox_messages m
@@ -481,7 +527,7 @@ async def get_inbox_conversations_count(
                 ORDER BY m3.created_at DESC
                 LIMIT 1
             )
-            {"AND " + status_filter if status_filter else ""}
+            AND {final_filter}
         """
         params = base_params + status_params
     
@@ -547,7 +593,10 @@ async def get_conversation_messages(
     sender_contact: str,
     limit: int = 50
 ) -> List[dict]:
-    """Get all messages from a specific sender (for conversation detail view)."""
+    """
+    Get all messages from a specific sender (for conversation detail view).
+    NOTE: Excludes 'pending' status messages - only shows messages after AI responds.
+    """
     # Handle the tg: prefix for telegram user IDs
     async with get_db() as db:
         rows = await fetch_all(
@@ -556,6 +605,7 @@ async def get_conversation_messages(
             SELECT * FROM inbox_messages
             WHERE license_key_id = ?
             AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
+            AND status != 'pending'
             ORDER BY created_at ASC
             LIMIT ?
             """,
@@ -608,6 +658,7 @@ async def get_full_chat_history(
     """
     async with get_db() as db:
         # Get incoming messages (from client to us)
+        # NOTE: Exclude 'pending' status - only show messages after AI responds
         inbox_rows = await fetch_all(
             db,
             """
@@ -620,6 +671,7 @@ async def get_full_chat_history(
             FROM inbox_messages
             WHERE license_key_id = ?
             AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
+            AND status != 'pending'
             ORDER BY created_at ASC
             LIMIT ?
             """,

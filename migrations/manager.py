@@ -213,4 +213,3 @@ async def ensure_user_preferences_columns():
                 pass
     
     logger.info("User preferences columns verified")
-
