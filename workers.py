@@ -224,9 +224,9 @@ class MessagePoller:
                     # WhatsApp uses webhooks, so no polling needed
                     
                     # Retry pending messages (those with placeholder responses from failed AI)
-                    t3 = asyncio.create_task(self._retry_pending_messages(license_id))
-                    self.background_tasks.add(t3)
-                    t3.add_done_callback(self.background_tasks.discard)
+                    # CRITICAL: Await this call to ensure strict sequential processing
+                    # This prevents multiple licenses from queuing up requests simultaneously
+                    await self._retry_pending_messages(license_id)
                 
                 # Wait 300 seconds (5 minutes) before next poll - optimized for Gemini free tier
                 # This ensures we stay well within 15 RPM limit even with 10 users
