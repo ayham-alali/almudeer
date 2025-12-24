@@ -305,6 +305,16 @@ class MessagePoller:
     async def _retry_pending_messages(self, license_id: int):
         """Retry AI analysis for messages with placeholder responses"""
         try:
+            # Check global rate limiter cooldown first
+            # This prevents multiple licenses from queuing up requests when we're already rate limited
+            from services.llm_provider import get_rate_limiter
+            rate_limiter = get_rate_limiter()
+            
+            if rate_limiter.is_in_cooldown():
+                remaining = rate_limiter.get_cooldown_remaining()
+                logger.debug(f"License {license_id}: Global rate limit cooldown active ({remaining:.1f}s), skipping retries")
+                return
+
             # Find messages with pending placeholder response
             placeholder = "⏳ جاري تحليل الرسالة تلقائياً..."
             

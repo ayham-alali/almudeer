@@ -170,6 +170,18 @@ class GlobalRateLimiter:
         if self._consecutive_429s > 0:
             logger.info(f"Rate limiter: request succeeded, resetting 429 counter from {self._consecutive_429s}")
             self._consecutive_429s = 0
+    
+    def is_in_cooldown(self) -> bool:
+        """
+        Check if we're currently in a rate limit cooldown period.
+        Workers should check this BEFORE queuing any AI requests.
+        """
+        return time.time() < self._cooldown_until
+    
+    def get_cooldown_remaining(self) -> float:
+        """Get seconds remaining in cooldown, or 0 if not in cooldown."""
+        remaining = self._cooldown_until - time.time()
+        return max(0, remaining)
 
 
 def get_rate_limiter() -> GlobalRateLimiter:
