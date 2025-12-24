@@ -91,8 +91,9 @@ class GlobalRateLimiter:
     
     CRITICAL FEATURES:
     1. Starts with current time - forces wait on first request after startup
-    2. Reports 429 errors to extend cooldown period by 60s
+    2. Reports 429 errors to extend cooldown period
     3. Uses 15s minimum interval = 4 RPM max (very safe under 15 RPM limit)
+    4. Exponential cooldown after consecutive 429s (handles daily limit)
     
     This prevents rate limits even when the app restarts mid-request-burst.
     """
@@ -101,21 +102,23 @@ class GlobalRateLimiter:
     # Very conservative to stay well under Gemini's 15 RPM limit
     MIN_INTERVAL = float(os.getenv("LLM_MIN_REQUEST_INTERVAL", "15.0"))
     
-    # Extra cooldown added when we receive a 429 response
-    RATE_LIMIT_COOLDOWN = 60.0
+    # Base cooldown after 429 (5 minutes)
+    BASE_COOLDOWN = 300.0
+    
+    # Maximum cooldown (1 hour) - for when daily limit is hit
+    MAX_COOLDOWN = 3600.0
     
     _instance = None
     _lock = None
-    # CRITICAL: Initialize with current time so first request after startup waits
-    _last_request_time = None  # Will be set to time.time() on first get_instance()
-    _cooldown_until = 0.0  # Extended cooldown after 429 errors
+    _last_request_time = None
+    _cooldown_until = 0.0
+    _consecutive_429s = 0  # Track consecutive 429 errors
     
     @classmethod
     def get_instance(cls) -> "GlobalRateLimiter":
         if cls._instance is None:
             cls._instance = cls()
             cls._lock = asyncio.Lock()
-            # CRITICAL: Set to current time so first request must wait MIN_INTERVAL
             cls._last_request_time = time.time()
             logger.info(f"Global rate limiter initialized: min {cls.MIN_INTERVAL}s between requests, first request will wait")
         return cls._instance
@@ -149,10 +152,24 @@ class GlobalRateLimiter:
     def report_rate_limit_hit(self) -> None:
         """
         Call this when a 429 response is received.
-        Extends the cooldown period to prevent further requests.
+        Uses exponential backoff for consecutive 429s.
         """
-        self._cooldown_until = time.time() + self.RATE_LIMIT_COOLDOWN
-        logger.warning(f"Rate limiter: 429 received, extending cooldown by {self.RATE_LIMIT_COOLDOWN}s")
+        self._consecutive_429s += 1
+        
+        # Exponential backoff: 5min, 10min, 20min, 40min, max 1 hour
+        cooldown = min(self.BASE_COOLDOWN * (2 ** (self._consecutive_429s - 1)), self.MAX_COOLDOWN)
+        self._cooldown_until = time.time() + cooldown
+        
+        logger.warning(f"Rate limiter: 429 #{self._consecutive_429s}, cooldown {cooldown/60:.1f} minutes")
+        
+        if self._consecutive_429s >= 3:
+            logger.error(f"Rate limiter: {self._consecutive_429s} consecutive 429s - may have hit daily limit!")
+    
+    def report_success(self) -> None:
+        """Call this when a request succeeds to reset the 429 counter."""
+        if self._consecutive_429s > 0:
+            logger.info(f"Rate limiter: request succeeded, resetting 429 counter from {self._consecutive_429s}")
+            self._consecutive_429s = 0
 
 
 def get_rate_limiter() -> GlobalRateLimiter:
@@ -497,6 +514,9 @@ class GeminiProvider(LLMProvider):
                     latency = int((time.time() - start_time) * 1000)
                     
                     self._error_count = 0
+                    
+                    # Report success to reset 429 counter
+                    get_rate_limiter().report_success()
                     
                     return LLMResponse(
                         content=content.strip(),
