@@ -915,17 +915,21 @@ class MessagePoller:
                     )
             except asyncio.TimeoutError:
                 logger.warning(f"AI processing timed out for message {message_id} - will retry next cycle")
+                # Mark as retried this cycle so we don't try to "retry pending" immediately
+                self._retried_this_cycle.add(message_id) 
                 # Message stays with placeholder, will be retried in next poll cycle (5 min)
                 # This ensures we ALWAYS eventually get an AI response
                 return
                 
             except Exception as ai_e:
                 logger.error(f"AI processing error for message {message_id}: {ai_e} - will retry next cycle")
+                self._retried_this_cycle.add(message_id)
                 # Message stays with placeholder, will be retried in next poll cycle
                 return
             
             if not result["success"]:
                 logger.warning(f"AI processing failed for message {message_id}: {result.get('error')} - will retry next cycle")
+                self._retried_this_cycle.add(message_id)
                 return
             
             data = result["data"]

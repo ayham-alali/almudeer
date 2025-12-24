@@ -39,7 +39,7 @@ class LLMConfig:
     
     # Provider 1: Google Gemini (PRIMARY - Free tier)
     google_api_key: str = field(default_factory=lambda: os.getenv("GOOGLE_API_KEY", ""))
-    google_model: str = field(default_factory=lambda: os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"))
+    google_model: str = field(default_factory=lambda: os.getenv("GOOGLE_MODEL", "gemini-2.0-flash-exp"))
     
     # Provider 2: OpenRouter (BACKUP - Free models)
     openrouter_api_key: str = field(default_factory=lambda: os.getenv("OPENROUTER_API_KEY", ""))
@@ -602,9 +602,8 @@ class OpenRouterProvider(LLMProvider):
         models_to_try = [
             self.config.openrouter_model,  # Primary from config
             "google/gemini-2.0-flash-exp:free", # Standard flash exp (stable)
-            "google/gemini-exp-1206:free",      # Previous stable exp
+            "google/gemini-2.0-pro-exp-02-05:free", # New stable pro exp
             "meta-llama/llama-3.3-70b-instruct:free", # Fallback non-Google
-            "microsoft/phi-4:free",             # Ultra-fast fallback
         ]
         
         # Max global timeout for all attempts
