@@ -211,7 +211,8 @@ class MessagePoller:
                 
                 for license_id in active_licenses:
                     # Stagger polling: increased delay between licenses to spread AI load
-                    await asyncio.sleep(random.uniform(3.0, 8.0))
+                    # 10-15s gap ensures we stay under Gemini's 15 RPM limit across users
+                    await asyncio.sleep(random.uniform(10.0, 15.0))
                     # Poll each integration type
                     t1 = asyncio.create_task(self._poll_email(license_id))
                     self.background_tasks.add(t1)

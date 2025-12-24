@@ -9,6 +9,7 @@ Supports:
 """
 
 import os
+import random
 import asyncio
 import hashlib
 import json
@@ -47,9 +48,9 @@ class LLMConfig:
     # Failover: OpenAI (if key set) → Gemini → OpenRouter → Rule-based
     
     # Retry settings - aggressive for rate limit handling
-    # Gemini free tier has strict limits, so we wait longer between retries
+    # Gemini free tier has strict limits (15 RPM), so we wait MUCH longer between retries
     max_retries: int = 5  # Increased from 3 for better recovery
-    base_delay: float = 10.0  # Increased from 2.0 for rate limit recovery
+    base_delay: float = 20.0  # Aggressive delay: 20-40-80-160-320s exponential backoff
     
     # Cache settings
     cache_enabled: bool = field(default_factory=lambda: os.getenv("LLM_CACHE_ENABLED", "true").lower() == "true")
@@ -61,9 +62,9 @@ class LLMConfig:
     max_concurrent_requests: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_CONCURRENT", "1")))
     
     # Post-request delay in seconds - adds breathing room between requests
-    # Gemini free tier: ~15 requests/minute = 4+ seconds between requests recommended
-    # Using 5 seconds for safety margin with 10 users
-    post_request_delay: float = field(default_factory=lambda: float(os.getenv("LLM_REQUEST_DELAY", "5.0")))
+    # Gemini free tier: 15 requests/minute = 4s minimum between requests
+    # Using 6 seconds to stay safely under 10 RPM (vs 15 RPM limit)
+    post_request_delay: float = field(default_factory=lambda: float(os.getenv("LLM_REQUEST_DELAY", "6.0")))
 
 
 # ============ Global Concurrency Control ============
@@ -397,8 +398,9 @@ class GeminiProvider(LLMProvider):
                     
                     if response.status_code == 429:
                         if attempt < self.config.max_retries - 1:
-                            delay = self.config.base_delay * (2 ** attempt)
-                            logger.warning(f"Gemini rate limited, retry {attempt + 1}/{self.config.max_retries}")
+                            # Exponential backoff with jitter to prevent thundering herd
+                            delay = self.config.base_delay * (2 ** attempt) + random.uniform(0, 5)
+                            logger.warning(f"Gemini rate limited, retry {attempt + 1}/{self.config.max_retries} in {delay:.1f}s")
                             await asyncio.sleep(delay)
                             continue
                         else:
@@ -430,7 +432,9 @@ class GeminiProvider(LLMProvider):
                 self._record_error()
                 logger.error(f"Gemini error: {e}")
                 if attempt < self.config.max_retries - 1:
-                    await asyncio.sleep(self.config.base_delay * (2 ** attempt))
+                    # Exponential backoff with jitter
+                    delay = self.config.base_delay * (2 ** attempt) + random.uniform(0, 5)
+                    await asyncio.sleep(delay)
                     continue
                 return None
         

@@ -14,6 +14,7 @@ class MigrationManager:
     def __init__(self, db_path: str = None):
         self.db_path = db_path or os.getenv("DATABASE_PATH", "almudeer.db")
         self.migrations: List[Dict] = []
+        self.db_type = os.getenv("DB_TYPE", "sqlite").lower()
     
     def register_migration(self, version: int, name: str, up_sql: str, down_sql: str = None):
         """Register a migration"""
@@ -79,6 +80,11 @@ class MigrationManager:
     
     async def migrate(self):
         """Apply all pending migrations"""
+        # Skip SQLite migrations when using PostgreSQL
+        # PostgreSQL schema is managed by setup_railway_postgres.py
+        if self.db_type == "postgresql":
+            return 0
+        
         await self.create_migrations_table()
         applied = await self.get_applied_migrations()
         
