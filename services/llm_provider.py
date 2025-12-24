@@ -89,34 +89,53 @@ class GlobalRateLimiter:
     """
     Enforces a minimum time interval between ALL Gemini API requests.
     
-    This is more aggressive than the semaphore - it ensures no two requests
-    happen within MIN_INTERVAL seconds of each other, globally.
+    CRITICAL FEATURES:
+    1. Starts with current time - forces wait on first request after startup
+    2. Reports 429 errors to extend cooldown period by 60s
+    3. Uses 15s minimum interval = 4 RPM max (very safe under 15 RPM limit)
     
-    For Gemini free tier (15 RPM), we use 10s minimum = 6 RPM max.
+    This prevents rate limits even when the app restarts mid-request-burst.
     """
     
-    # Minimum seconds between requests (10s = max 6 requests/minute)
-    MIN_INTERVAL = float(os.getenv("LLM_MIN_REQUEST_INTERVAL", "10.0"))
+    # Minimum seconds between requests (15s = max 4 requests/minute)
+    # Very conservative to stay well under Gemini's 15 RPM limit
+    MIN_INTERVAL = float(os.getenv("LLM_MIN_REQUEST_INTERVAL", "15.0"))
+    
+    # Extra cooldown added when we receive a 429 response
+    RATE_LIMIT_COOLDOWN = 60.0
     
     _instance = None
     _lock = None
-    _last_request_time = 0.0
+    # CRITICAL: Initialize with current time so first request after startup waits
+    _last_request_time = None  # Will be set to time.time() on first get_instance()
+    _cooldown_until = 0.0  # Extended cooldown after 429 errors
     
     @classmethod
     def get_instance(cls) -> "GlobalRateLimiter":
         if cls._instance is None:
             cls._instance = cls()
             cls._lock = asyncio.Lock()
-            logger.info(f"Global rate limiter initialized: min {cls.MIN_INTERVAL}s between requests")
+            # CRITICAL: Set to current time so first request must wait MIN_INTERVAL
+            cls._last_request_time = time.time()
+            logger.info(f"Global rate limiter initialized: min {cls.MIN_INTERVAL}s between requests, first request will wait")
         return cls._instance
     
     async def wait_for_capacity(self) -> None:
         """
         Wait until enough time has passed since the last request.
-        This ensures we never exceed the rate limit.
+        Also respects any extended cooldown from 429 errors.
         """
         async with self._lock:
             now = time.time()
+            
+            # Check if we're in an extended cooldown from a 429 error
+            if now < self._cooldown_until:
+                cooldown_wait = self._cooldown_until - now
+                logger.warning(f"Rate limiter: in 429 cooldown, waiting {cooldown_wait:.1f}s")
+                await asyncio.sleep(cooldown_wait)
+                now = time.time()
+            
+            # Normal rate limiting - ensure MIN_INTERVAL between requests
             time_since_last = now - self._last_request_time
             
             if time_since_last < self.MIN_INTERVAL:
@@ -126,6 +145,14 @@ class GlobalRateLimiter:
             
             # Update last request time BEFORE making the request
             self._last_request_time = time.time()
+    
+    def report_rate_limit_hit(self) -> None:
+        """
+        Call this when a 429 response is received.
+        Extends the cooldown period to prevent further requests.
+        """
+        self._cooldown_until = time.time() + self.RATE_LIMIT_COOLDOWN
+        logger.warning(f"Rate limiter: 429 received, extending cooldown by {self.RATE_LIMIT_COOLDOWN}s")
 
 
 def get_rate_limiter() -> GlobalRateLimiter:
@@ -447,6 +474,9 @@ class GeminiProvider(LLMProvider):
                     )
                     
                     if response.status_code == 429:
+                        # CRITICAL: Report 429 to global rate limiter to extend cooldown
+                        get_rate_limiter().report_rate_limit_hit()
+                        
                         if attempt < self.config.max_retries - 1:
                             # Exponential backoff with jitter to prevent thundering herd
                             delay = self.config.base_delay * (2 ** attempt) + random.uniform(0, 5)
