@@ -68,6 +68,23 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         
+        # HSTS - Force HTTPS for 1 year (prevents MITM attacks)
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
+        
+        # Content Security Policy - Restrict content sources to prevent XSS
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "img-src 'self' data: https:; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "connect-src 'self' https://api.telegram.org https://graph.facebook.com; "
+            "frame-ancestors 'none';"
+        )
+        
+        # Permissions Policy - Disable potentially dangerous browser features
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        
         # Performance hints for browsers
         response.headers["X-DNS-Prefetch-Control"] = "on"
         

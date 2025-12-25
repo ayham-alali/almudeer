@@ -59,7 +59,7 @@ from .inbox import (
     get_pending_outbox,
 )
 
-# Customers, Analytics, Preferences, Notifications, Team
+# Customers, Analytics, Preferences, Notifications
 from .customers import (
     # Customer profiles
     get_or_create_customer,
@@ -88,17 +88,6 @@ from .customers import (
     mark_all_notifications_read,
     delete_old_notifications,
     create_smart_notification,
-    # Team management
-    ROLES,
-    create_team_member,
-    get_team_members,
-    get_team_member,
-    get_team_member_by_email,
-    update_team_member,
-    delete_team_member,
-    check_permission,
-    log_team_activity,
-    get_team_activity,
 )
 
 # Re-export aiosqlite for backward compatibility
@@ -178,15 +167,4 @@ __all__ = [
     "mark_all_notifications_read",
     "delete_old_notifications",
     "create_smart_notification",
-    # Team
-    "ROLES",
-    "create_team_member",
-    "get_team_members",
-    "get_team_member",
-    "get_team_member_by_email",
-    "update_team_member",
-    "delete_team_member",
-    "check_permission",
-    "log_team_activity",
-    "get_team_activity",
 ]

@@ -223,14 +223,26 @@ async def verify_webhook(request: Request):
     token = request.query_params.get("hub.verify_token")
     challenge = request.query_params.get("hub.challenge")
     
-    # Find config with this verify token
-    # For simplicity, we'll accept any valid token format
-    # In production, you'd look up the config by token
+    if mode != "subscribe" or not token or not challenge:
+        raise HTTPException(status_code=403, detail="Verification failed: missing parameters")
     
-    if mode == "subscribe" and token and challenge:
-        return Response(content=challenge, media_type="text/plain")
+    # SECURITY: Properly validate the verify_token against stored configurations
+    from db_helper import get_db, fetch_one
     
-    raise HTTPException(status_code=403, detail="Verification failed")
+    async with get_db() as db:
+        # Look for a config with this verify token
+        config = await fetch_one(
+            db,
+            "SELECT id, license_key_id FROM whatsapp_configs WHERE verify_token = ?",
+            [token]
+        )
+    
+    if not config:
+        # Token not found - reject the verification
+        raise HTTPException(status_code=403, detail="Verification failed: invalid token")
+    
+    # Token is valid, return the challenge
+    return Response(content=challenge, media_type="text/plain")
 
 
 @router.post("/webhook")

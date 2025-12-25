@@ -20,13 +20,39 @@ logger = get_logger(__name__)
 
 # ============ Configuration ============
 
+def _get_jwt_secret_key() -> str:
+    """Get JWT secret key from environment, fail fast in production if not set."""
+    key = os.getenv("JWT_SECRET_KEY")
+    if key:
+        return key
+    
+    # In production, we MUST have a stable secret key
+    if os.getenv("ENVIRONMENT", "development") == "production":
+        raise ValueError(
+            "JWT_SECRET_KEY must be set in production! "
+            "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+        )
+    
+    # Development only: generate a random key (tokens won't persist across restarts)
+    generated_key = secrets.token_hex(32)
+    logger.warning(
+        "JWT_SECRET_KEY not set - using auto-generated key. "
+        "Tokens will be invalidated on restart. Set JWT_SECRET_KEY in production!"
+    )
+    return generated_key
+
+
 @dataclass
 class JWTConfig:
     """JWT configuration from environment"""
-    secret_key: str = os.getenv("JWT_SECRET_KEY", secrets.token_hex(32))
+    secret_key: str = None  # Set in __post_init__
     algorithm: str = "HS256"
     access_token_expire_minutes: int = int(os.getenv("JWT_ACCESS_EXPIRE_MINUTES", "30"))
     refresh_token_expire_days: int = int(os.getenv("JWT_REFRESH_EXPIRE_DAYS", "7"))
+    
+    def __post_init__(self):
+        if self.secret_key is None:
+            self.secret_key = _get_jwt_secret_key()
 
 
 config = JWTConfig()

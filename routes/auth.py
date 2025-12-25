@@ -19,6 +19,7 @@ from services.jwt_auth import (
 from database import validate_license_key
 from db_helper import get_db, execute_sql, fetch_one
 from logging_config import get_logger
+from security_config import validate_password_strength
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
@@ -138,7 +139,15 @@ async def register(data: RegisterRequest):
     
     Requires a valid license key to register.
     """
-    # Validate license key first
+    # SECURITY: Validate password strength first
+    is_valid, error_message = validate_password_strength(data.password)
+    if not is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=error_message,
+        )
+    
+    # Validate license key
     license_result = await validate_license_key(data.license_key)
     if not license_result.get("valid"):
         raise HTTPException(

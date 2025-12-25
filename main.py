@@ -64,7 +64,7 @@ from models import (
 import logging
 logger = logging.getLogger("startup")
 try:
-    from routes import integrations_router, features_router, whatsapp_router, team_router, export_router, notifications_router, purchases_router
+    from routes import integrations_router, features_router, whatsapp_router, export_router, notifications_router, purchases_router
     logger.info("Successfully imported integration routes")
 except ImportError as e:
     logger.error(f"Failed to import routes: {e}")
@@ -307,7 +307,7 @@ logger.info(f"Including integrations_router with {len(integrations_router.routes
 app.include_router(integrations_router)    # Email & Telegram
 app.include_router(features_router)        # Customers, Analytics
 app.include_router(whatsapp_router)        # WhatsApp Business
-app.include_router(team_router)            # Team Management
+
 app.include_router(export_router)          # Export & Reports
 app.include_router(notifications_router)   # Smart Notifications & Integrations
 app.include_router(purchases_router)       # Customer Purchases
@@ -326,9 +326,21 @@ from routes.version import router as version_router
 app.include_router(version_router)
 
 @app.get("/debug/routes")
-def list_all_routes():
-    """List all registered routes for debugging"""
+async def list_all_routes(x_admin_key: str = Header(None, alias="X-Admin-Key")):
+    """List all registered routes for debugging (development only, or requires admin key)"""
     import logging
+    
+    # SECURITY: Only allow in development OR with admin key
+    is_production = os.getenv("ENVIRONMENT", "development") == "production"
+    
+    if is_production:
+        # In production, require admin key
+        if not x_admin_key or x_admin_key != ADMIN_KEY:
+            raise HTTPException(
+                status_code=403, 
+                detail="Debug endpoint not available in production without admin key"
+            )
+    
     logger = logging.getLogger("debug")
     routes = []
     for route in app.routes:
@@ -354,7 +366,7 @@ v1_router = APIRouter(prefix="/api/v1")
 v1_router.include_router(integrations_router.router if hasattr(integrations_router, 'router') else integrations_router, prefix="")
 v1_router.include_router(features_router.router if hasattr(features_router, 'router') else features_router, prefix="")
 v1_router.include_router(whatsapp_router.router if hasattr(whatsapp_router, 'router') else whatsapp_router, prefix="")
-v1_router.include_router(team_router.router if hasattr(team_router, 'router') else team_router, prefix="")
+
 v1_router.include_router(export_router.router if hasattr(export_router, 'router') else export_router, prefix="")
 v1_router.include_router(notifications_router.router if hasattr(notifications_router, 'router') else notifications_router, prefix="")
 v1_router.include_router(subscription_router, prefix="")

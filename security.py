@@ -15,32 +15,45 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
 import base64
 
-# Get encryption key from environment or generate one
+# Get encryption key from environment
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 if not ENCRYPTION_KEY:
-    # Generate a key if not set (for development - should be set in production!)
+    # In production, this should fail fast
+    if os.getenv("ENVIRONMENT", "development") == "production":
+        raise ValueError("ENCRYPTION_KEY must be set in production environment!")
+    # Generate a key for development only
     ENCRYPTION_KEY = Fernet.generate_key().decode()
     print("WARNING: Using auto-generated encryption key. Set ENCRYPTION_KEY in production!")
 
+# Fixed salt for key derivation (used when ENCRYPTION_KEY is not already a Fernet key)
+# Note: This is acceptable because the ENCRYPTION_KEY itself provides the entropy
+_KEY_DERIVATION_SALT = os.getenv("ENCRYPTION_SALT", "").encode() or os.urandom(16)
+
 # Initialize Fernet cipher
-try:
-    # If ENCRYPTION_KEY is a base64 string, use it directly
-    if len(ENCRYPTION_KEY) == 44 and ENCRYPTION_KEY.endswith('='):
-        cipher = Fernet(ENCRYPTION_KEY.encode())
-    else:
-        # Derive key from password using PBKDF2
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=b'almudeer_salt_2024',  # In production, use random salt per encryption
-            iterations=100000,
-            backend=default_backend()
-        )
-        key = base64.urlsafe_b64encode(kdf.derive(ENCRYPTION_KEY.encode()))
-        cipher = Fernet(key)
-except Exception as e:
-    print(f"WARNING: Encryption initialization error: {e}. Using fallback.")
-    cipher = None
+def _init_cipher():
+    """Initialize the Fernet cipher. Raises on failure in production."""
+    try:
+        # If ENCRYPTION_KEY is already a valid Fernet key (base64, 44 chars), use directly
+        if len(ENCRYPTION_KEY) == 44 and ENCRYPTION_KEY.endswith('='):
+            return Fernet(ENCRYPTION_KEY.encode())
+        else:
+            # Derive key from password using PBKDF2 with proper salt
+            kdf = PBKDF2HMAC(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=_KEY_DERIVATION_SALT,
+                iterations=100000,
+                backend=default_backend()
+            )
+            key = base64.urlsafe_b64encode(kdf.derive(ENCRYPTION_KEY.encode()))
+            return Fernet(key)
+    except Exception as e:
+        if os.getenv("ENVIRONMENT", "development") == "production":
+            raise RuntimeError(f"Encryption initialization failed: {e}. Cannot run in production without encryption.")
+        print(f"WARNING: Encryption initialization error: {e}")
+        return None
+
+cipher = _init_cipher()
 
 
 def encrypt_sensitive_data(data: str) -> str:
@@ -52,21 +65,27 @@ def encrypt_sensitive_data(data: str) -> str:
         
     Returns:
         Base64-encoded encrypted string
+        
+    Raises:
+        RuntimeError: If encryption is not available (in production)
     """
     if not data:
         return ""
     
     if not cipher:
-        # Fallback to simple encoding if encryption not available
-        return base64.b64encode(data.encode()).decode()
+        # SECURITY: Never fall back to insecure encoding
+        if os.getenv("ENVIRONMENT", "development") == "production":
+            raise RuntimeError("Encryption unavailable - cannot store sensitive data")
+        # Development only: warn loudly
+        print("SECURITY WARNING: Encryption unavailable, storing data unencrypted (dev only)")
+        return f"UNENCRYPTED:{base64.b64encode(data.encode()).decode()}"
     
     try:
         encrypted = cipher.encrypt(data.encode())
         return base64.urlsafe_b64encode(encrypted).decode()
     except Exception as e:
-        print(f"Encryption error: {e}")
-        # Fallback
-        return base64.b64encode(data.encode()).decode()
+        # SECURITY: Don't silently fall back to insecure encoding
+        raise RuntimeError(f"Encryption failed: {e}")
 
 
 def decrypt_sensitive_data(encrypted_data: str) -> str:
@@ -78,15 +97,26 @@ def decrypt_sensitive_data(encrypted_data: str) -> str:
         
     Returns:
         Decrypted plain text
+        
+    Raises:
+        RuntimeError: If decryption fails in production
     """
     if not encrypted_data:
         return ""
     
+    # Handle development-mode unencrypted data
+    if encrypted_data.startswith("UNENCRYPTED:"):
+        if os.getenv("ENVIRONMENT", "development") == "production":
+            raise RuntimeError("Found unencrypted data in production environment")
+        return base64.b64decode(encrypted_data[12:].encode()).decode()
+    
     if not cipher:
-        # Fallback
+        if os.getenv("ENVIRONMENT", "development") == "production":
+            raise RuntimeError("Decryption unavailable - cannot read sensitive data")
+        # Development fallback for backwards compatibility
         try:
             return base64.b64decode(encrypted_data.encode()).decode()
-        except:
+        except Exception:
             return ""
     
     try:
@@ -94,12 +124,12 @@ def decrypt_sensitive_data(encrypted_data: str) -> str:
         decrypted = cipher.decrypt(decoded)
         return decrypted.decode()
     except Exception as e:
-        print(f"Decryption error: {e}")
-        # Try fallback
-        try:
-            return base64.b64decode(encrypted_data.encode()).decode()
-        except:
-            return ""
+        # Log but don't expose details
+        print(f"Decryption error: {type(e).__name__}")
+        # In production, we should not silently fail
+        if os.getenv("ENVIRONMENT", "development") == "production":
+            raise RuntimeError("Decryption failed for sensitive data")
+        return ""
 
 
 def sanitize_string(text: str, max_length: Optional[int] = None, allow_html: bool = False) -> str:
