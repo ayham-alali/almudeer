@@ -70,7 +70,7 @@ class TokenType:
 
 # ============ Token Operations ============
 
-def create_access_token(data: Dict[str, Any], expires_delta: timedelta = None) -> str:
+def create_access_token(data: Dict[str, Any], expires_delta: timedelta = None) -> Tuple[str, str, datetime]:
     """
     Create a JWT access token.
     
@@ -79,18 +79,20 @@ def create_access_token(data: Dict[str, Any], expires_delta: timedelta = None) -
         expires_delta: Custom expiration time
     
     Returns:
-        Encoded JWT token string
+        Tuple of (encoded_token, jti, expiry_datetime)
     """
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=config.access_token_expire_minutes))
+    jti = secrets.token_hex(16)  # Unique token ID for blacklisting
     
     to_encode.update({
         "exp": expire,
         "iat": datetime.utcnow(),
         "type": TokenType.ACCESS,
+        "jti": jti,
     })
     
-    return jwt.encode(to_encode, config.secret_key, algorithm=config.algorithm)
+    return jwt.encode(to_encode, config.secret_key, algorithm=config.algorithm), jti, expire
 
 
 def create_refresh_token(data: Dict[str, Any]) -> str:
@@ -116,7 +118,7 @@ def create_refresh_token(data: Dict[str, Any]) -> str:
     return jwt.encode(to_encode, config.secret_key, algorithm=config.algorithm)
 
 
-def create_token_pair(user_id: str, license_id: int = None, role: str = "user") -> Dict[str, str]:
+def create_token_pair(user_id: str, license_id: int = None, role: str = "user") -> Dict[str, Any]:
     """
     Create both access and refresh tokens.
     
@@ -126,7 +128,7 @@ def create_token_pair(user_id: str, license_id: int = None, role: str = "user") 
         role: User role (admin/user)
     
     Returns:
-        Dict with 'access_token' and 'refresh_token'
+        Dict with 'access_token', 'refresh_token', 'jti', 'expires_at'
     """
     payload = {
         "sub": user_id,
@@ -134,11 +136,15 @@ def create_token_pair(user_id: str, license_id: int = None, role: str = "user") 
         "role": role,
     }
     
+    access_token, jti, expires_at = create_access_token(payload)
+    
     return {
-        "access_token": create_access_token(payload),
+        "access_token": access_token,
         "refresh_token": create_refresh_token(payload),
         "token_type": "bearer",
         "expires_in": config.access_token_expire_minutes * 60,  # seconds
+        "jti": jti,
+        "expires_at": expires_at,
     }
 
 
@@ -161,6 +167,15 @@ def verify_token(token: str, token_type: str = TokenType.ACCESS) -> Optional[Dic
             logger.warning(f"Token type mismatch: expected {token_type}, got {payload.get('type')}")
             return None
         
+        # Check if token is blacklisted (for access tokens)
+        if token_type == TokenType.ACCESS:
+            jti = payload.get("jti")
+            if jti:
+                from services.token_blacklist import is_token_blacklisted
+                if is_token_blacklisted(jti):
+                    logger.info(f"Token {jti[:8]}... is blacklisted")
+                    return None
+        
         return payload
         
     except JWTError as e:
@@ -168,7 +183,7 @@ def verify_token(token: str, token_type: str = TokenType.ACCESS) -> Optional[Dic
         return None
 
 
-def refresh_access_token(refresh_token: str) -> Optional[Dict[str, str]]:
+def refresh_access_token(refresh_token: str) -> Optional[Dict[str, Any]]:
     """
     Use a refresh token to get a new access token.
     
@@ -184,14 +199,18 @@ def refresh_access_token(refresh_token: str) -> Optional[Dict[str, str]]:
         return None
     
     # Create new access token (not new refresh token for security)
+    access_token, jti, expires_at = create_access_token({
+        "sub": payload.get("sub"),
+        "license_id": payload.get("license_id"),
+        "role": payload.get("role", "user"),
+    })
+    
     return {
-        "access_token": create_access_token({
-            "sub": payload.get("sub"),
-            "license_id": payload.get("license_id"),
-            "role": payload.get("role", "user"),
-        }),
+        "access_token": access_token,
         "token_type": "bearer",
         "expires_in": config.access_token_expire_minutes * 60,
+        "jti": jti,
+        "expires_at": expires_at,
     }
 
 

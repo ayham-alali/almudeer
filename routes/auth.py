@@ -3,7 +3,7 @@ Al-Mudeer - Authentication Routes
 JWT-based login, registration, and token management
 """
 
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Request
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from datetime import datetime
@@ -20,6 +20,9 @@ from database import validate_license_key
 from db_helper import get_db, execute_sql, fetch_one
 from logging_config import get_logger
 from security_config import validate_password_strength
+from services.login_protection import check_account_lockout, record_failed_login, record_successful_login
+from services.security_logger import get_security_logger
+from services.token_blacklist import blacklist_token
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
@@ -91,6 +94,17 @@ async def login(data: LoginRequest):
     
     # Option 2: Login with email/password
     if data.email and data.password:
+        security_logger = get_security_logger()
+        
+        # Check if account is locked
+        is_locked, remaining_seconds = check_account_lockout(data.email)
+        if is_locked:
+            security_logger.log_login_failed(data.email, reason="Account locked")
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Account locked. Try again in {remaining_seconds // 60 + 1} minutes.",
+            )
+        
         # Look up user by email
         async with get_db() as db:
             user = await fetch_one(
@@ -100,16 +114,27 @@ async def login(data: LoginRequest):
             )
         
         if not user:
+            record_failed_login(data.email)
+            security_logger.log_login_failed(data.email, reason="User not found")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid email or password",
             )
         
         if not verify_password(data.password, user.get("password_hash", "")):
+            attempts, is_now_locked = record_failed_login(data.email)
+            if is_now_locked:
+                security_logger.log_account_locked(data.email, attempts=attempts)
+            else:
+                security_logger.log_login_failed(data.email, reason="Wrong password")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid email or password",
             )
+        
+        # Successful login - clear failed attempts
+        record_successful_login(data.email)
+        security_logger.log_login_success(data.email)
         
         tokens = create_token_pair(
             user_id=user.get("email"),
@@ -227,12 +252,41 @@ async def get_current_user_info(user: dict = Depends(get_current_user)):
 
 
 @router.post("/logout")
-async def logout(user: dict = Depends(get_current_user)):
+async def logout(
+    request: Request,
+    user: dict = Depends(get_current_user)
+):
     """
-    Logout (client should discard tokens).
+    Logout and invalidate the current token.
     
-    Note: With JWT, true logout requires token blacklisting (Redis recommended).
+    The token will be blacklisted and cannot be used again.
     """
-    # For now, just acknowledge - client should discard tokens
-    logger.info(f"User logged out: {user.get('user_id')}")
+    from fastapi import Request
+    
+    # Get the token from the Authorization header
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        
+        # Decode to get JTI and expiry
+        try:
+            from jose import jwt
+            from services.jwt_auth import config
+            payload = jwt.decode(token, config.secret_key, algorithms=[config.algorithm])
+            jti = payload.get("jti")
+            exp = payload.get("exp")
+            
+            if jti and exp:
+                from datetime import datetime
+                expires_at = datetime.utcfromtimestamp(exp)
+                blacklist_token(jti, expires_at)
+                
+                security_logger = get_security_logger()
+                security_logger.log_logout(user.get('user_id'))
+                security_logger.log_token_blacklisted(user.get('user_id'), jti)
+                
+                logger.info(f"User logged out and token blacklisted: {user.get('user_id')}")
+        except Exception as e:
+            logger.warning(f"Could not blacklist token on logout: {e}")
+    
     return {"success": True, "message": "Logged out successfully"}
