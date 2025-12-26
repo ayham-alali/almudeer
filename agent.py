@@ -912,6 +912,7 @@ async def process_message(
 
     # Result container
     response_json = None
+    response_obj = None
 
     for turn in range(max_turns):
         try:
