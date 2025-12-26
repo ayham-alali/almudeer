@@ -60,6 +60,13 @@ async def init_database():
     else:
         async with aiosqlite.connect(DATABASE_PATH) as db:
             await _init_sqlite_tables(db)
+    
+    # Initialize Service Tables
+    try:
+        from services.notification_service import init_notification_tables
+        await init_notification_tables()
+    except Exception as e:
+        print(f"Warning: Failed to init notification tables: {e}")
 
 
 async def _init_sqlite_tables(db):
@@ -109,6 +116,37 @@ async def _init_sqlite_tables(db):
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP,
             FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
+        )
+    """)
+
+    # Customers table (for detailed profile)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS customers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            license_key_id INTEGER,
+            name TEXT,
+            contact TEXT UNIQUE NOT NULL,
+            type TEXT DEFAULT 'Regular',
+            total_spend REAL DEFAULT 0.0,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP,
+            FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
+        )
+    """)
+
+    # Orders table
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_ref TEXT UNIQUE NOT NULL,
+            customer_contact TEXT,
+            status TEXT DEFAULT 'Pending',
+            total_amount REAL,
+            items TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP,
+            FOREIGN KEY (customer_contact) REFERENCES customers(contact)
         )
     """)
     
@@ -582,3 +620,48 @@ async def create_demo_license():
         print(f"Demo License Key Created: {demo_key}")
         return demo_key
     return None
+
+
+async def get_customer(contact: str) -> Optional[dict]:
+    """Get customer details by contact (SQLite only for now for simplicity)"""
+    # Assuming SQLite for tools MVP
+    if DB_TYPE != "postgresql":
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM customers WHERE contact = ?", (contact,)) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+    return None
+
+async def get_order_by_ref(order_ref: str) -> Optional[dict]:
+    """Get order details by reference"""
+    if DB_TYPE != "postgresql":
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM orders WHERE order_ref = ?", (order_ref,)) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+    return None
+
+async def upsert_customer_lead(name: str, contact: str, notes: str) -> int:
+    """Create or update a customer lead"""
+    if DB_TYPE != "postgresql":
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            # Check if exists
+            async with db.execute("SELECT id FROM customers WHERE contact = ?", (contact,)) as cursor:
+                row = await cursor.fetchone()
+                
+            if row:
+                # Update notes
+                await db.execute("UPDATE customers SET notes = notes || '\n' || ? WHERE contact = ?", (notes, contact))
+                await db.commit()
+                return row[0]
+            else:
+                # Insert
+                cursor = await db.execute("""
+                    INSERT INTO customers (name, contact, type, notes) 
+                    VALUES (?, ?, 'Lead', ?)
+                """, (name, contact, notes))
+                await db.commit()
+                return cursor.lastrowid
+    return 0

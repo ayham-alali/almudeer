@@ -286,6 +286,7 @@ class LLMResponse:
     cached: bool = False
     tokens_used: int = 0
     latency_ms: int = 0
+    tool_calls: Optional[List[Dict[str, Any]]] = None
 
 
 class LLMProvider(ABC):
@@ -518,9 +519,10 @@ class GeminiProvider(LLMProvider):
         prompt: str,
         system: Optional[str] = None,
         json_mode: bool = False,
-        max_tokens: int = 1024,  # Increased from 600 for fuller Arabic responses
+        max_tokens: int = 1024,
         temperature: float = 0.3,
-        attachments: Optional[List[Dict[str, Any]]] = None
+        attachments: Optional[List[Dict[str, Any]]] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[LLMResponse]:
         if not self.is_available:
             return None
@@ -531,7 +533,6 @@ class GeminiProvider(LLMProvider):
             return None
         
         # CRITICAL: Enforce global rate limit HERE for Gemini only
-        # This allows other providers (OpenRouter) to bypass this check
         await get_rate_limiter().wait_for_capacity()
         
         start_time = time.time()
@@ -548,28 +549,36 @@ class GeminiProvider(LLMProvider):
         if attachments:
             for att in attachments:
                 mime_type = att.get("type", "")
-                if mime_type.startswith("image/") or mime_type.startswith("audio/"):
+                if mime_type.startswith("image/") or mime_type.startswith("audio/") or mime_type == "application/pdf":
                     if "base64" in att:
                         import base64
                         data = base64.b64decode(att["base64"])
                         content_parts.append(types.Part.from_bytes(data=data, mime_type=mime_type))
         
         # Configure generation
-        config = types.GenerateContentConfig(
-            temperature=temperature,
-            max_output_tokens=max_tokens,
-        )
-        
-        if json_mode:
+        # If tools provided, use them
+        if tools:
+            # We assume tools list matches Gemini "tools" format (list of Tool objects or dicts)
+            config = types.GenerateContentConfig(
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+                tools=tools,
+            )
+        elif json_mode:
             config = types.GenerateContentConfig(
                 temperature=temperature,
                 max_output_tokens=max_tokens,
                 response_mime_type="application/json",
             )
+        else:
+            config = types.GenerateContentConfig(
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+            )
         
         for attempt in range(self.config.max_retries):
             try:
-                # Use async generation via executor (google-genai is sync)
+                # Use async generation via executor
                 response = await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: client.models.generate_content(
@@ -579,25 +588,42 @@ class GeminiProvider(LLMProvider):
                     )
                 )
                 
-                # Extract content from response
-                if response.text:
-                    content = response.text
-                else:
-                    logger.warning("Gemini returned empty response")
-                    return None
+                # Handling function calls
+                function_calls = []
+                content = ""
+                
+                # Check for function calls in candidates
+                if hasattr(response, 'candidates') and response.candidates:
+                    first_candidate = response.candidates[0]
+                    if hasattr(first_candidate, 'content') and first_candidate.content.parts:
+                        for part in first_candidate.content.parts:
+                            if hasattr(part, 'function_call') and part.function_call:
+                                # It's a function call
+                                function_calls.append({
+                                    "name": part.function_call.name,
+                                    "args": dict(part.function_call.args)
+                                })
+                            elif hasattr(part, 'text') and part.text:
+                                content += part.text
+
+                # Use text if no function call processing needed here (we return extracted calls separately if architecture allows, 
+                # but since LLMResponse is simple, we might need to update it or return raw response to agent)
+                # For now, let's assume we return the raw response object if it has tools?
+                # Or better: Update LLMResponse to include tool_calls
+                
+                if not content and hasattr(response, 'text') and response.text:
+                   content = response.text
                 
                 latency = int((time.time() - start_time) * 1000)
-                
                 self._error_count = 0
-                
-                # Report success to reset 429 counter
                 get_rate_limiter().report_success()
                 
                 return LLMResponse(
                     content=content.strip(),
                     provider=self.name,
                     model=self.config.google_model,
-                    latency_ms=latency
+                    latency_ms=latency,
+                    tool_calls=function_calls if function_calls else None
                 )
                 
             except Exception as e:
@@ -641,6 +667,41 @@ class GeminiProvider(LLMProvider):
     def _record_error(self):
         self._error_count += 1
         self._last_error_time = time.time()
+
+    async def embed_text(self, text: str) -> Optional[List[float]]:
+        """
+        Generate embeddings for text using Gemini text-embedding-004 model.
+        Returns a list of floats (the vector).
+        """
+        if not self.is_available:
+            return None
+
+        client = GeminiProvider._client
+        if client is None:
+            return None
+
+        try:
+            # Rate limit check
+            await get_rate_limiter().wait_for_capacity()
+            
+            # Run in executor because google-genai might be sync or we want to be safe
+            response = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: client.models.embed_content(
+                    model="text-embedding-004",
+                    contents=text,
+                    config=None # Optional config
+                )
+            )
+            
+            # Handle response structure
+            if hasattr(response, 'embeddings') and response.embeddings:
+                return response.embeddings[0].values
+            return None
+            
+        except Exception as e:
+            logger.error(f"Gemini embedding error: {e}")
+            return None
 
 
 class OpenRouterProvider(LLMProvider):
@@ -977,20 +1038,19 @@ async def llm_generate(
     json_mode: bool = False,
     max_tokens: int = 2048,  # Increased for Arabic responses
     temperature: float = 0.3,
-    attachments: Optional[List[Dict[str, Any]]] = None
-) -> Optional[str]:
+    attachments: Optional[List[Dict[str, Any]]] = None,
+    tools: Optional[List[Dict[str, Any]]] = None,
+) -> Any:
     """
     Convenience function for generating LLM responses.
     
     Uses global rate limiter + semaphore to prevent rate limiting.
     Rate limiter enforces minimum 10s between requests (6 RPM max).
-    Returns just the content string (or None) for backward compatibility.
+    Returns content string (legacy) or LLMResponse object (if tools used).
     """
     service = get_llm_service()
     semaphore = get_llm_semaphore(service.config.max_concurrent_requests)
-    rate_limiter = get_rate_limiter()
     
-    # Wait for semaphore - limits to N concurrent LLM requests
     # Wait for semaphore - limits to N concurrent LLM requests
     async with semaphore:
         # Note: We removed the global rate_limiter.wait_for_capacity() call here.
@@ -1003,12 +1063,17 @@ async def llm_generate(
             json_mode=json_mode,
             max_tokens=max_tokens,
             temperature=temperature,
-            attachments=attachments
+            attachments=attachments,
+            tools=tools
         )
         
         # Add post-request delay for extra safety margin
         if service.config.post_request_delay > 0:
             await asyncio.sleep(service.config.post_request_delay)
         
+        # If tools were requested and we got a response with tool calls, return the full object
+        if tools and response and response.tool_calls:
+            return response
+            
         return response.content if response else None
 

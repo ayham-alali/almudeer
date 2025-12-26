@@ -104,6 +104,48 @@ class TelegramService:
         })
         return True
     
+    async def send_voice(self, chat_id: str, audio_path: str, caption: str = None) -> dict:
+        """Send voice message (OGG with OPUS codec recommended, but MP3 works)"""
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            with open(audio_path, "rb") as f:
+                files = {"voice": (audio_path, f, "audio/mpeg")}
+                data = {"chat_id": chat_id}
+                if caption:
+                    data["caption"] = caption
+                
+                response = await client.post(
+                    f"{self.api_url}/sendVoice",
+                    data=data,
+                    files=files
+                )
+                result = response.json()
+                
+                if not result.get("ok"):
+                    raise Exception(result.get("description", "Telegram API error"))
+                
+                return result.get("result", {})
+    
+    async def send_audio(self, chat_id: str, audio_path: str, title: str = None) -> dict:
+        """Send audio file (MP3, etc.)"""
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            with open(audio_path, "rb") as f:
+                files = {"audio": (audio_path, f, "audio/mpeg")}
+                data = {"chat_id": chat_id}
+                if title:
+                    data["title"] = title
+                
+                response = await client.post(
+                    f"{self.api_url}/sendAudio",
+                    data=data,
+                    files=files
+                )
+                result = response.json()
+                
+                if not result.get("ok"):
+                    raise Exception(result.get("description", "Telegram API error"))
+                
+                return result.get("result", {})
+    
     async def test_connection(self) -> tuple[bool, str, dict]:
         """Test bot token and get bot info"""
         try:

@@ -554,10 +554,12 @@ async def analyze_message(
     # Load recent conversation history for this sender (if available)
     conversation_history = ""
     if sanitized_sender_contact:
-        conversation_history = await get_recent_conversation(
+        # Use new unified history function
+        from models.inbox import get_chat_history_for_llm
+        conversation_history = await get_chat_history_for_llm(
             license_id=license_id,
             sender_contact=sanitized_sender_contact,
-            limit=5,
+            limit=10,
         )
 
     # Process the message
@@ -567,7 +569,7 @@ async def analyze_message(
         sender_name=sanitized_sender_name,
         sender_contact=sanitized_sender_contact,
         preferences=prefs,
-        conversation_history=conversation_history,
+        history=conversation_history,  # CORRECTED
     )
     
     if result["success"]:
@@ -801,10 +803,12 @@ async def draft_response(
     # Load recent conversation history for this sender (if available)
     conversation_history = ""
     if sanitized_sender_contact:
-        conversation_history = await get_recent_conversation(
+        # Use new unified history function
+        from models.inbox import get_chat_history_for_llm
+        conversation_history = await get_chat_history_for_llm(
             license_id=license_id,
             sender_contact=sanitized_sender_contact,
-            limit=5,
+            limit=10,
         )
 
     result = await process_message(
@@ -813,7 +817,7 @@ async def draft_response(
         sender_name=sanitized_sender_name,
         sender_contact=sanitized_sender_contact,
         preferences=prefs,
-        conversation_history=conversation_history,
+        history=conversation_history,  # CORRECTED
     )
     
     if result["success"]:

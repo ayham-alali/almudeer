@@ -537,3 +537,69 @@ class TelegramPhoneService:
                 except:
                     pass
 
+    async def send_voice(
+        self,
+        session_string: str,
+        recipient_id: str,
+        audio_path: str
+    ) -> Dict:
+        """
+        Send a voice message via Telegram
+        
+        Args:
+            session_string: Session string
+            recipient_id: Recipient chat ID or username
+            audio_path: Path to audio file (MP3, OGG, etc.)
+        
+        Returns:
+            Dict with sent message info
+        """
+        from logging_config import get_logger
+        logger = get_logger(__name__)
+        
+        client = None
+        try:
+            client = await self.create_client_from_session(session_string)
+            
+            # Fetch dialogs first to populate entity cache
+            logger.debug(f"Fetching dialogs before sending voice to {recipient_id}")
+            await client.get_dialogs(limit=100)
+            
+            # Resolve entity
+            entity = None
+            try:
+                chat_id = int(recipient_id)
+                entity = await client.get_entity(chat_id)
+            except (ValueError, TypeError):
+                pass
+            except Exception as e:
+                logger.warning(f"Failed to get entity by ID {recipient_id}: {e}")
+            
+            if entity is None:
+                try:
+                    entity = await client.get_entity(recipient_id)
+                except Exception as e:
+                    logger.error(f"Failed to get entity {recipient_id}: {e}")
+                    raise ValueError(f"Cannot find entity '{recipient_id}'")
+            
+            # Send voice message
+            sent_message = await client.send_file(
+                entity,
+                audio_path,
+                voice_note=True  # This makes it appear as a voice message
+            )
+            
+            return {
+                "id": sent_message.id,
+                "chat_id": str(recipient_id),
+                "date": sent_message.date.isoformat() if sent_message.date else None
+            }
+        
+        except Exception as e:
+            raise ValueError(f"خطأ في إرسال الرسالة الصوتية: {str(e)}")
+        finally:
+            if client:
+                try:
+                    await client.disconnect()
+                except:
+                    pass

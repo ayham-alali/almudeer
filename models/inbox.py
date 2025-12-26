@@ -733,3 +733,33 @@ async def get_full_chat_history(
 
 
 
+
+async def get_chat_history_for_llm(
+    license_id: int,
+    sender_contact: str,
+    limit: int = 10
+) -> str:
+    """
+    Get chat history formatted as a string for LLM context.
+    Format:
+    User: [message]
+    Agent: [message]
+    ...
+    """
+    # Reuse the existing full history retrieval
+    messages = await get_full_chat_history(license_id, sender_contact, limit=limit)
+    
+    formatted_history = []
+    for msg in messages:
+        # Determine speaker
+        if msg.get("direction") == "incoming":
+            speaker = "User"
+        else:
+            speaker = "Agent"
+            
+        # Get content
+        content = msg.get("body", "").replace("\n", " ").strip()
+        if content:
+            formatted_history.append(f"{speaker}: {content}")
+            
+    return "\n".join(formatted_history)

@@ -73,3 +73,15 @@ ruff==0.1.9
 
 # Telethon Optimization
 # cryptg (Removed for stability)
+
+# Retrieval Augmented Generation (RAG) & Knowledge Base
+chromadb>=0.4.20
+pypdf>=4.0.0
+beautifulsoup4>=4.12.0
+
+# Tools & Web Search
+duckduckgo-search>=6.0.0
+
+# Text-to-Speech (Google Cloud TTS via Service Account)
+PyJWT>=2.8.0
+# cryptography is already included above

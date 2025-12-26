@@ -132,6 +132,53 @@ def filter_blocked_senders(message: Dict, blocked_list: List[str]) -> tuple[bool
     return True, None
 
 
+
+def filter_automated_messages(message: Dict) -> tuple[bool, Optional[str]]:
+    """
+    Filter automated messages (OTP, Marketing, System Info).
+    Returns (True, None) if message is CLEAN.
+    Returns (False, Reason) if message should be BLOCKED.
+    """
+    body = message.get("body", "").lower()
+    
+    # 1. OTP / Verification Codes
+    otp_patterns = [
+        r"code\s*is\s*\d+",
+        r"verification\s*code",
+        r"one-time\s*password",
+        r"otp",
+        r"رمز\s*التحقق",
+        r"كود\s*التفعيل",
+        r"كلمة\s*المرور\s*المؤقتة",
+        r"\b\d{4,6}\b.*code",  # "123456 is your code"
+    ]
+    if any(re.search(p, body) for p in otp_patterns):
+        return False, "Automated: OTP/Verification"
+
+    # 2. Marketing / Ads / Offers
+    marketing_keywords = [
+        "unsubscribe", "opt-out", "stop to end", 
+        "promotional", "limited time offer", "special offer", "discount",
+        "click here", "click below", "exclusive deal",
+        "إلغاء الاشتراك", "أرسل توقف", "عرض خاص", "لفترة محدودة",
+        "تخفيضات", "خصم خاص", "اشترك الآن"
+    ]
+    if any(k in body for k in marketing_keywords):
+        return False, "Automated: Marketing/Ad"
+
+    # 3. System / Info Messages
+    info_keywords = [
+        "do not reply", "auto-generated", "system message",
+        "no-reply", "noreply",
+        "لا ترد", "رسالة تلقائية", "تمت العملية بنجاح",
+        "عزيزي العميل، تم", "تم سحب", "تم إيداع"
+    ]
+    if any(k in body for k in info_keywords):
+        return False, "Automated: System Info"
+
+    return True, None
+
+
 def filter_keywords(message: Dict, keywords: List[str], mode: str = "block") -> tuple[bool, Optional[str]]:
     """
     Filter messages based on keywords.
@@ -182,6 +229,8 @@ class FilterManager:
         """Setup default filter rules"""
         self.filter.add_rule(filter_spam)
         self.filter.add_rule(filter_empty)
+        # Add the new automated message filter by default
+        self.filter.add_rule(filter_automated_messages)
     
     def add_custom_rule(self, rule_func: Callable):
         """Add a custom filter rule"""

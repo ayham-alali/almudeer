@@ -7,7 +7,7 @@ Optimized for low bandwidth with text-only responses
 import json
 import json_repair
 import re
-from typing import TypedDict, Literal, Optional, Dict, Any, List
+from typing import TypedDict, Literal, Optional, Dict, Any, List, Callable, Awaitable
 from models import update_daily_analytics
 from dataclasses import dataclass
 import httpx
@@ -42,9 +42,14 @@ from langgraph.graph import StateGraph, END
 
 # Note: LLM configuration is centralized in services/llm_provider.py
 # This file uses llm_generate() which handles OpenAI/Gemini failover
+from message_filters import apply_filters
+
 
 # Base system prompt for Arabic business context
 BASE_SYSTEM_PROMPT = """أنت مساعد مكتبي ذكي للشركات في العالم العربي. تتحدث العربية الفصحى بأسلوب مهني ومهذب.
+لديك صلاحية الوصول لسياق المحادثة السابقة (إن وجد) لفهم طلبات العميل بشكل أفضل (مثل "كم سعر هذا" تعود لآخر منتج تم ذكره).
+
+القدرات الأساسية:
 تفهم السياق المحلي جيداً (العملة، العادات، أسلوب التخاطب).
 مهمتك هي تحليل الرسائل الواردة واستخراج المعلومات المهمة وصياغة ردود مناسبة.
 كن موجزاً ومباشراً في ردودك لتوفير استهلاك البيانات."""
@@ -148,20 +153,10 @@ async def call_llm(
     system: Optional[str] = None,
     json_mode: bool = False,
     max_tokens: int = 600,
-    attachments: Optional[List[Dict[str, Any]]] = None,
-) -> Optional[str]:
+    tools: Optional[List[Dict[str, Any]]] = None,
+) -> Any: # Returns str or LLMResponse
     """
     Call LLM using multi-provider service with automatic failover.
-
-    Provider chain: OpenAI -> Google Gemini -> Rule-based fallback
-    
-    Features:
-    - Automatic failover between providers
-    - Response caching to reduce API calls
-    - Circuit breaker for failing providers
-    - Exponential backoff for rate limiting
-    
-    Returns None if all providers fail (caller should use rule-based logic).
     """
     try:
         from services.llm_provider import llm_generate
@@ -174,10 +169,17 @@ async def call_llm(
             json_mode=json_mode,
             max_tokens=max_tokens,
             temperature=0.3,
-            attachments=attachments
+            attachments=attachments,
+            tools=tools
         )
         
-        return response
+        # If tools were requested and present in response, return full object
+        if tools and response and response.tool_calls:
+            return response
+            
+        # Legacy behavior: return content string
+        return response.content if response else None
+        
     except Exception as e:
         # If LLM fails, return None to trigger rule-based fallback
         print(f"LLM service error: {e}")
@@ -751,20 +753,64 @@ def get_agent():
 
 
 async def process_message(
-    message: str,
-    message_type: str = None,
-    sender_name: str = None,
-    sender_contact: str = None,
-    sender_city: str = None,
-    preferences: Optional[Dict[str, Any]] = None,
-    conversation_history: Optional[str] = None,
-    attachments: Optional[List[Dict[str, Any]]] = None,
+    message: str, 
+    attachment_text: str = None, 
+    attachments: list = None,
+    history: str = None,
+    message_type: str = None, # Kept for compatibility, can be removed if not used
+    sender_name: str = None, # Kept for compatibility
+    sender_city: str = None, # Kept for compatibility
+    preferences: Optional[Dict[str, Any]] = None, # Kept for compatibility
+    status_callback: Optional[Callable[[str], Awaitable[None]]] = None, # New: For real-time updates
 ) -> dict:
-    """Process a message using a Single-Call Unified AI approach (Optimization: 1 Call)"""
+    """
+    Process an incoming message through the agent graph
+    
+    Args:
+        message: The user's message text
+        attachment_text: (Optional) Text extracted from attachments
+        attachments: (Optional) List of attachment dicts
+        history: (Optional) Previous chat history formatted as string (User: ... \n Agent: ...)
+    """
+    # Helper function for cleaning text (assuming it exists or needs to be added)
+    def clean_text(text: str) -> str:
+        return text.strip()
+
+    clean_message = clean_text(message)
+    sender_contact = "" # In a real app we'd pass this down too, but for now it's fine
+    
+    # Prepend history to message for context or add to state
+    # We'll just add it to the prompt context
+    full_history_context = ""
+    if history:
+        full_history_context = f"\n\nسياق المحادثة السابقة:\n---\n{history}\n---\n"
     
     # --- Step 1: Ingestion (Local Processing) ---
-    clean_message = message.strip()
     
+    # 1.1 Link Scraping (New)
+    try:
+        from services.link_reader import extract_and_scrape_links
+        scraped_content = await extract_and_scrape_links(clean_message)
+        if scraped_content:
+            # Append scraped content to the message context for the LLM
+            clean_message += f"\n\n{scraped_content}"
+    except Exception as e:
+        print(f"Link scraping failed: {e}")
+
+    # 1.2 Knowledge Base Search (RAG) (New)
+    try:
+        from services.knowledge_base import get_knowledge_base
+        kb = get_knowledge_base()
+        # Search for relevant info
+        kb_results = await kb.search(clean_message, k=2)
+        
+        if kb_results:
+            kb_context = "\n".join([f"- {r['text']}" for r in kb_results])
+            clean_message += f"\n\n[System: Knowledge Base Info]\n{kb_context}"
+            print(f"Added {len(kb_results)} KB results to context")
+    except Exception as e:
+        print(f"KB search failed: {e}")
+
     # Analytics: Update received count
     if preferences and preferences.get("license_key_id"):
         try:
@@ -776,7 +822,30 @@ async def process_message(
         except Exception as e:
             print(f"Analytics update failed: {e}")
     
+    # --- Step 1.5: Local Blocking (Smart Filtering) ---
+    # Filter out OTPs, Ads, and Automated messages locally before paying for LLM
+    should_process, reason = await apply_filters(
+        message={"body": clean_message, "sender_contact": sender_contact},
+        license_id=preferences.get("license_key_id", 0) if preferences else 0,
+        recent_messages=None # We can pass history if needed
+    )
+    
+    if not should_process:
+        print(f"Message filtered locally: {reason}")
+        return {
+            "success": True, # It's a success that we filtered it
+            "data": {
+                "intent": "آلي" if "Automated" in reason else "ignored",
+                "urgency": "منخفض",
+                "sentiment": "محايد",
+                "summary": f"تم تجاهل الرسالة: {reason}",
+                "draft_response": "", # No response for filtered messages
+                "processing_notes": f"Filtered by: {reason}"
+            }
+        }
+
     # URL Fetching Logic (from ingest_node)
+
     url_pattern = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
     urls = re.findall(url_pattern, clean_message)
     if urls:
@@ -788,18 +857,14 @@ async def process_message(
         except Exception as e:
             print(f"URL fetch failed: {e}")
 
-    # --- Step 2: Unified Mega-Prompt Construction ---
-    history_block = ""
-    if conversation_history:
-        history_block = f"\nسياق المحادثة السابقة (الأحدث أولاً):\n{conversation_history}\n"
-
     system_prompt = build_system_prompt(preferences)
     
     mega_prompt = f"""أنت خبير خدمة عملاء ذكي وشامل.
 مهمتك: تحليل الرسالة، استخراج البيانات، وصياغة الرد المناسب في خطوة واحدة.
 
 1. التحليل (Analysis):
-   - النية: استفسار، طلب خدمة، شكوى، متابعة، عرض، تسويق، آلي، أخرى
+   - النية: استفسار، طلب خدمة، شكوى، متابعة، عرض، تسويق (للمتطفلين)، آلي (OTP/تنبيهات)، أخرى
+   - ملاحظة هامة: إذا كانت الرسالة إعلاناً أو كود تحقق (OTP) أو رسالة آلية، صنفها "آلي" ولا تكتب رداً.
    - مشاعر العميل: إيجابي، محايد، سلبي
    - الأهمية: عاجل، عادي، منخفض
    - اللغة واللهجة: حدد لغة العميل (ar, en, etc) ولهجته بدقة (سعودي، مصري، شامي...)
@@ -815,11 +880,12 @@ async def process_message(
    - استخدم نفس لغة ولهجة العميل بالضبط (مهم جداً!)
    - كن موجزاً ومباشراً (3-5 أسطر)
    - تجنب العبارات الروتينية المملة مثل "تم استلام رسالتك"
+   - ملاحظة: إذا كانت النية "آلي" أو "تسويق"، اترك الرد فارغاً تماماً ("").
+
+{full_history_context}
 
 الرسالة الحالية:
 {clean_message}
-
-{history_block}
 
 أرجع النتيجة بصيغة JSON فقط:
 {{
@@ -837,57 +903,144 @@ async def process_message(
 }}"""
 
     # --- Step 3: Single API Call ---
-    try:
-        response_json = await call_llm(
-            mega_prompt,
-            system=system_prompt,
-            json_mode=True,
-            max_tokens=2500,  # Increased for Arabic (needs ~60% more tokens)
-            attachments=attachments
-        )
+    # --- Step 3: Tool Execution Loop (Active Agent) ---
+    max_turns = 3
+    current_prompt = mega_prompt
+    
+    # Import tools
+    from tools.definitions import TOOLS_SCHEMA, TOOL_FUNCTIONS
+
+    # Result container
+    response_json = None
+
+    for turn in range(max_turns):
+        try:
+            # Pass tools only on first turn or if previous was a tool output
+            # Actually we can pass them always
+            
+            response_obj = await call_llm(
+                current_prompt,
+                system=system_prompt,
+                json_mode=True, # We ask for JSON, but Gemini might return function call instead
+                max_tokens=2500,
+                attachments=attachments if turn == 0 else None, # Attachments only needed once
+                tools=TOOLS_SCHEMA if turn < max_turns - 1 else None # Don't allow tools on last turn
+            )
+            
+            # If standard response (string), break and return
+            if isinstance(response_obj, str):
+                 response_json = response_obj
+                 break
+            
+            # Helper to check if it's the response object with tool calls
+            # (Since we check string above, it must be the object if not None)
+            if response_obj and hasattr(response_obj, 'tool_calls') and response_obj.tool_calls:
+                tool_outputs = []
+                print(f"Agent requested tools: {[t['name'] for t in response_obj.tool_calls]}")
+                
+                for tool_call in response_obj.tool_calls:
+                    fname = tool_call.get('name')
+                    fargs = tool_call.get('args', {})
+                    
+                    # Notify status update
+                    if status_callback:
+                        try:
+                            readable_name = fname.replace("_", " ").title()
+                            await status_callback(f"Working on it... ({readable_name})")
+                        except Exception as sc_err:
+                            print(f"Status callback error: {sc_err}")
+
+                    if fname in TOOL_FUNCTIONS:
+                        try:
+                            # Inject license_id context if tool accepts it (implied by convention or inspection)
+                            # For simplicity, we just add it to kwargs if it's create_lead or generally check signature
+                            # But since python ignores extra kwargs only if **kwargs is present, which our tools don't have...
+                            # We can just check the tool name for now or use inspection.
+                            
+                            # Cleanest: Check if 'preferences' available and tool is 'create_lead'
+                            if fname == "create_lead" and preferences and "license_key_id" in preferences:
+                                fargs["license_key_id"] = preferences["license_key_id"]
+
+                            # Execute tool
+                            result = await TOOL_FUNCTIONS[fname](**fargs)
+                            tool_outputs.append({
+                                "tool_name": fname,
+                                "result": result
+                            })
+                        except Exception as tool_err:
+                            tool_outputs.append({
+                                "tool_name": fname,
+                                "error": str(tool_err)
+                            })
+                    else:
+                        tool_outputs.append({
+                            "tool_name": fname,
+                            "error": "Function not found"
+                        })
+                
+                # Append results to prompt for next turn
+                # (Ideally we'd use chat history API, but for this mega-prompt simple loop:
+                # we just append the tool outputs as a system note)
+                
+                tool_results_text = "\n\n".join(
+                    [f"[System: Tool '{t['tool_name']}' Output]\n{json.dumps(t.get('result') or t.get('error'), ensure_ascii=False)}" for t in tool_outputs]
+                )
+                
+                current_prompt += f"\n\n{tool_results_text}\n\nUser: based on this, what is the final answer?"
+                print(f"Tool execution done. Re-prompting LLM...")
+                continue
+            
+            # If we got here, it's a weird state (obj but no tools?), just assume done or empty
+            break
+            
+        except Exception as e:
+            print(f"Agent loop error: {e}")
+            break
+            
+    # Default fallback if loop finished without json result (e.g. max turns reached)
+    # Default fallback if loop finished without json result (e.g. max turns reached)
+    if not response_json and isinstance(response_obj, str):
+        response_json = response_obj
         
-        if not response_json:
-             raise ValueError("LLM returned None (Rate Limit or Error)")
+    if not response_json:
+         raise ValueError("LLM returned None (Rate Limit or Error)")
 
-        # Use json_repair to handle truncated/malformed JSON from LLM
-        data = json_repair.loads(response_json)
+    # Use json_repair to handle truncated/malformed JSON from LLM
+    data = json_repair.loads(response_json)
         
-        # --- Step 4: Post-Processing & Normalization ---
-        # Analytics: Update replied count if draft generated
-        if preferences and preferences.get("license_key_id") and data.get("draft_response"):
-            try:
-                asyncio.create_task(update_daily_analytics(
-                    license_id=preferences["license_key_id"],
-                    messages_replied=1,
-                    sentiment=data.get("sentiment", "neutral")
-                ))
-            except Exception as e:
-                print(f"Analytics reply update failed: {e}")
+    # --- Step 4: Post-Processing & Normalization ---
+    # Analytics: Update replied count if draft generated
+    if preferences and preferences.get("license_key_id") and data.get("draft_response"):
+        try:
+            asyncio.create_task(update_daily_analytics(
+                license_id=preferences["license_key_id"],
+                messages_replied=1,
+                sentiment=data.get("sentiment", "neutral")
+            ))
+        except Exception as e:
+            print(f"Analytics reply update failed: {e}")
 
-        # Ensure critical fields exist
-        return {
-            "success": True,
-            "data": {
-                "intent": data.get("intent", "أخرى"),
-                "urgency": data.get("urgency", "عادي"),
-                "sentiment": data.get("sentiment", "محايد"),
-                "language": data.get("language", "ar"),
-                "dialect": data.get("dialect", "فصحى"),
-                "sender_name": data.get("sender_name") or sender_name,
-                "sender_contact": data.get("sender_contact") or sender_contact,
-                "key_points": data.get("key_points", []),
-                "action_items": data.get("action_items", []),
-                "extracted_entities": {}, # Legacy field, can be empty
-                "summary": data.get("summary", "رسالة جديدة"),
-                "draft_response": data.get("draft_response", ""),
-                "suggested_actions": [], # Can be inferred or left empty
-                "message_type": message_type or "general"
-            }
+    # Ensure critical fields exist
+    return {
+        "success": True,
+        "data": {
+            "intent": data.get("intent", "أخرى"),
+            "urgency": data.get("urgency", "عادي"),
+            "sentiment": data.get("sentiment", "محايد"),
+            "language": data.get("language", "ar"),
+            "dialect": data.get("dialect", "فصحى"),
+            "sender_name": data.get("sender_name") or sender_name,
+            "sender_contact": data.get("sender_contact") or sender_contact,
+            "key_points": data.get("key_points", []),
+            "action_items": data.get("action_items", []),
+            "extracted_entities": {}, # Legacy field, can be empty
+            "summary": data.get("summary", "رسالة جديدة"),
+            "draft_response": data.get("draft_response", ""),
+            "suggested_actions": [], # Can be inferred or left empty
+            "message_type": message_type or "general"
         }
+    }
 
-    except Exception as e:
-        return {
-            "success": False,
-            "error": f"AI Processing Failed: {str(e)}"
-        }
+    # except block removed
+
 

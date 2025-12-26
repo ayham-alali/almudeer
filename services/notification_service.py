@@ -716,6 +716,7 @@ async def send_vip_customer_alert(
     )
 
 
+
 async def send_daily_summary(license_id: int, stats: dict):
     """Send daily summary notification"""
     payload = NotificationPayload(
@@ -729,6 +730,30 @@ async def send_daily_summary(license_id: int, stats: dict):
             "الوقت الموفر": f"{stats.get('time_saved', 0)} دقيقة"
         }
     )
+    return await send_notification(
+        license_id,
+        payload,
+        [NotificationChannel.IN_APP, NotificationChannel.SLACK]
+    )
+
+
+async def send_tool_action_alert(
+    license_id: int,
+    action_name: str,
+    details: str
+):
+    """Send alert for sensitive agent actions (Tools)"""
+    payload = NotificationPayload(
+        title=f"🤖 إجراء تلقائي: {action_name}",
+        message=f"قام الوكيل الذكي بتنفيذ إجراء: {action_name}\nالتفاصيل: {details}",
+        priority=NotificationPriority.NORMAL,
+        link="/dashboard/crm", # Link to CRM or relevant page
+        metadata={
+            "الإجراء": action_name,
+            "الوقت": datetime.now().strftime("%H:%M")
+        }
+    )
+    # Default to In-App and Slack for visibility
     return await send_notification(
         license_id,
         payload,

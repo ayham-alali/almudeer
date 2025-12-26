@@ -28,6 +28,8 @@ from humanize import (
 )
 from models import update_daily_analytics
 import asyncio
+from message_filters import apply_filters
+
 
 
 # Note: LLM configuration is centralized in services/llm_provider.py
@@ -359,9 +361,15 @@ async def enhanced_draft_node(state: EnhancedAgentState) -> EnhancedAgentState:
         }
         lang_name = language_names.get(language, language.upper())
         
+        history_block = ""
+        if state.get("conversation_history"):
+            history_block = f"\nPREVIOUS CONVERSATION CONTEXT:\n{state['conversation_history']}\n"
+
         prompt = f"""{few_shot}
 
 🗣️ IMPORTANT: Respond in {lang_name} (same language as customer)!
+
+{history_block}
 
 Write a response to the customer ({sender}) based on:
 - Message type: {intent}
@@ -398,10 +406,16 @@ Write only the response in {lang_name} (3-6 lines), no explanation:"""
 
 بدلاً منها، استخدم لغة طبيعية وعفوية."""
         
+        history_block = ""
+        if state.get("conversation_history"):
+            history_block = f"\nسياق المحادثة السابقة:\n{state['conversation_history']}\n"
+
         prompt = f"""{few_shot}
 
 🗣️ اللهجة المطلوبة: {dialect}
 {dialect_instruction if dialect_instruction else "استخدم عربية فصحى مبسّطة وسهلة الفهم."}
+
+{history_block}
 
 اكتب رداً للعميل ({sender}) بناءً على:
 - نوع الرسالة: {intent}
@@ -549,7 +563,44 @@ async def process_message_enhanced(
     
     agent = get_enhanced_agent()
     
+    # --- Step 0: Local Blocking (Smart Filtering) ---
+    should_process, reason = await apply_filters(
+        message={"body": message, "sender_contact": sender_contact},
+        license_id=preferences.get("license_key_id", 0) if preferences else 0,
+        recent_messages=None
+    )
+    
+    if not should_process:
+        print(f"Enhanced Agent: Message filtered locally: {reason}")
+        return {
+            "success": True,
+            "data": {
+                "intent": "آلي" if "Automated" in reason else "ignored",
+                "urgency": "منخفض",
+                "sentiment": "محايد",
+                "summary": f"تم تجاهل الرسالة: {reason}",
+                "draft_response": "", 
+                "processing_notes": f"Filtered by: {reason}",
+                # Fill required enhanced fields with dummies
+                "persona_used": "none",
+                "persona_auto_selected": False,
+                "relationship_level": "new",
+                "key_points": [],
+                "action_items": [],
+                "extracted_entities": {},
+                "suggested_actions": [],
+                "message_type": message_type or "general",
+                "language": "ar",
+                "dialect": None,
+                "sender_name": sender_name,
+                "sender_contact": sender_contact,
+                "quality_score": 0,
+                "quality_issues": []
+            }
+        }
+
     initial_state: EnhancedAgentState = {
+
         "raw_message": message,
         "message_type": message_type or "general",
         "intent": "",

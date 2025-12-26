@@ -258,6 +258,65 @@ class WhatsAppService:
             
             return None
 
+    async def upload_media(self, file_path: str, mime_type: str = "audio/mpeg") -> Optional[str]:
+        """Upload media to WhatsApp and return media_id"""
+        url = f"{WHATSAPP_API_BASE}/{self.phone_number_id}/media"
+        
+        try:
+            # Prepare multipart form data
+            files = {'file': (os.path.basename(file_path), open(file_path, 'rb'), mime_type)}
+            data = {'messaging_product': 'whatsapp'}
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    url,
+                    headers={"Authorization": f"Bearer {self.access_token}"},
+                    files=files,
+                    data=data
+                )
+                
+                if response.status_code == 200:
+                    return response.json().get("id")
+                else:
+                    print(f"Failed to upload media: {response.text}")
+                    return None
+        except Exception as e:
+            print(f"Error uploading media: {e}")
+            return None
+
+    async def send_audio_message(self, to: str, media_id: str) -> Dict:
+        """Send an audio message via WhatsApp"""
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to,
+            "type": "audio",
+            "audio": {"id": media_id}
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                self.api_url,
+                headers={
+                    "Authorization": f"Bearer {self.access_token}",
+                    "Content-Type": "application/json"
+                },
+                json=payload
+            )
+            
+            if response.status_code != 200:
+                return {
+                    "success": False,
+                    "error": response.text
+                }
+            
+            data = response.json()
+            return {
+                "success": True,
+                "message_id": data.get("messages", [{}])[0].get("id"),
+                "response": data
+            }
+
 
 
 # Database operations for WhatsApp config (SQLite & PostgreSQL via db_helper)
