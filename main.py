@@ -4,6 +4,11 @@ B2B AI Agent for Syrian and Arab Market
 """
 
 import os
+
+# Disable ChromaDB telemetry BEFORE any imports that might use it
+# This fixes PostHog compatibility errors
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
 import json
 import asyncio
 from contextlib import asynccontextmanager
