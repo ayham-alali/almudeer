@@ -17,7 +17,11 @@ class KnowledgeBase:
     
     def __init__(self, persist_path: str = "./data/chroma_db"):
         self.persist_path = persist_path
-        self.client = chromadb.PersistentClient(path=persist_path)
+        # Disable telemetry to avoid PostHog compatibility issues
+        self.client = chromadb.PersistentClient(
+            path=persist_path,
+            settings=Settings(anonymized_telemetry=False)
+        )
         
         # Use a single collection for simplicity
         self.collection = self.client.get_or_create_collection(
