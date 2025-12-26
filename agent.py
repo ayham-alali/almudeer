@@ -154,6 +154,7 @@ async def call_llm(
     json_mode: bool = False,
     max_tokens: int = 600,
     tools: Optional[List[Dict[str, Any]]] = None,
+    attachments: Optional[List[Dict[str, Any]]] = None,
 ) -> Any: # Returns str or LLMResponse
     """
     Call LLM using multi-provider service with automatic failover.
@@ -400,7 +401,7 @@ async def ingest_node(state: AgentState) -> AgentState:
             
     # Link Browsing: Detect and fetch URLs
     # Pattern for http/https URLs
-    url_pattern = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
+    url_pattern = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$\-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
     urls = re.findall(url_pattern, raw)
     
     if urls:
@@ -846,7 +847,7 @@ async def process_message(
 
     # URL Fetching Logic (from ingest_node)
 
-    url_pattern = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
+    url_pattern = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$\-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
     urls = re.findall(url_pattern, clean_message)
     if urls:
         try:
