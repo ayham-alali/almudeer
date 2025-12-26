@@ -20,7 +20,7 @@ langchain-core>=0.1.0
 langchain-community>=0.0.10
 
 # For local LLM (Ollama) or free API alternatives
-httpx==0.26.0
+httpx>=0.26.0
 
 # Google Gemini (Vertex AI) - using lightweight google-genai SDK
 google-genai>=1.0.0
@@ -75,7 +75,7 @@ ruff==0.1.9
 # cryptg (Removed for stability)
 
 # Retrieval Augmented Generation (RAG) & Knowledge Base
-chromadb>=0.4.20
+chromadb>=1.0.0
 pypdf>=4.0.0
 beautifulsoup4>=4.12.0
 
