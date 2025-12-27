@@ -175,7 +175,8 @@ async def call_llm(
         )
         
         # If tools were requested and present in response, return full object
-        if tools and response and response.tool_calls:
+        # Safety Check: Ensure response is valid object with tool_calls
+        if tools and response and not isinstance(response, str) and hasattr(response, 'tool_calls') and response.tool_calls:
             return response
             
         # Legacy behavior: return content string

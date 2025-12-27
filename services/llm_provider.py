@@ -593,8 +593,11 @@ class GeminiProvider(LLMProvider):
                 content = ""
                 
                 # Check for function calls in candidates
+                # Check for function calls in candidates
                 if hasattr(response, 'candidates') and response.candidates:
                     first_candidate = response.candidates[0]
+                    
+                    # Method 1: Check parts (Standard Gemini)
                     if hasattr(first_candidate, 'content') and first_candidate.content.parts:
                         for part in first_candidate.content.parts:
                             if hasattr(part, 'function_call') and part.function_call:
@@ -605,6 +608,14 @@ class GeminiProvider(LLMProvider):
                                 })
                             elif hasattr(part, 'text') and part.text:
                                 content += part.text
+                    
+                    # Method 2: Check candidate level (Additional Vertex AI check)
+                    if not function_calls and hasattr(first_candidate, 'function_calls') and first_candidate.function_calls:
+                         for fc in first_candidate.function_calls:
+                             function_calls.append({
+                                 "name": fc.name,
+                                 "args": dict(fc.args)
+                             })
 
                 # Use text if no function call processing needed here (we return extracted calls separately if architecture allows, 
                 # but since LLMResponse is simple, we might need to update it or return raw response to agent)
@@ -1085,8 +1096,10 @@ async def llm_generate(
         if service.config.post_request_delay > 0:
             await asyncio.sleep(service.config.post_request_delay)
         
-        # If tools were requested and we got a response with tool calls, return the full object
-        if tools and response and response.tool_calls:
+        # Standardized Output Logic:
+        # If tools are requested, we return the full LLMResponse object to allow tool call inspection.
+        # This prevents the "AttributeError: 'str' object has no attribute 'tool_calls'" crash.
+        if tools and response:
             return response
             
         return response.content if response else None
