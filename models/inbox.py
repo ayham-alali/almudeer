@@ -50,11 +50,18 @@ async def save_inbox_message(
     attachments_json = json.dumps(attachments) if attachments else None
 
     async with get_db() as db:
-        # Check if attachments column exists (simplified migration)
+        # Check if attachments and is_read columns exist (simplified migration)
         try:
              await execute_sql(db, "ALTER TABLE inbox_messages ADD COLUMN attachments TEXT")
         except:
-             pass # Column likely exists
+             pass 
+        try:
+            if DB_TYPE == "postgresql":
+                await execute_sql(db, "ALTER TABLE inbox_messages ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT FALSE")
+            else:
+                await execute_sql(db, "ALTER TABLE inbox_messages ADD COLUMN is_read BOOLEAN DEFAULT 0")
+        except:
+             pass
 
         await execute_sql(
             db,
@@ -90,7 +97,23 @@ async def save_inbox_message(
             [license_id],
         )
         await commit_db(db)
-        return row["id"] if row else 0
+        
+        message_id = row["id"] if row else 0
+        
+        # Update customer presence - mark them as "online" when they send a message
+        try:
+            from services.customer_presence import mark_customer_online
+            if sender_contact:
+                await mark_customer_online(
+                    license_id=license_id,
+                    sender_contact=sender_contact,
+                    channel=channel
+                )
+        except Exception as e:
+            # Non-critical, don't fail the message save
+            pass
+        
+        return message_id
 
 
 async def update_inbox_analysis(
@@ -393,11 +416,12 @@ async def get_inbox_conversations(
                      AND COALESCE(m2.sender_contact, m2.sender_id::text, 'unknown') = COALESCE(inbox_messages.sender_contact, inbox_messages.sender_id::text, 'unknown')
                      AND m2.status != 'pending'
                     ) as message_count,
-                    (SELECT COUNT(*) FROM inbox_messages m2 
-                     WHERE m2.license_key_id = inbox_messages.license_key_id 
-                     AND COALESCE(m2.sender_contact, m2.sender_id::text, 'unknown') = COALESCE(inbox_messages.sender_contact, inbox_messages.sender_id::text, 'unknown')
-                     AND m2.status = 'analyzed'
-                    ) as unread_count
+                     (SELECT COUNT(*) FROM inbox_messages m2 
+                      WHERE m2.license_key_id = inbox_messages.license_key_id 
+                      AND COALESCE(m2.sender_contact, m2.sender_id::text, 'unknown') = COALESCE(inbox_messages.sender_contact, inbox_messages.sender_id::text, 'unknown')
+                      AND m2.status = 'analyzed'
+                      AND (m2.is_read = 0 OR m2.is_read = FALSE)
+                     ) as unread_count
                 FROM inbox_messages
                 WHERE {base_where}
                 ORDER BY COALESCE(sender_contact, sender_id::text, 'unknown'), created_at DESC
@@ -429,11 +453,12 @@ async def get_inbox_conversations(
                  AND COALESCE(m2.sender_contact, m2.sender_id, 'unknown') = COALESCE(m.sender_contact, m.sender_id, 'unknown')
                  AND m2.status != 'pending'
                 ) as message_count,
-                (SELECT COUNT(*) FROM inbox_messages m2 
-                 WHERE m2.license_key_id = m.license_key_id 
-                 AND COALESCE(m2.sender_contact, m2.sender_id, 'unknown') = COALESCE(m.sender_contact, m.sender_id, 'unknown')
-                 AND m2.status = 'analyzed'
-                ) as unread_count
+                 (SELECT COUNT(*) FROM inbox_messages m2 
+                  WHERE m2.license_key_id = m.license_key_id 
+                  AND COALESCE(m2.sender_contact, m2.sender_id, 'unknown') = COALESCE(m.sender_contact, m.sender_id, 'unknown')
+                  AND m2.status = 'analyzed'
+                  AND (m2.is_read = 0 OR m2.is_read IS FALSE)
+                 ) as unread_count
             FROM inbox_messages m
             WHERE {base_where}
             AND m.id = (
@@ -691,6 +716,7 @@ async def approve_chat_messages(license_id: int, sender_contact: str) -> int:
         return 1
 
 
+
 async def fix_stale_inbox_status(license_id: int = None) -> int:
     """
     Scans for conversations that have a 'sent', 'approved', or 'auto_replied' status message LATER
@@ -731,6 +757,35 @@ async def fix_stale_inbox_status(license_id: int = None) -> int:
         return 1
 
 
+async def mark_chat_read(license_id: int, sender_contact: str) -> int:
+    """
+    Mark all 'analyzed' messages from a sender as 'read'.
+    This clears the unread badge for the conversation.
+    Returns the count of messages updated.
+    """
+    async with get_db() as db:
+        # Update all 'analyzed' messages from this sender to is_read=1
+        # We keep the status as 'analyzed' (Waiting for Approval) but clear the unread badge.
+        query = """
+            UPDATE inbox_messages 
+            SET is_read = 1
+            WHERE license_key_id = ?
+            AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
+            AND status = 'analyzed'
+        """
+        if DB_TYPE == "postgresql":
+            # Postgres needs TRUE/FALSE for boolean
+            query = query.replace("is_read = 1", "is_read = TRUE")
+            
+        await execute_sql(
+            db,
+            query,
+            [license_id, sender_contact, sender_contact, f"%{sender_contact}%"]
+        )
+        await commit_db(db)
+        return 1
+
+
 
 
 
@@ -766,6 +821,7 @@ async def get_full_chat_history(
         )
         
         # Get outgoing messages (from us to client) - sent replies
+        # Include delivery_status for real receipt display
         outbox_rows = await fetch_all(
             db,
             """
@@ -773,6 +829,7 @@ async def get_full_chat_history(
                 o.id, o.channel, o.recipient_email as sender_contact, o.recipient_id as sender_id,
                 o.subject, o.body, o.status,
                 o.created_at, o.sent_at,
+                o.delivery_status, o.delivered_at, o.read_at,
                 i.sender_name
             FROM outbox_messages o
             LEFT JOIN inbox_messages i ON o.inbox_message_id = i.id

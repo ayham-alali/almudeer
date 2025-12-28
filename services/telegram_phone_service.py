@@ -603,3 +603,62 @@ class TelegramPhoneService:
                     await client.disconnect()
                 except:
                     pass
+
+    async def mark_as_read(
+        self,
+        session_string: str,
+        chat_id: str,
+        max_id: int = 0
+    ) -> bool:
+        """
+        Mark messages in a chat as read (triggers double check for sender)
+        
+        Args:
+            session_string: Session string
+            chat_id: Chat ID to mark as read
+            max_id: Mark as read up to this message ID (0 = all)
+        """
+        from logging_config import get_logger
+        logger = get_logger(__name__)
+        
+        client = None
+        try:
+            client = await self.create_client_from_session(session_string)
+            
+            # Resolve entity (chat)
+            entity = None
+            try:
+                # Try int ID first
+                chat_id_int = int(chat_id)
+                entity = await client.get_entity(chat_id_int)
+            except (ValueError, TypeError):
+                pass
+            
+            if not entity:
+                try:
+                    entity = await client.get_entity(chat_id)
+                except:
+                    # If direct lookup fails, fetch dialogs to populate cache
+                    await client.get_dialogs(limit=20)
+                    try:
+                        entity = await client.get_entity(int(chat_id) if chat_id.isdigit() else chat_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to resolve chat {chat_id} for mark_read: {e}")
+                        return False
+            
+            # Send read acknowledgment
+            # This turns the ticks BLUE/GREEN on the user's side
+            await client.send_read_acknowledge(entity, max_id=max_id)
+            logger.info(f"Marked chat {chat_id} as read up to {max_id}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to mark as read for {chat_id}: {e}")
+            return False
+        finally:
+            if client:
+                try:
+                    await client.disconnect()
+                except:
+                    pass

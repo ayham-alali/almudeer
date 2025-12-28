@@ -148,3 +148,57 @@ async def broadcast_task_complete(license_id: int, task_id: str, result: Dict[st
         event="task_complete",
         data={"task_id": task_id, "result": result}
     ))
+
+
+# ============ Presence Broadcasting ============
+
+async def broadcast_presence_update(license_id: int, is_online: bool, last_seen: str = None):
+    """Broadcast presence status change to connected clients"""
+    manager = get_websocket_manager()
+    await manager.send_to_license(license_id, WebSocketMessage(
+        event="presence_update",
+        data={
+            "is_online": is_online,
+            "last_seen": last_seen
+        }
+    ))
+
+
+async def broadcast_typing_indicator(license_id: int, sender_contact: str, is_typing: bool):
+    """Broadcast typing indicator for a conversation"""
+    manager = get_websocket_manager()
+    await manager.send_to_license(license_id, WebSocketMessage(
+        event="typing_indicator",
+        data={
+            "sender_contact": sender_contact,
+            "is_typing": is_typing
+        }
+    ))
+
+
+# ============ Reaction Broadcasting ============
+
+async def broadcast_reaction_added(license_id: int, message_id: int, emoji: str, user_type: str):
+    """Broadcast when a reaction is added to a message"""
+    manager = get_websocket_manager()
+    await manager.send_to_license(license_id, WebSocketMessage(
+        event="reaction_added",
+        data={
+            "message_id": message_id,
+            "emoji": emoji,
+            "user_type": user_type
+        }
+    ))
+
+
+async def broadcast_reaction_removed(license_id: int, message_id: int, emoji: str, user_type: str):
+    """Broadcast when a reaction is removed from a message"""
+    manager = get_websocket_manager()
+    await manager.send_to_license(license_id, WebSocketMessage(
+        event="reaction_removed",
+        data={
+            "message_id": message_id,
+            "emoji": emoji,
+            "user_type": user_type
+        }
+    ))

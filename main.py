@@ -170,6 +170,14 @@ async def lifespan(app: FastAPI):
             await ensure_user_preferences_columns()
         except Exception as e:
             logger.warning(f"User preferences column migration warning: {e}")
+        
+        # Ensure chat features schema exists (reactions, presence, voice)
+        try:
+            from migrations.chat_features import ensure_chat_features_schema
+            await ensure_chat_features_schema()
+            logger.info("Chat features schema verified (reactions, presence, voice)")
+        except Exception as e:
+            logger.warning(f"Chat features schema migration warning: {e}")
         demo_key = await create_demo_license()
         if demo_key:
             logger.info(f"Demo license key created: {demo_key[:20]}...")
@@ -325,6 +333,13 @@ app.include_router(subscription_router)    # Subscription Key Management
 # JWT Authentication routes
 from routes.auth import router as auth_router
 app.include_router(auth_router)
+
+# Voice message routes
+try:
+    from routes.voice import router as voice_router
+    app.include_router(voice_router)
+except Exception as e:
+    logger.warning(f"Voice router not loaded: {e}")
 
 # Health check endpoints (no prefix, accessible at root level)
 from health_check import router as health_router

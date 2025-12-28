@@ -288,8 +288,36 @@ async def receive_webhook(request: Request):
                 messages = service.parse_webhook_message(payload)
                 
                 for msg in messages:
+                    # ============ PROCESS DELIVERY STATUS UPDATES ============
                     if msg.get("type") == "status":
-                        continue  # Skip status updates for now
+                        # WhatsApp sends: sent, delivered, read, failed
+                        try:
+                            from services.delivery_status import update_delivery_status
+                            from datetime import datetime
+                            
+                            status = msg.get("status")  # sent, delivered, read, failed
+                            wa_message_id = msg.get("message_id")
+                            timestamp_str = msg.get("timestamp")
+                            
+                            if status and wa_message_id:
+                                # Parse timestamp
+                                timestamp = None
+                                if timestamp_str:
+                                    try:
+                                        timestamp = datetime.fromtimestamp(int(timestamp_str))
+                                    except:
+                                        pass
+                                
+                                await update_delivery_status(
+                                    platform_message_id=wa_message_id,
+                                    status=status,
+                                    timestamp=timestamp
+                                )
+                                print(f"WhatsApp delivery status update: {wa_message_id} -> {status}")
+                        except Exception as status_error:
+                            print(f"Failed to process WhatsApp status: {status_error}")
+                        
+                        continue  # Status processed, skip to next message
                     
                     # Media Handling
                     attachments = []

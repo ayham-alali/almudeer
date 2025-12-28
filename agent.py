@@ -806,6 +806,54 @@ async def process_message(
     except Exception as e:
         print(f"KB search failed: {e}")
 
+    # 1.3 Voice Message Transcription (STT)
+    # If attachments contain audio/voice, transcribe to text using Whisper
+    if attachments:
+        try:
+            from services.voice_service import transcribe_voice_message
+            import base64
+            
+            transcribed_parts = []
+            
+            for att in attachments:
+                att_type = att.get("type", "")
+                
+                # Check if it's an audio/voice attachment
+                if att_type.startswith("audio") or att_type.startswith("voice"):
+                    # Get the audio data (base64 encoded)
+                    audio_b64 = att.get("base64")
+                    
+                    if audio_b64:
+                        try:
+                            # Decode base64 to bytes
+                            audio_bytes = base64.b64decode(audio_b64)
+                            
+                            # Transcribe using Whisper
+                            result = await transcribe_voice_message(audio_bytes)
+                            
+                            if result.get("success") and result.get("text"):
+                                transcribed_text = result["text"].strip()
+                                if transcribed_text:
+                                    transcribed_parts.append(transcribed_text)
+                                    print(f"Voice transcription successful: {len(transcribed_text)} chars")
+                        except Exception as trans_e:
+                            print(f"Voice transcription failed for attachment: {trans_e}")
+            
+            # Prepend all transcriptions to the message
+            if transcribed_parts:
+                voice_text = " ".join(transcribed_parts)
+                # If the original message was empty (voice-only), use transcription as message
+                if not clean_message or clean_message == "[ملف مرفق]":
+                    clean_message = voice_text
+                else:
+                    clean_message = f"[رسالة صوتية: {voice_text}]\n\n{clean_message}"
+                print(f"Added voice transcription to message context")
+                
+        except ImportError:
+            print("Voice service not available for transcription")
+        except Exception as e:
+            print(f"Voice transcription step failed: {e}")
+
     # Analytics: Update received count
     if preferences and preferences.get("license_key_id"):
         try:
