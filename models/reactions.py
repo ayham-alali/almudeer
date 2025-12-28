@@ -34,26 +34,28 @@ async def add_reaction(
     async with get_db() as db:
         try:
             if DB_TYPE == "postgresql":
-                result = await execute_sql(db, """
+                sql = """
                     INSERT INTO message_reactions (message_id, license_id, user_type, emoji)
                     VALUES (?, ?, ?, ?)
                     ON CONFLICT (message_id, license_id, user_type, emoji) DO NOTHING
                     RETURNING id
-                """, (message_id, license_id, user_type, emoji))
-                row = await fetch_one(result)
-                reaction_id = row[0] if row else None
+                """
+                row = await fetch_one(db, sql, (message_id, license_id, user_type, emoji))
+                reaction_id = row["id"] if row else None
             else:
-                await execute_sql(db, """
+                sql = """
                     INSERT OR IGNORE INTO message_reactions (message_id, license_id, user_type, emoji)
                     VALUES (?, ?, ?, ?)
-                """, (message_id, license_id, user_type, emoji))
+                """
+                await execute_sql(db, sql, (message_id, license_id, user_type, emoji))
+                
                 # Get the ID
-                result = await execute_sql(db, """
+                select_sql = """
                     SELECT id FROM message_reactions 
                     WHERE message_id = ? AND license_id = ? AND user_type = ? AND emoji = ?
-                """, (message_id, license_id, user_type, emoji))
-                row = await fetch_one(result)
-                reaction_id = row[0] if row else None
+                """
+                row = await fetch_one(db, select_sql, (message_id, license_id, user_type, emoji))
+                reaction_id = row["id"] if row else None
             
             await commit_db(db)
             
@@ -87,27 +89,18 @@ async def remove_reaction(
     """
     async with get_db() as db:
         try:
-            if DB_TYPE == "postgresql":
-                result = await execute_sql(db, """
-                    DELETE FROM message_reactions 
-                    WHERE message_id = ? AND license_id = ? AND user_type = ? AND emoji = ?
-                """, (message_id, license_id, user_type, emoji))
-            else:
-                result = await execute_sql(db, """
-                    DELETE FROM message_reactions 
-                    WHERE message_id = ? AND license_id = ? AND user_type = ? AND emoji = ?
-                """, (message_id, license_id, user_type, emoji))
-            
+            sql = """
+                DELETE FROM message_reactions 
+                WHERE message_id = ? AND license_id = ? AND user_type = ? AND emoji = ?
+            """
+            await execute_sql(db, sql, (message_id, license_id, user_type, emoji))
             await commit_db(db)
-            
-            # Check if row was deleted (SQLite: result.rowcount, PostgreSQL varies)
-            removed = True  # Assume success if no exception
             
             logger.info(f"Removed reaction {emoji} from message {message_id}")
             
             return {
                 "success": True,
-                "removed": removed
+                "removed": True
             }
             
         except Exception as e:
@@ -129,32 +122,32 @@ async def get_message_reactions(message_id: int) -> List[Dict]:
     async with get_db() as db:
         try:
             if DB_TYPE == "postgresql":
-                result = await execute_sql(db, """
+                sql = """
                     SELECT emoji, COUNT(*) as count, 
                            array_agg(DISTINCT user_type) as user_types
                     FROM message_reactions
                     WHERE message_id = ?
                     GROUP BY emoji
                     ORDER BY count DESC
-                """, (message_id,))
+                """
             else:
                 # SQLite doesn't have array_agg, so we'll do it differently
-                result = await execute_sql(db, """
+                sql = """
                     SELECT emoji, COUNT(*) as count, 
                            GROUP_CONCAT(DISTINCT user_type) as user_types
                     FROM message_reactions
                     WHERE message_id = ?
                     GROUP BY emoji
                     ORDER BY count DESC
-                """, (message_id,))
+                """
             
-            rows = await fetch_all(result)
+            rows = await fetch_all(db, sql, (message_id,))
             
             reactions = []
             for row in rows:
-                emoji = row[0]
-                count = row[1]
-                user_types_raw = row[2]
+                emoji = row.get("emoji") or row[0] if isinstance(row, tuple) else row["emoji"]
+                count = row.get("count") or row[1] if isinstance(row, tuple) else row["count"]
+                user_types_raw = row.get("user_types", []) or row[2] if isinstance(row, tuple) else row.get("user_types", [])
                 
                 # Parse user_types
                 if isinstance(user_types_raw, list):
@@ -191,31 +184,22 @@ async def get_reactions_for_messages(message_ids: List[int]) -> Dict[int, List[D
         try:
             placeholders = ",".join(["?"] * len(message_ids))
             
-            if DB_TYPE == "postgresql":
-                result = await execute_sql(db, f"""
-                    SELECT message_id, emoji, COUNT(*) as count
-                    FROM message_reactions
-                    WHERE message_id IN ({placeholders})
-                    GROUP BY message_id, emoji
-                    ORDER BY message_id, count DESC
-                """, tuple(message_ids))
-            else:
-                result = await execute_sql(db, f"""
-                    SELECT message_id, emoji, COUNT(*) as count
-                    FROM message_reactions
-                    WHERE message_id IN ({placeholders})
-                    GROUP BY message_id, emoji
-                    ORDER BY message_id, count DESC
-                """, tuple(message_ids))
+            sql = f"""
+                SELECT message_id, emoji, COUNT(*) as count
+                FROM message_reactions
+                WHERE message_id IN ({placeholders})
+                GROUP BY message_id, emoji
+                ORDER BY message_id, count DESC
+            """
             
-            rows = await fetch_all(result)
+            rows = await fetch_all(db, sql, tuple(message_ids))
             
             # Group by message_id
             reactions_map = {}
             for row in rows:
-                msg_id = row[0]
-                emoji = row[1]
-                count = row[2]
+                msg_id = row.get("message_id") or row[0]
+                emoji = row.get("emoji") or row[1]
+                count = row.get("count") or row[2]
                 
                 if msg_id not in reactions_map:
                     reactions_map[msg_id] = []
@@ -241,20 +225,12 @@ async def has_user_reacted(
     """Check if a specific user has reacted with a specific emoji."""
     async with get_db() as db:
         try:
-            if DB_TYPE == "postgresql":
-                result = await execute_sql(db, """
-                    SELECT 1 FROM message_reactions
-                    WHERE message_id = ? AND license_id = ? AND user_type = ? AND emoji = ?
-                    LIMIT 1
-                """, (message_id, license_id, user_type, emoji))
-            else:
-                result = await execute_sql(db, """
-                    SELECT 1 FROM message_reactions
-                    WHERE message_id = ? AND license_id = ? AND user_type = ? AND emoji = ?
-                    LIMIT 1
-                """, (message_id, license_id, user_type, emoji))
-            
-            row = await fetch_one(result)
+            sql = """
+                SELECT 1 FROM message_reactions
+                WHERE message_id = ? AND license_id = ? AND user_type = ? AND emoji = ?
+                LIMIT 1
+            """
+            row = await fetch_one(db, sql, (message_id, license_id, user_type, emoji))
             return row is not None
             
         except Exception as e:
