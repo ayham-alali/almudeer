@@ -29,7 +29,7 @@ async def update_presence(license_id: int, is_online: bool = True) -> bool:
             if DB_TYPE == "postgresql":
                 await execute_sql(db, """
                     INSERT INTO user_presence (license_id, is_online, last_seen, updated_at)
-                    VALUES (%s, %s, %s, %s)
+                    VALUES (?, ?, ?, ?)
                     ON CONFLICT (license_id) DO UPDATE SET
                         is_online = EXCLUDED.is_online,
                         last_seen = EXCLUDED.last_seen,
@@ -71,7 +71,7 @@ async def get_presence(license_id: int) -> Dict:
                 result = await execute_sql(db, """
                     SELECT is_online, last_seen, updated_at
                     FROM user_presence
-                    WHERE license_id = %s
+                    WHERE license_id = ?
                 """, (license_id,))
             else:
                 result = await execute_sql(db, """
@@ -204,8 +204,8 @@ async def heartbeat(license_id: int) -> bool:
             if DB_TYPE == "postgresql":
                 await execute_sql(db, """
                     UPDATE user_presence
-                    SET last_seen = %s, updated_at = %s
-                    WHERE license_id = %s
+                    SET last_seen = ?, updated_at = ?
+                    WHERE license_id = ?
                 """, (now, now, license_id))
             else:
                 await execute_sql(db, """

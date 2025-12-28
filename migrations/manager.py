@@ -180,6 +180,22 @@ async def ensure_inbox_columns():
                 await commit_db(db)
             except:
                 pass
+        
+        # Ensure is_read column exists (Boolean)
+        if DB_TYPE == "postgresql":
+            try:
+                await execute_sql(db, """
+                    ALTER TABLE inbox_messages ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT FALSE
+                """)
+                await commit_db(db)
+            except Exception as e:
+                pass
+        else:
+            try:
+                await execute_sql(db, "ALTER TABLE inbox_messages ADD COLUMN is_read BOOLEAN DEFAULT 0")
+                await commit_db(db)
+            except:
+                pass
 
 
 async def ensure_user_preferences_columns():

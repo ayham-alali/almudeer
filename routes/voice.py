@@ -13,7 +13,7 @@ from typing import Optional
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from pydantic import BaseModel
 
-from dependencies import get_current_user
+from dependencies import get_license_from_header
 from services.voice_service import transcribe_voice_message
 from logging_config import get_logger
 
@@ -133,7 +133,7 @@ async def get_audio_duration(file_data: bytes, filename: str) -> int:
 @router.post("/upload", response_model=VoiceUploadResponse)
 async def upload_voice_message(
     file: UploadFile = File(...),
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_license_from_header)
 ):
     """
     Upload a voice message, transcribe it, and return the URL.
@@ -207,7 +207,7 @@ async def upload_voice_message(
 @router.post("/transcribe")
 async def transcribe_audio(
     file: UploadFile = File(...),
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_license_from_header)
 ):
     """
     Transcribe an audio file without storing it.
