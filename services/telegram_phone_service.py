@@ -7,6 +7,7 @@ import asyncio
 import os
 from typing import Optional, Dict, Tuple, List
 from datetime import datetime
+import time
 # Telethon imports moved to methods to avoid import-time side effects
 # from telethon import TelegramClient
 # from telethon.sessions import StringSession
@@ -65,6 +66,37 @@ class TelegramPhoneService:
         """Decode URL-safe token back into session state dict."""
         raw = base64.urlsafe_b64decode(token.encode("ascii"))
         return json.loads(raw.decode("utf-8"))
+
+    async def _execute_with_retry(self, func, *args, **kwargs):
+        """Execute a function with retry logic for transient errors"""
+        from telethon.errors import RpcCallFailError, ServerError
+        
+        retries = 3
+        last_error = None
+        
+        for attempt in range(retries):
+            try:
+                # If func is coroutine, await it
+                if asyncio.iscoroutinefunction(func):
+                   return await func(*args, **kwargs)
+                
+                # If result is awaitable, await it
+                result = func(*args, **kwargs)
+                if asyncio.iscoroutine(result):
+                    return await result
+                return result
+            except (RpcCallFailError, ServerError) as e:
+                last_error = e
+                # Exponential backoff: 1s, 2s, 4s
+                wait_time = 2 ** attempt
+                print(f"Telegram RPC error (attempt {attempt+1}/{retries}): {e}. Retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+            except Exception as e:
+                # Don't retry other errors
+                raise e
+                
+        # If we exhausted retries
+        raise last_error
 
     async def start_login(self, phone_number: str) -> Dict[str, str]:
         """
@@ -349,8 +381,11 @@ class TelegramPhoneService:
             # Calculate time threshold
             since_time = datetime.now() - timedelta(hours=since_hours)
             
-            # Get dialogs (conversations)
-            dialogs = await client.get_dialogs(limit=limit * 2)  # Get more to filter
+            # Get dialogs (conversations) with retry
+            dialogs = await self._execute_with_retry(
+                client.get_dialogs,
+                limit=limit * 2
+            )
             
             for dialog in dialogs[:limit]:
                 # Skip if it's a channel/group where we're not admin
@@ -494,7 +529,7 @@ class TelegramPhoneService:
             # CRITICAL: Fetch dialogs first to populate the entity cache
             # This allows get_entity to resolve user IDs that the session has chatted with
             logger.debug(f"Fetching dialogs to populate entity cache before sending to {recipient_id}")
-            await client.get_dialogs(limit=100)
+            await self._execute_with_retry(client.get_dialogs, limit=100)
             
             # Try to parse as int (chat ID) or use as username
             entity = None
@@ -515,7 +550,8 @@ class TelegramPhoneService:
                     logger.error(f"Failed to get entity by username/phone {recipient_id}: {e}")
                     raise ValueError(f"Cannot find any entity corresponding to '{recipient_id}'")
             
-            sent_message = await client.send_message(
+            sent_message = await self._execute_with_retry(
+                client.send_message,
                 entity,
                 text,
                 reply_to=reply_to_message_id
