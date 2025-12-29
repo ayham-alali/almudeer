@@ -16,7 +16,7 @@ Usage:
 
 import asyncio
 import argparse
-from datetime import datetime
+from datetime import datetime, date
 import asyncpg
 
 
@@ -163,13 +163,21 @@ async def recalculate_all_scores(database_url: str, dry_run: bool = True):
             
             if customer['created_at']:
                 created = customer['created_at']
-                if hasattr(created, 'replace'):
+                # Convert date to datetime if needed
+                if isinstance(created, date) and not isinstance(created, datetime):
+                    created = datetime.combine(created, datetime.min.time())
+                # Handle timezone-aware datetimes from PostgreSQL
+                elif hasattr(created, 'tzinfo') and created.tzinfo is not None:
                     created = created.replace(tzinfo=None)
                 days_since_first = (now - created).days
             
             if customer['last_contact_at']:
                 last = customer['last_contact_at']
-                if hasattr(last, 'replace'):
+                # Convert date to datetime if needed
+                if isinstance(last, date) and not isinstance(last, datetime):
+                    last = datetime.combine(last, datetime.min.time())
+                # Handle timezone-aware datetimes from PostgreSQL
+                elif hasattr(last, 'tzinfo') and last.tzinfo is not None:
                     last = last.replace(tzinfo=None)
                 days_since_last = (now - last).days
             
