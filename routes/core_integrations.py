@@ -455,13 +455,6 @@ async def delete_integration_account(
                     [False, license_id]
                 )
                 await commit_db(db)
-            
-            # DEBUG LOGGING
-            try:
-                with open("debug_unlink.log", "a") as f:
-                    f.write(f"[{datetime.utcnow()}] DELETED Telegram for license {license_id}\n")
-            except: pass
-
             return {"success": True, "message": "تم إلغاء تفعيل Telegram Bot"}
         else:
             raise HTTPException(status_code=404, detail="لا يوجد Telegram Bot مرتبط")
@@ -1052,15 +1045,6 @@ async def set_telegram_webhook(
 async def get_telegram_configuration(license: dict = Depends(get_license_from_header)):
     """Get current Telegram configuration"""
     config = await get_telegram_config(license["license_id"], include_inactive=False)
-    
-    # DEBUG LOGGING
-    try:
-        with open("debug_unlink.log", "a") as f:
-            f.write(f"[{datetime.utcnow()}] GET Telegram config for license {license['license_id']}: {config is not None}\n")
-            if config:
-                f.write(f"  - is_active: {config.get('is_active')}\n")
-    except: pass
-    
     return {"config": config}
 
 
