@@ -243,6 +243,16 @@ class PreferencesUpdate(BaseModel):
     notification_sound: Optional[bool] = None
     auto_reply_delay_seconds: Optional[int] = None
     onboarding_completed: Optional[bool] = None
+    
+    # AI / Tone Settings
+    tone: Optional[str] = None
+    custom_tone_guidelines: Optional[str] = None
+    business_name: Optional[str] = None
+    industry: Optional[str] = None
+    products_services: Optional[str] = None
+    preferred_languages: Optional[str] = None
+    reply_length: Optional[str] = None
+    formality_level: Optional[str] = None
 
 
 # ============ Preferences Routes ============

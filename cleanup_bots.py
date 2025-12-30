@@ -74,8 +74,9 @@ async def cleanup_bots():
                     if row['email']: bot_contacts.add(row['email'])
 
         if not bot_contacts and not bot_customer_ids:
-            logger.info("No bots found.")
-            return
+            logger.info("No explicit bots found in phase 1, proceeding to pattern cleanup.")
+            # Do not return, continue to phase 3c
+
 
         # 3. DELETE ACTIONS
         

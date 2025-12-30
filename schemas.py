@@ -19,6 +19,7 @@ class LicenseKeyResponse(BaseModel):
     """Response for license key validation"""
     valid: bool
     company_name: Optional[str] = None
+    created_at: Optional[str] = None
     expires_at: Optional[str] = None
     requests_remaining: Optional[int] = None
     error: Optional[str] = None

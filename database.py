@@ -445,6 +445,7 @@ async def validate_license_key(key: str) -> dict:
         "valid": True,
         "license_id": row_dict["id"],
         "company_name": row_dict["company_name"],
+        "created_at": str(row_dict["created_at"]) if row_dict.get("created_at") else None,
         "expires_at": expires_at_str,
         "requests_remaining": row_dict.get("max_requests_per_day", 0) - (
             row_dict.get("requests_today", 0) if last_request_date == today else 0

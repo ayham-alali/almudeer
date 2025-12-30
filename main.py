@@ -995,6 +995,7 @@ async def get_user_info(license: dict = Depends(verify_license)):
     """
     return {
         "company_name": license["company_name"],
+        "created_at": license.get("created_at"),
         "expires_at": license["expires_at"],
         "requests_remaining": license["requests_remaining"]
     }
