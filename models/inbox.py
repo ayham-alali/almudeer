@@ -22,6 +22,13 @@ async def save_inbox_message(
 ) -> int:
     """Save incoming message to inbox (SQLite & PostgreSQL compatible)."""
 
+    # Centralized Bot Protection
+    # Prevent saving messages from obvious bots
+    if (sender_name and ("bot" in sender_name.lower() or "api" in sender_name.lower())) or \
+       (sender_contact and ("bot" in sender_contact.lower() or "api" in sender_contact.lower())):
+        # Return 0 to indicate no message was saved
+        return 0
+
     # Normalize received_at to a UTC datetime; asyncpg prefers naive UTC
     if isinstance(received_at, str):
         try:

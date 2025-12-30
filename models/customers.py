@@ -24,6 +24,16 @@ async def get_or_create_customer(
     name: str = None
 ) -> dict:
     """Get existing customer or create new one (SQLite & PostgreSQL compatible)."""
+    
+    # Anti-Bot Guard: Refuse to create customers with "bot" or "api" in identifiers
+    if (name and ("bot" in name.lower() or "api" in name.lower())) or \
+       (email and ("bot" in email.lower() or "api" in email.lower())) or \
+       (phone and ("bot" in phone.lower())):
+        from logging_config import get_logger
+        logger = get_logger("models.customers")
+        logger.warning(f"Prevented creation of bot customer: name={name}, email={email}")
+        return {"id": None, "name": name, "is_blocked": True}
+
     async with get_db() as db:
         # Try to find by phone or email
         if phone:

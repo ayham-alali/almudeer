@@ -79,26 +79,55 @@ async def cleanup_bots():
 
         # 3. DELETE ACTIONS
         
-        # Delete from inbox_messages
+        # 3a. Cleanup based on identified CONTACTS (email/phone)
         for contact in bot_contacts:
             if not contact: continue
             
+            # Find inbox messages to link to customer_messages and outbox
+            msg_rows = await fetch_all(db, "SELECT id FROM inbox_messages WHERE sender_contact = ?", [contact])
+            msg_ids = [r["id"] for r in msg_rows]
+            
+            if msg_ids:
+                msg_ids_placeholder = ",".join([f"'{mid}'" for mid in msg_ids]) # Be careful with string formatting if IDs are ints, typically SQL placeholders are better but list matching is tricky
+                # Actually, easier to loop or use IN clause. `execute_sql` param handling varies. 
+                # Let's iterate for safety or delete by join if DB allows. 
+                # Doing iterative cleanup for safety/simplicity with existing helper
+                
+                for mid in msg_ids:
+                     await execute_sql(db, "DELETE FROM customer_messages WHERE inbox_message_id = ?", [mid])
+                     await execute_sql(db, "DELETE FROM outbox_messages WHERE inbox_message_id = ?", [mid])
+            
             # Delete messages
             await execute_sql(db, "DELETE FROM inbox_messages WHERE sender_contact = ?", [contact])
-            deleted_messages += 1 # This counts calls, not rows unfortunately, but good enough
+            deleted_messages += len(msg_ids)
             
             # Delete presence
             await execute_sql(db, "DELETE FROM customer_presence WHERE sender_contact = ?", [contact])
             
-        # Delete from customers table
+            # Clean up purchases if any (optional but good for referential integrity if cascade isn't set)
+            await execute_sql(db, "DELETE FROM purchases WHERE customer_id IN (SELECT id FROM customers WHERE phone = ? OR email = ?)", [contact, contact])
+
+            # Delete related customer_messages (by customer) before deleting customer
+            await execute_sql(db, """
+                DELETE FROM customer_messages 
+                WHERE customer_id IN (SELECT id FROM customers WHERE phone = ? OR email = ?)
+            """, [contact, contact])
+
+            # Delete customers by contact
+            await execute_sql(db, "DELETE FROM customers WHERE phone = ? OR email = ?", [contact, contact])
+
+
+        # 3b. Cleanup based on identified CUSTOMER IDs (that might not have had contact info matched above)
         for cid in bot_customer_ids:
+             # Delete purchases
+             await execute_sql(db, "DELETE FROM purchases WHERE customer_id = ?", [cid])
+             
+             # Delete customer_messages
+             await execute_sql(db, "DELETE FROM customer_messages WHERE customer_id = ?", [cid])
+             
+             # Delete customer
              await execute_sql(db, "DELETE FROM customers WHERE id = ?", [cid])
              deleted_customers += 1
-
-        # Also delete customers by contact if they weren't caught by ID
-        for contact in bot_contacts:
-             if not contact: continue
-             await execute_sql(db, "DELETE FROM customers WHERE phone = ? OR email = ?", [contact, contact])
 
         await commit_db(db)
         
