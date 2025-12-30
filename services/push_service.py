@@ -62,6 +62,59 @@ def _prepare_private_key(key_str: str) -> Optional[str]:
 # Prepare the private key once at module load
 VAPID_PRIVATE_KEY = _prepare_private_key(_raw_private_key)
 
+def log_vapid_status():
+    """Log VAPID key status for debugging."""
+    if not WEBPUSH_AVAILABLE:
+        logger.warning("PUSH: pywebpush not installed. Push notifications disabled.")
+        return
+
+    if VAPID_PUBLIC_KEY:
+        logger.info(f"PUSH: VAPID Public Key loaded (len={len(VAPID_PUBLIC_KEY)})")
+    else:
+        logger.warning("PUSH: VAPID Public Key MISSING")
+
+    if VAPID_PRIVATE_KEY:
+        logger.info("PUSH: VAPID Private Key loaded")
+    else:
+        logger.warning("PUSH: VAPID Private Key MISSING")
+
+
+async def ensure_push_subscription_table():
+    """Ensure push_subscriptions table exists."""
+    from db_helper import get_db, execute_sql, commit_db, DB_TYPE
+    
+    # Common schema for both DBs (syntax compatible)
+    # Using specific type for ID based on DB_TYPE
+    id_type = "SERIAL PRIMARY KEY" if DB_TYPE == "postgresql" else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    ts_default = "TIMESTAMP DEFAULT NOW()" if DB_TYPE == "postgresql" else "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+    
+    async with get_db() as db:
+        try:
+            await execute_sql(db, f"""
+                CREATE TABLE IF NOT EXISTS push_subscriptions (
+                    id {id_type},
+                    license_key_id INTEGER NOT NULL,
+                    endpoint TEXT NOT NULL UNIQUE,
+                    subscription_info TEXT NOT NULL,
+                    user_agent TEXT,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at {ts_default},
+                    updated_at TIMESTAMP,
+                    FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
+                )
+            """)
+            
+            # Ensure index exists on endpoint
+            await execute_sql(db, """
+                CREATE INDEX IF NOT EXISTS idx_push_endpoint 
+                ON push_subscriptions(endpoint)
+            """)
+            
+            await commit_db(db)
+            logger.info("PUSH: push_subscriptions table verified")
+        except Exception as e:
+            logger.error(f"PUSH: Verify table failed: {e}")
+
 # Check if pywebpush is available
 try:
     from pywebpush import webpush, WebPushException

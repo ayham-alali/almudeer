@@ -134,6 +134,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Index creation warning: {e}")
         
+        # Push Notification Services
+        try:
+            from services.push_service import log_vapid_status, ensure_push_subscription_table
+            log_vapid_status()
+            await ensure_push_subscription_table()
+        except Exception as e:
+            logger.warning(f"Push service initialization warning: {e}")
+        
         # Create users table for JWT auth
         try:
             from migrations.users_table import create_users_table
