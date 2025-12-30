@@ -134,8 +134,20 @@ async def cleanup_bots():
         # We collected names in the identification phase? No, let's collect them now or just use the query again.
         # Simpler: Just run a direct delete for the specific patterns we know are bad.
         
-        bad_name_patterns = ['%bot%', '%api%']
+        # 3c. Cleanup based on identified NAMES (for cases where contact might be empty or var)
+        # We collected names in the identification phase? No, let's collect them now or just use the query again.
+        # Simpler: Just run a direct delete for the specific patterns we know are bad.
+        
+        # Expanded blocklist including user-requested promotional senders
+        bad_name_patterns = [
+            '%bot%', '%api%', 
+            '%calendly%', '%submagic%', '%iconscout%', 
+            '%no-reply%', '%noreply%', '%donotreply%', 
+            '%newsletter%', '%bulletin%'
+        ]
+        
         for pattern in bad_name_patterns:
+             logger.info(f"Cleaning up pattern: {pattern}")
              # Get IDs first to clean dependent tables
              name_rows = await fetch_all(db, "SELECT id FROM inbox_messages WHERE lower(sender_name) LIKE ?", [pattern])
              msg_ids_from_name = [r["id"] for r in name_rows]

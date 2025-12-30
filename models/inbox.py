@@ -22,10 +22,22 @@ async def save_inbox_message(
 ) -> int:
     """Save incoming message to inbox (SQLite & PostgreSQL compatible)."""
 
-    # Centralized Bot Protection
-    # Prevent saving messages from obvious bots
-    if (sender_name and ("bot" in sender_name.lower() or "api" in sender_name.lower())) or \
-       (sender_contact and ("bot" in sender_contact.lower() or "api" in sender_contact.lower())):
+    # Centralized Bot & Spam Protection
+    # Prevent saving messages from known bots and promotional senders
+    # Added: Calendly, Submagic, IconScout per user request
+    blocked_keywords = [
+        "bot", "api", 
+        "no-reply", "noreply", "donotreply",
+        "newsletter", "bulletin", 
+        "calendly", "submagic", "iconscout"
+    ]
+    
+    def is_blocked(text: str) -> bool:
+        if not text: return False
+        text_lower = text.lower()
+        return any(keyword in text_lower for keyword in blocked_keywords)
+
+    if is_blocked(sender_name) or is_blocked(sender_contact):
         # Return 0 to indicate no message was saved
         return 0
 
