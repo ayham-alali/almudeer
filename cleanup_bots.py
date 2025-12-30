@@ -129,6 +129,27 @@ async def cleanup_bots():
              await execute_sql(db, "DELETE FROM customers WHERE id = ?", [cid])
              deleted_customers += 1
 
+
+        # 3c. Cleanup based on identified NAMES (for cases where contact might be empty or var)
+        # We collected names in the identification phase? No, let's collect them now or just use the query again.
+        # Simpler: Just run a direct delete for the specific patterns we know are bad.
+        
+        bad_name_patterns = ['%bot%', '%api%']
+        for pattern in bad_name_patterns:
+             # Get IDs first to clean dependent tables
+             name_rows = await fetch_all(db, "SELECT id FROM inbox_messages WHERE lower(sender_name) LIKE ?", [pattern])
+             msg_ids_from_name = [r["id"] for r in name_rows]
+             
+             for mid in msg_ids_from_name:
+                 await execute_sql(db, "DELETE FROM customer_messages WHERE inbox_message_id = ?", [mid])
+                 await execute_sql(db, "DELETE FROM outbox_messages WHERE inbox_message_id = ?", [mid])
+             
+             # Delete from inbox
+             await execute_sql(db, "DELETE FROM inbox_messages WHERE lower(sender_name) LIKE ?", [pattern])
+             
+             # Delete from customers
+             await execute_sql(db, "DELETE FROM customers WHERE lower(name) LIKE ?", [pattern])
+
         await commit_db(db)
         
     logger.info(f"Cleanup complete. Removed bot traces for {len(bot_contacts)} contacts and {len(bot_customer_ids)} customer IDs.")
