@@ -436,42 +436,103 @@ class MessagePoller:
             # This prevents AI from processing emails WE sent
             our_email_address = config.get("email_address", "").lower()
             
+            # Check for backfill trigger (first time loading)
+            backfill_service = get_backfill_service()
+            is_backfill = await backfill_service.should_trigger_backfill(license_id, "email")
+            
             # Calculate since_hours based on when the channel was connected
-            # This ensures we ONLY fetch messages received after the channel was connected
             config_created_at = config.get("created_at")
             
-            if config_created_at:
-                # Parse created_at to datetime
-                if isinstance(config_created_at, str):
-                    try:
-                        created_dt = datetime.fromisoformat(config_created_at.replace("Z", "+00:00"))
-                        # Remove timezone for comparison with utcnow()
-                        if created_dt.tzinfo:
-                            created_dt = created_dt.replace(tzinfo=None)
-                    except ValueError:
-                        created_dt = None
-                elif hasattr(config_created_at, "isoformat"):
-                    created_dt = config_created_at
-                    if hasattr(created_dt, 'tzinfo') and created_dt.tzinfo:
-                        created_dt = created_dt.replace(tzinfo=None)
-                else:
-                    created_dt = None
-                
-                if created_dt:
-                    # Calculate hours since channel was connected
-                    hours_since_connected = (datetime.utcnow() - created_dt).total_seconds() / 3600
-                    # Add 1 hour buffer to catch any edge cases
-                    since_hours = int(hours_since_connected) + 1
-                else:
-                    # Fallback: if no created_at, only fetch last 1 hour
-                    since_hours = 1
+            if is_backfill:
+                # Fetch 30 days history for backfill
+                logger.info(f"Triggering historical backfill for license {license_id} (email)")
+                since_hours = backfill_service.backfill_days * 24
+            elif config_created_at:
+                # Standard polling: calculate hours since connected
+                try:
+                    created_dt = datetime.fromisoformat(config_created_at.replace('Z', '+00:00'))
+                    # Handle offset-naive vs offset-aware
+                    if created_dt.tzinfo is None:
+                        created_dt = created_dt.replace(tzinfo=timezone.utc)
+                    
+                    now = datetime.now(timezone.utc)
+                    hours_since_connected = (now - created_dt).total_seconds() / 3600
+                    
+                    # Fetch messages since connection (plus 1 hour buffer)
+                    # But cap at 24 hours for regular polling to avoid huge fetches if system was down
+                    since_hours = min(int(hours_since_connected) + 1, 720) # cap at 30 days anyway
+                except Exception as e:
+                    logger.warning(f"Error parsing created_at: {e}")
+                    since_hours = 24
             else:
-                # No created_at means new config, only fetch last 1 hour
                 since_hours = 1
+                
+            # Update last checked timestamp
+            self.status["email_polling"]["last_check"] = datetime.utcnow().isoformat()
             
-            # Fetch new emails using Gmail API
-            # Limit to 200 to capture enough messages per poll
-            emails = await gmail_service.fetch_new_emails(since_hours=since_hours, limit=200)
+            # Fetch emails
+            # If backfill, fetch more (e.g. 500), otherwise standard limit
+            limit = 500 if is_backfill else 200
+            # Fetch messages
+            if is_backfill:
+                # Smart Backfill: Fetch threads that are UNREPLIED (last message not from us)
+                # This ensures we don't import old conversations we already finished
+                backfill_days = int(os.getenv("BACKFILL_DAYS", "30"))
+                emails = await gmail_service.fetch_unreplied_threads(days=backfill_days, limit=100)
+                logger.info(f"Backfill: Fetched {len(emails)} unreplied emails")
+            else:
+                emails = await gmail_service.fetch_new_emails(since_hours=since_hours, limit=limit)
+
+            
+            if not emails:
+                return
+
+            # If backfill is active, queue ALL fetched messages and skip standard processing
+            if is_backfill:
+                backfill_messages = []
+                for email_data in emails:
+                    # Apply filters (Spam, Promo, Bot, etc.)
+                    # We skip duplicate check for backfill (pass empty list)
+                    filter_msg = {
+                        "body": email_data.get("body", "") or email_data.get("snippet", ""),
+                        "sender_contact": email_data.get("sender"),
+                        "sender_name": email_data.get("sender_name"),
+                        "subject": email_data.get("subject"),
+                        "channel": "email"
+                    }
+                    should_process, reason = await apply_filters(filter_msg, license_id, [])
+                    if not should_process:
+                        logger.debug(f"Skipping backfill email from {filter_msg['sender_contact']}: {reason}")
+                        continue
+
+                    # Extract attachments if present (Gmail service returns simplified attachment objects)
+                    attachments = []
+                    if "attachments" in email_data and email_data["attachments"]:
+                        # Ensure attachments are JSON serializable
+                        attachments = email_data["attachments"]
+                    
+                    backfill_messages.append({
+                        "body": email_data.get("body", "") or email_data.get("snippet", ""),
+                        "channel_message_id": email_data.get("id"),
+                        "sender_contact": email_data.get("sender"),
+                        "sender_name": email_data.get("sender_name"),
+                        "subject": email_data.get("subject"),
+                        "received_at": datetime.fromtimestamp(email_data.get("internalDate", 0)/1000) if email_data.get("internalDate") else None,
+                        "attachments": attachments
+                    })
+                
+                queued = await backfill_service.schedule_historical_messages(
+                    license_id=license_id,
+                    channel="email",
+                    messages=backfill_messages
+                )
+                
+                if queued > 0:
+                    logger.info(f"Queued {queued} email messages for backfill. Skipping immediate processing.")
+                    return
+
+            # Process standard emails (non-backfill)
+            processed_count = 0
             
             # Get recent messages for duplicate detection
             # Use higher limit to avoid missing duplicates when inbox is large
@@ -600,6 +661,14 @@ class MessagePoller:
             else:
                 # No created_at means new config, only fetch last 1 hour
                 since_hours = 1
+            
+            # Check for backfill trigger (first time loading)
+            backfill_service = get_backfill_service()
+            is_backfill = await backfill_service.should_trigger_backfill(license_id, "telegram")
+            
+            if is_backfill:
+                logger.info(f"Triggering historical backfill for license {license_id} (telegram)")
+                since_hours = backfill_service.backfill_days * 24
 
             phone_service = TelegramPhoneService()
 
@@ -613,11 +682,14 @@ class MessagePoller:
 
             # Fetch messages with optimization
             try:
+                # If backfill, use larger limit
+                limit = 500 if is_backfill else 200
                 messages = await phone_service.get_recent_messages(
                     session_string=session_string,
                     since_hours=since_hours,
-                    limit=200,
-                    exclude_ids=exclude_ids
+                    limit=limit,
+                    exclude_ids=exclude_ids,
+                    skip_replied=is_backfill  # Skip dialogs where last message is ours (already replied)
                 )
             except Exception as e:
                 # If the underlying Telethon client or session is invalid, avoid
@@ -639,6 +711,44 @@ class MessagePoller:
 
             if not messages:
                 return
+
+            # If backfill is active, queue ALL fetched messages and skip standard processing
+            if is_backfill:
+                backfill_messages = []
+                for msg in messages:
+                    # Apply filters (Spam, Bot, etc.)
+                    filter_msg = {
+                        "body": msg.get("body", ""),
+                        "sender_contact": msg.get("sender_contact"),
+                        "sender_name": msg.get("sender_name"),
+                        "subject": msg.get("subject"),
+                    }
+                    should_process, reason = await apply_filters(filter_msg, license_id, [])
+                    if not should_process:
+                        logger.debug(f"Skipping backfill telegram from {filter_msg['sender_contact']}: {reason}")
+                        continue
+
+                    # Map to backfill format (keys are mostly same)
+                    backfill_messages.append({
+                        "body": msg.get("body", ""),
+                        "channel_message_id": msg.get("channel_message_id"),
+                        "sender_contact": msg.get("sender_contact"),
+                        "sender_name": msg.get("sender_name"),
+                        "sender_id": msg.get("sender_id"),
+                        "subject": msg.get("subject"),
+                        "received_at": msg.get("received_at"),
+                        "attachments": msg.get("attachments")
+                    })
+                
+                queued = await backfill_service.schedule_historical_messages(
+                    license_id=license_id,
+                    channel="telegram",
+                    messages=backfill_messages
+                )
+                
+                if queued > 0:
+                    logger.info(f"Queued {queued} telegram messages for backfill. Skipping immediate processing.")
+                    return
 
             # Group messages by sender for burst handling
             # Structure: {sender_contact: [msg_data, ...]}

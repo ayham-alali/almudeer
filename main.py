@@ -156,6 +156,15 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Customers serial fix note: {e}")
 
+
+        # Create backfill queue table for historical chat processing
+        try:
+            from migrations.backfill_queue_table import create_backfill_queue_table
+            await create_backfill_queue_table()
+        except Exception as e:
+            logger.warning(f"Backfill queue table creation note: {e}")
+
+        
         # Create purchases table and analytics columns
         try:
             from migrations.purchases_table import create_purchases_table

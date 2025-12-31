@@ -193,6 +193,73 @@ class GmailAPIService:
         
         return await self._request("POST", "users/me/messages/send", json=payload)
     
+    async def fetch_unreplied_threads(
+        self,
+        days: int = 30,
+        limit: int = 50
+    ) -> List[Dict]:
+        """
+        Fetch emails from threads where the last message is NOT from the user (unreplied).
+        
+        Args:
+            days: Number of days to look back
+            limit: Maximum number of threads to check
+            
+        Returns:
+            List of parsed email dictionaries
+        """
+        # Search for threads with activity in last N days
+        # We cannot use -label:SENT in query because that would exclude threads 
+        # where we replied in the past but customer replied again.
+        query = f"newer_than:{days}d"
+        
+        # Get threads
+        # Note: threads.list provides snippet and ID. We need full details.
+        result = await self._request("GET", f"users/me/threads?q={query}&maxResults={limit}")
+        threads_meta = result.get("threads", [])
+        
+        emails = []
+        
+        for thread_meta in threads_meta:
+            try:
+                # Fetch full thread details to check messages
+                thread_data = await self._request("GET", f"users/me/threads/{thread_meta['id']}?format=full")
+                messages = thread_data.get("messages", [])
+                
+                if not messages:
+                    continue
+                
+                # Check the very last message in the thread
+                last_msg = messages[-1]
+                label_ids = last_msg.get("labelIds", [])
+                
+                # If the last message is SENT, it means we replied. Skip this thread.
+                if "SENT" in label_ids:
+                    continue
+                    
+                # If we are here, the thread is "awaiting reply"
+                # We should import the incoming messages from this thread 
+                # that are within the time window.
+                
+                cutoff_date = datetime.now() - timedelta(days=days)
+                
+                for msg in messages:
+                    # Skip our own sent messages in the import
+                    if "SENT" in msg.get("labelIds", []):
+                        continue
+                        
+                    # Parse and check date
+                    parsed_email = self._parse_message(msg)
+                    
+                    if parsed_email["received_at"] > cutoff_date:
+                        emails.append(parsed_email)
+                        
+            except Exception as e:
+                print(f"Error fetching thread {thread_meta['id']}: {e}")
+                continue
+                
+        return emails
+
     async def fetch_new_emails(
         self,
         since_hours: int = 24,

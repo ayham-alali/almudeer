@@ -347,7 +347,8 @@ class TelegramPhoneService:
         session_string: str,
         limit: int = 50,
         since_hours: int = 72,
-        exclude_ids: Optional[List[str]] = None
+        exclude_ids: Optional[List[str]] = None,
+        skip_replied: bool = False
     ) -> List[Dict]:
         """
         Get recent messages from Telegram account (INCOMING only)
@@ -390,6 +391,11 @@ class TelegramPhoneService:
             for dialog in dialogs[:limit]:
                 # Skip if it's a channel/group where we're not admin
                 if dialog.is_channel or dialog.is_group:
+                    continue
+                
+                # Filter out chats that are already replied to (last message is from us)
+                if skip_replied and dialog.message and dialog.message.out:
+                    logger.debug(f"Skipping dialog {dialog.id} because it is already replied (last message out)")
                     continue
                 
                 # Get recent messages from this dialog
