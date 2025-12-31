@@ -278,7 +278,9 @@ async def has_pending_backfill(license_id: int, channel: str) -> bool:
                 """,
                 [license_id, channel]
             )
-            count = row.get("count") or row[0] if row else 0
+            if not row:
+                return False
+            count = row.get("count", 0)
             return count > 0
     except Exception as e:
         logger.error(f"Error checking pending backfill: {e}")
@@ -311,7 +313,7 @@ async def get_backfill_queue_count(license_id: int, channel: Optional[str] = Non
                     "SELECT COUNT(*) as count FROM backfill_queue WHERE license_key_id = ?",
                     [license_id]
                 )
-            return row.get("count") or row[0] if row else 0
+            return row.get("count", 0) if row else 0
     except Exception as e:
         logger.error(f"Error getting backfill queue count: {e}")
         return 0

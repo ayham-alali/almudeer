@@ -7,7 +7,7 @@ import base64
 import json
 import httpx
 from typing import List, Dict, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -241,7 +241,7 @@ class GmailAPIService:
                 # We should import the incoming messages from this thread 
                 # that are within the time window.
                 
-                cutoff_date = datetime.now() - timedelta(days=days)
+                cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
                 
                 for msg in messages:
                     # Skip our own sent messages in the import
@@ -315,7 +315,7 @@ class GmailAPIService:
             from email.utils import parsedate_to_datetime
             received_at = parsedate_to_datetime(date_str)
         except:
-            received_at = datetime.now()
+            received_at = datetime.now(timezone.utc)
 
         # Extract attachments metadata
         attachments = self._extract_attachments_meta(payload)
