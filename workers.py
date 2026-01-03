@@ -451,7 +451,14 @@ class MessagePoller:
             elif config_created_at:
                 # Standard polling: calculate hours since connected
                 try:
-                    created_dt = datetime.fromisoformat(config_created_at.replace('Z', '+00:00'))
+                    if isinstance(config_created_at, str):
+                        created_dt = datetime.fromisoformat(config_created_at.replace('Z', '+00:00'))
+                    elif isinstance(config_created_at, datetime):
+                        created_dt = config_created_at
+                    else:
+                        # Fallback if unknown type
+                        created_dt = datetime.now(timezone.utc) - timedelta(hours=24)
+
                     # Handle offset-naive vs offset-aware
                     if created_dt.tzinfo is None:
                         created_dt = created_dt.replace(tzinfo=timezone.utc)
