@@ -163,6 +163,14 @@ async def check_llm_health(license: dict = Depends(get_license_from_header)):
         )
     }
 
+
+@router.get("/ai-usage")
+async def get_ai_usage(license: dict = Depends(get_license_from_header)):
+    """Get today's AI usage stats"""
+    from models import get_ai_usage_today
+    return await get_ai_usage_today(license["license_id"])
+
+
 # Shared Telegram phone service instance (per process) so that the same
 # Telethon client can handle both send_code_request and sign_in for a phone.
 # Using lazy initialization to allow app to start without Telegram credentials
