@@ -346,24 +346,25 @@ async def receive_webhook(request: Request):
                         attachments=attachments
                     )
 
-                    # Analyze with AI (WhatsApp auto-analysis; auto-reply can be added later)
+                    # Analyze with AI (WhatsApp auto-analysis)
                     try:
                         from routes.core_integrations import analyze_inbox_message  # local import to avoid cycles
-                        from models import get_whatsapp_config 
+                        import asyncio
                         
                         # Determine auto_reply from config if available
                         # config is already available above as 'config' variable
                         auto_reply_enabled = bool(config and config.get("auto_reply_enabled"))
 
-                        background_tasks = BackgroundTasks()
-                        background_tasks.add_task(
-                            analyze_inbox_message,
-                            inbox_id,
-                            msg.get("body", ""),
-                            license_id,
-                            auto_reply_enabled,
-                            None, # telegram_chat_id
-                            attachments # Pass attachments
+                        # Use asyncio.create_task for proper background execution
+                        asyncio.create_task(
+                            analyze_inbox_message(
+                                inbox_id,
+                                msg.get("body", ""),
+                                license_id,
+                                auto_reply_enabled,
+                                None,  # telegram_chat_id
+                                attachments  # Pass attachments
+                            )
                         )
                     except Exception as e:
                         print(f"WhatsApp auto-analysis scheduling failed: {e}")

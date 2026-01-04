@@ -32,12 +32,15 @@ from .telegram_config import (
     save_telegram_config,
     get_telegram_config,
     get_telegram_bot_token,
+    update_telegram_config_settings,
     save_telegram_phone_session,
     get_telegram_phone_session,
     get_telegram_phone_session_data,
     deactivate_telegram_phone_session,
     update_telegram_phone_session_sync_time,
+    update_telegram_phone_session_settings,
     get_whatsapp_config,
+    update_whatsapp_config_settings,
 )
 
 # Inbox/Outbox
@@ -121,12 +124,15 @@ __all__ = [
     "save_telegram_config",
     "get_telegram_config",
     "get_telegram_bot_token",
+    "update_telegram_config_settings",
     "save_telegram_phone_session",
     "get_telegram_phone_session",
     "get_telegram_phone_session_data",
     "deactivate_telegram_phone_session",
     "update_telegram_phone_session_sync_time",
+    "update_telegram_phone_session_settings",
     "get_whatsapp_config",
+    "update_whatsapp_config_settings",
     # Inbox
     "save_inbox_message",
     "update_inbox_analysis",

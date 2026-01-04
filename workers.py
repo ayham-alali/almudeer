@@ -828,7 +828,7 @@ class MessagePoller:
                         msg["db_id"],
                         msg["body"],
                         license_id,
-                        False, 
+                        session_info.get("auto_reply_enabled", False) if session_info else False, 
                         "telegram",
                         msg.get("sender_contact"),
                         msg.get("sender_name"),
@@ -878,7 +878,7 @@ class MessagePoller:
                         latest_msg["db_id"],
                         combined_body, # Use combined body for AI understanding
                         license_id,
-                        False,
+                        session_info.get("auto_reply_enabled", False) if session_info else False,
                         "telegram",
                         latest_msg.get("sender_contact"),
                         latest_msg.get("sender_name"),

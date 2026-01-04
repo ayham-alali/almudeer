@@ -19,11 +19,14 @@ from models import (
     update_email_config_settings,
     save_telegram_config,
     get_telegram_config,
+    update_telegram_config_settings,
     save_telegram_phone_session,
     get_telegram_phone_session,
     get_telegram_phone_session_data,
     deactivate_telegram_phone_session,
     update_telegram_phone_session_sync_time,
+    update_telegram_phone_session_settings,
+    update_whatsapp_config_settings,
     save_inbox_message,
     update_inbox_analysis,
     get_inbox_messages,
@@ -494,6 +497,46 @@ async def delete_integration_account(
     
     else:
         raise HTTPException(status_code=400, detail=f"معرف الحساب غير صالح: {account_id}")
+
+
+@router.patch("/accounts/{account_id}")
+async def update_integration_account(
+    account_id: str,
+    request: dict,
+    license: dict = Depends(get_license_from_header)
+):
+    """
+    Update integration account settings.
+    
+    Request body should contain:
+    - auto_reply_enabled: bool (optional)
+    
+    account_id can be: "email", "telegram", "telegram_bot", "telegram_phone", "whatsapp"
+    """
+    license_id = license["license_id"]
+    auto_reply = request.get("auto_reply_enabled")
+    
+    if auto_reply is None:
+        raise HTTPException(status_code=400, detail="لا توجد إعدادات للتحديث")
+    
+    if account_id == "email":
+        await update_email_config_settings(license_id, auto_reply=auto_reply)
+        return {"success": True, "message": "تم تحديث إعدادات البريد الإلكتروني"}
+    
+    elif account_id in ("telegram", "telegram_bot"):
+        await update_telegram_config_settings(license_id, auto_reply=auto_reply)
+        return {"success": True, "message": "تم تحديث إعدادات Telegram Bot"}
+    
+    elif account_id == "telegram_phone":
+        await update_telegram_phone_session_settings(license_id, auto_reply=auto_reply)
+        return {"success": True, "message": "تم تحديث إعدادات Telegram Phone"}
+    
+    elif account_id == "whatsapp":
+        await update_whatsapp_config_settings(license_id, auto_reply=auto_reply)
+        return {"success": True, "message": "تم تحديث إعدادات WhatsApp"}
+    
+    else:
+        raise HTTPException(status_code=400, detail=f"نوع الحساب غير مدعوم: {account_id}")
 
 
 @router.get("/inbox/{message_id}/customer", response_model=InboxCustomerResponse)

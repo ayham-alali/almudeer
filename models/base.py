@@ -166,6 +166,7 @@ async def init_enhanced_tables():
                 user_last_name TEXT,
                 user_username TEXT,
                 is_active BOOLEAN DEFAULT TRUE,
+                auto_reply_enabled BOOLEAN DEFAULT FALSE,
                 last_synced_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -208,6 +209,14 @@ async def init_enhanced_tables():
             CREATE INDEX IF NOT EXISTS idx_inbox_language
             ON inbox_messages(language, dialect)
         """)
+
+        # Migration for telegram_phone_sessions auto_reply_enabled
+        try:
+            await execute_sql(db, """
+                ALTER TABLE telegram_phone_sessions ADD COLUMN auto_reply_enabled BOOLEAN DEFAULT FALSE
+            """)
+        except:
+            pass
 
         await commit_db(db)
         print("Enhanced tables initialized")

@@ -92,6 +92,30 @@ async def get_telegram_config(license_id: int, include_inactive: bool = True) ->
         return config
 
 
+async def update_telegram_config_settings(
+    license_id: int,
+    auto_reply: bool = None
+) -> bool:
+    """Update Telegram bot settings."""
+    async with get_db() as db:
+        updates = []
+        params = []
+        
+        if auto_reply is not None:
+            updates.append("auto_reply_enabled = ?")
+            params.append(auto_reply)
+            
+        if not updates:
+            return False
+            
+        params.append(license_id)
+        query = f"UPDATE telegram_configs SET {', '.join(updates)} WHERE license_key_id = ?"
+        
+        await execute_sql(db, query, params)
+        await commit_db(db)
+        return True
+
+
 async def get_telegram_bot_token(license_id: int) -> Optional[str]:
     """Get the actual bot token for internal use (e.g., API calls to Telegram).
     
@@ -121,7 +145,8 @@ async def save_telegram_phone_session(
     user_id: str = None,
     user_first_name: str = None,
     user_last_name: str = None,
-    user_username: str = None
+    user_username: str = None,
+    auto_reply: bool = False
 ) -> int:
     """Save or update Telegram phone session (MTProto)."""
     # Encrypt session data
@@ -148,6 +173,7 @@ async def save_telegram_phone_session(
                     user_first_name = ?,
                     user_last_name = ?,
                     user_username = ?,
+                    auto_reply_enabled = ?,
                     is_active = TRUE,
                     updated_at = ?
                 WHERE license_key_id = ?
@@ -159,6 +185,7 @@ async def save_telegram_phone_session(
                     user_first_name,
                     user_last_name,
                     user_username,
+                    auto_reply,
                     now,
                     license_id,
                 ],
@@ -171,8 +198,8 @@ async def save_telegram_phone_session(
             """
             INSERT INTO telegram_phone_sessions 
                 (license_key_id, phone_number, session_data_encrypted,
-                 user_id, user_first_name, user_last_name, user_username, is_active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, TRUE, ?, ?)
+                 user_id, user_first_name, user_last_name, user_username, is_active, auto_reply_enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, TRUE, ?, ?, ?)
             """,
             [
                 license_id,
@@ -182,6 +209,7 @@ async def save_telegram_phone_session(
                 user_first_name,
                 user_last_name,
                 user_username,
+                auto_reply,
                 now,
                 now,
             ],
@@ -258,6 +286,31 @@ async def update_telegram_phone_session_sync_time(license_id: int) -> bool:
         return True
 
 
+async def update_telegram_phone_session_settings(
+    license_id: int,
+    auto_reply: bool = None
+) -> bool:
+    """Update Telegram phone session settings."""
+    async with get_db() as db:
+        updates = []
+        params = []
+        
+        if auto_reply is not None:
+            updates.append("auto_reply_enabled = ?")
+            params.append(auto_reply)
+            
+        if not updates:
+            return False
+            
+        params.append(license_id)
+        # Ensure we only update active sessions
+        query = f"UPDATE telegram_phone_sessions SET {', '.join(updates)} WHERE license_key_id = ? AND is_active = TRUE"
+        
+        await execute_sql(db, query, params)
+        await commit_db(db)
+        return True
+
+
 async def get_whatsapp_config(license_id: int) -> Optional[dict]:
     """Get WhatsApp configuration for a license (SQLite & PostgreSQL compatible)."""
     async with get_db() as db:
@@ -274,3 +327,31 @@ async def get_whatsapp_config(license_id: int) -> Optional[dict]:
                 token[:10] + "..." + token[-5:] if len(token) > 15 else "***"
             )
         return config
+
+
+async def update_whatsapp_config_settings(
+    license_id: int,
+    auto_reply: bool = None
+) -> bool:
+    """Update WhatsApp configuration settings."""
+    async with get_db() as db:
+        updates = []
+        params = []
+        
+        if auto_reply is not None:
+            updates.append("auto_reply_enabled = ?")
+            params.append(auto_reply)
+            
+        if not updates:
+            return False
+            
+        params.append(license_id)
+        
+        # Consistent is_active check
+        from db_helper import DB_TYPE
+        is_active_val = "TRUE" if DB_TYPE == "postgresql" else "1"
+        query = f"UPDATE whatsapp_configs SET {', '.join(updates)} WHERE license_key_id = ? AND is_active = {is_active_val}"
+
+        await execute_sql(db, query, params)
+        await commit_db(db)
+        return True
