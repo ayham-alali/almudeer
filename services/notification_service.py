@@ -503,10 +503,11 @@ async def send_notification(
     if channels is None:
         channels = [NotificationChannel.IN_APP]
     
-    # In-app notification
+    # In-app notification (Database entry)
     if NotificationChannel.IN_APP in channels:
         from models import create_notification
         try:
+            # 1. Save to database (Inbox)
             await create_notification(
                 license_id=license_id,
                 notification_type=payload.priority.value,
@@ -516,6 +517,37 @@ async def send_notification(
                 link=payload.link
             )
             results["in_app"] = {"success": True}
+
+            # 2. Trigger Mobile Push (FCM)
+            # We assume IN_APP implies a desire to reach the user's device
+            try:
+                from services.fcm_mobile_service import send_fcm_to_license
+                fcm_count = await send_fcm_to_license(
+                    license_id=license_id,
+                    title=payload.title,
+                    body=payload.message,
+                    link=payload.link,
+                    data=payload.metadata
+                )
+                results["mobile_push"] = {"success": True, "count": fcm_count}
+            except Exception as e:
+                # Log but don't fail the whole request
+                results["mobile_push"] = {"success": False, "error": str(e)}
+
+            # 3. Trigger Web Push
+            try:
+                from services.push_service import send_push_to_license, WEBPUSH_AVAILABLE
+                if WEBPUSH_AVAILABLE:
+                    web_count = await send_push_to_license(
+                        license_id=license_id,
+                        title=payload.title,
+                        message=payload.message,
+                        link=payload.link or "/dashboard/notifications"
+                    )
+                    results["web_push"] = {"success": True, "count": web_count}
+            except Exception as e:
+                results["web_push"] = {"success": False, "error": str(e)}
+
         except Exception as e:
             results["in_app"] = {"success": False, "error": str(e)}
     

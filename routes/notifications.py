@@ -505,3 +505,80 @@ async def test_push_notification(
         "sent_count": sent_count,
         "message": f"تم إرسال الإشعار إلى {sent_count} جهاز"
     }
+
+
+# ============ Mobile FCM Push Notification Endpoints ============
+
+class MobilePushToken(BaseModel):
+    """Mobile FCM token registration"""
+    token: str = Field(..., description="FCM device token")
+    platform: str = Field(default="android", description="android or ios")
+
+
+@router.post("/push/mobile/register")
+async def register_mobile_token(
+    data: MobilePushToken,
+    license: dict = Depends(get_license_from_header)
+):
+    """Register mobile FCM token for push notifications."""
+    from services.fcm_mobile_service import save_fcm_token, ensure_fcm_tokens_table
+    
+    # Ensure table exists
+    await ensure_fcm_tokens_table()
+    
+    token_id = await save_fcm_token(
+        license_id=license["license_id"],
+        token=data.token,
+        platform=data.platform
+    )
+    
+    return {
+        "success": True,
+        "token_id": token_id,
+        "message": "تم تسجيل جهازك للإشعارات بنجاح"
+    }
+
+
+@router.post("/push/mobile/unregister")
+async def unregister_mobile_token(
+    data: MobilePushToken,
+    license: dict = Depends(get_license_from_header)
+):
+    """Unregister mobile FCM token."""
+    from services.fcm_mobile_service import remove_fcm_token
+    
+    await remove_fcm_token(data.token)
+    
+    return {
+        "success": True,
+        "message": "تم إلغاء تسجيل جهازك من الإشعارات"
+    }
+
+
+@router.post("/push/mobile/test")
+async def test_mobile_push(
+    license: dict = Depends(get_license_from_header)
+):
+    """Send a test push notification to all registered mobile devices."""
+    from services.fcm_mobile_service import send_fcm_to_license
+    
+    sent_count = await send_fcm_to_license(
+        license_id=license["license_id"],
+        title="🔔 إشعار تجريبي",
+        body="تم تفعيل إشعارات التطبيق بنجاح!",
+        data={"type": "test"},
+        link="/dashboard"
+    )
+    
+    if sent_count == 0:
+        return {
+            "success": False,
+            "message": "لا توجد أجهزة مسجلة للإشعارات"
+        }
+    
+    return {
+        "success": True,
+        "sent_count": sent_count,
+        "message": f"تم إرسال الإشعار إلى {sent_count} جهاز"
+    }
+
