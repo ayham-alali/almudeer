@@ -1532,7 +1532,8 @@ async def send_conversation_message(
         channel=channel,
         body=message_text,
         recipient_id=sender_id,
-        recipient_email=sender_contact
+        recipient_email=sender_contact,
+        attachments=attachments if attachments else None
     )
     
     # Approve and send immediately
@@ -2024,6 +2025,200 @@ async def send_approved_message(outbox_id: int, license_id: int):
                                     print(f"Failed to save WA message ID: {e}")
                 except Exception as e:
                     print(f"Failed to send WhatsApp message: {e}")
+
+        # ============ SEND ATTACHMENTS (Images, Audio, etc.) ============
+        if message.get("attachments"):
+            import json
+            import base64
+            import tempfile
+            import os
+            
+            try:
+                atts_data = message["attachments"]
+                # Parse if it's a JSON string (db TEXT column)
+                if isinstance(atts_data, str):
+                    try:
+                        atts = json.loads(atts_data)
+                    except:
+                        atts = []
+                else:
+                    atts = atts_data
+                
+                if atts:
+                    channel = message["channel"]
+                    
+                    # Process each attachment
+                    for att in atts:
+                        att_type = att.get("type", "image")
+                        b64_data = att.get("data")
+                        mime_type = att.get("mime_type", "image/jpeg")
+                        
+                        if not b64_data:
+                            continue
+                            
+                        # Determine file extension
+                        # Determine file extension
+                        suffix = ".bin"
+                        name = att.get("name", "")
+                        if name and "." in name:
+                            suffix = "." + name.split(".")[-1]
+                        elif "image" in mime_type: suffix = ".jpg"
+                        elif "video" in mime_type: suffix = ".mp4"
+                        elif "audio" in mime_type: suffix = ".aac"
+                        elif "pdf" in mime_type: suffix = ".pdf"
+                        
+                        # Create temp file
+                        tmp_path = None
+                        try:
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                                tmp.write(base64.b64decode(b64_data))
+                                tmp_path = tmp.name
+                            
+                            # Send via WhatsApp
+                            if channel == "whatsapp":
+                                config = await get_whatsapp_config(license_id)
+                                if config:
+                                    from services.whatsapp_service import WhatsAppService
+                                    wa_svc = WhatsAppService(
+                                        phone_number_id=config["phone_number_id"],
+                                        access_token=config["access_token"]
+                                    )
+                                    
+                                    # Upload Media
+                                    media_id = await wa_svc.upload_media(tmp_path, mime_type)
+                                    
+                                    if media_id:
+                                        # Send Message
+                                        if att_type == "image":
+                                            await wa_svc.send_image_message(
+                                                to=message["recipient_id"],
+                                                media_id=media_id
+                                            )
+                                        elif att_type == "video":
+                                            await wa_svc.send_video_message(
+                                                to=message["recipient_id"],
+                                                media_id=media_id
+                                            )
+                                        elif att_type == "document":
+                                            await wa_svc.send_document_message(
+                                                to=message["recipient_id"],
+                                                media_id=media_id,
+                                                filename=att.get("name", "document")
+                                            )
+                                        elif att_type == "audio" or att_type == "voice":
+                                            await wa_svc.send_audio_message(
+                                                to=message["recipient_id"],
+                                                media_id=media_id
+                                            )
+                                            
+                                        sent_anything = True
+                                        print(f"Sent WhatsApp attachment ({att_type}) for outbox {outbox_id}")
+                                        
+                            elif channel == "telegram_bot":
+                                from db_helper import get_db, fetch_one
+                                async with get_db() as db:
+                                    row = await fetch_one(
+                                        db,
+                                        "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?",
+                                        [license_id],
+                                    )
+                                    if row and row.get("bot_token"):
+                                        from services.telegram_service import TelegramService
+                                        telegram_service = TelegramService(row["bot_token"])
+                                        
+                                        if att_type == "image":
+                                            await telegram_service.send_photo(
+                                                chat_id=message["recipient_id"],
+                                                photo_path=tmp_path
+                                            )
+                                        elif att_type == "video":
+                                            await telegram_service.send_video(
+                                                chat_id=message["recipient_id"],
+                                                video_path=tmp_path
+                                            )
+                                        elif att_type == "document":
+                                            await telegram_service.send_document(
+                                                chat_id=message["recipient_id"],
+                                                document_path=tmp_path
+                                            )
+                                        elif att_type == "audio" or att_type == "voice":
+                                            await telegram_service.send_voice(
+                                                chat_id=message["recipient_id"],
+                                                audio_path=tmp_path
+                                            )
+                                        
+                                        sent_anything = True
+                                        print(f"Sent Telegram attachment ({att_type}) for outbox {outbox_id}")
+
+                            elif channel == "telegram_phone":
+                                from services.telegram_phone_service import TelegramPhoneService
+                                tp_svc = TelegramPhoneService()
+                                # Assuming there is a session_string stored or retrieved somehow for the user
+                                # For this implementation, we would need to fetch the session from DB
+                                from db_helper import get_db, fetch_one
+                                async with get_db() as db:
+                                    # Logic to find the correct phone session... 
+                                    # Fallback: check if we have recipient_email acting as phone number or similar logic
+                                    # For simplicity in this step, we try to find ONE active session for the license
+                                    row = await fetch_one(
+                                        db, 
+                                        "SELECT session_string FROM telegram_user_sessions WHERE license_key_id = ? ORDER BY created_at DESC LIMIT 1",
+                                        [license_id]
+                                    )
+                                    if row and row.get("session_string"):
+                                        await tp_svc.send_file(
+                                            session_string=row["session_string"],
+                                            recipient_id=message["recipient_id"],
+                                            file_path=tmp_path
+                                        )
+                                        sent_anything = True
+                                        print(f"Sent Telegram Phone attachment ({att_type})")
+
+                            elif channel == "email":
+                                from services.email_service import EmailService, EMAIL_PROVIDERS
+                                # Need email config
+                                from db_helper import get_db, fetch_one
+                                async with get_db() as db:
+                                    row = await fetch_one(
+                                        db,
+                                        "SELECT * FROM email_configs WHERE license_key_id = ?",
+                                        [license_id]
+                                    )
+                                    if row:
+                                        provider = EMAIL_PROVIDERS.get(row["provider"], {})
+                                        email_service = EmailService(
+                                            email_address=row["email_address"],
+                                            password=row["password"], # or app password
+                                            imap_server=provider.get("imap_server", ""),
+                                            smtp_server=provider.get("smtp_server", ""),
+                                            imap_port=provider.get("imap_port", 993),
+                                            smtp_port=provider.get("smtp_port", 587)
+                                        )
+                                        
+                                        await email_service.send_email(
+                                            to_email=message["recipient_email"],
+                                            subject=message["subject"] or "No Subject",
+                                            body=message["message"] or "",
+                                            attachments=[tmp_path]
+                                        )
+                                        sent_anything = True
+                                        print(f"Sent Email attachment ({att_type})")
+                        
+                        except Exception as e:
+                            print(f"Error sending attachment: {e}")
+                        finally:
+                            # Cleanup temp file
+                            if tmp_path and os.path.exists(tmp_path):
+                                try:
+                                    os.unlink(tmp_path)
+                                except:
+                                    pass
+
+                if sent_anything:
+                    await mark_outbox_sent(outbox_id)
+                    
+            except Exception as e:
+                print(f"Failed to process attachments for outbox {outbox_id}: {e}")
 
         # SEND AUDIO PART (All Channels)
         if audio_path:

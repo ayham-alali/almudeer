@@ -148,6 +148,39 @@ async def add_smart_reaction(
         
         if result["success"]:
             logger.info(f"Added smart reaction {emoji} to message {message_id}")
+            
+            # Broadcast to frontend for instant UI update
+            try:
+                from services.websocket_manager import broadcast_reaction_added
+                await broadcast_reaction_added(
+                    license_id=license_id,
+                    message_id=message_id,
+                    emoji=emoji,
+                    user_type="agent"
+                )
+            except Exception as e:
+                logger.error(f"Failed to broadcast reaction: {e}")
+
+            # Send Mobile Push Notification
+            try:
+                from services.fcm_mobile_service import send_fcm_to_license
+                # Truncate message body for notification
+                preview = message_body[:50] + "..." if len(message_body) > 50 else message_body
+                
+                await send_fcm_to_license(
+                    license_id=license_id,
+                    title="New Reaction",
+                    body=f"AI Agent reacted {emoji} to: {preview}",
+                    data={
+                        "type": "reaction_added",
+                        "message_id": str(message_id),
+                        "emoji": emoji,
+                        "click_action": "FLUTTER_NOTIFICATION_CLICK"
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Failed to send FCM for smart reaction: {e}")
+                
             return True
         else:
             logger.warning(f"Failed to add smart reaction: {result.get('error')}")

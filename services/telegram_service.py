@@ -146,6 +146,65 @@ class TelegramService:
                 
                 return result.get("result", {})
     
+    async def send_photo(self, chat_id: str, photo_path: str, caption: str = None) -> dict:
+        """Send photo"""
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            with open(photo_path, "rb") as f:
+                files = {"photo": (photo_path, f, "image/jpeg")}
+                data = {"chat_id": chat_id}
+                if caption:
+                    data["caption"] = caption
+                
+                response = await client.post(
+                    f"{self.api_url}/sendPhoto",
+                    data=data,
+                    files=files
+                )
+                result = response.json()
+                
+                if not result.get("ok"):
+                    raise Exception(result.get("description", "Telegram API error"))
+                
+                return result.get("result", {})
+
+    async def send_video(self, chat_id: str, video_path: str, caption: str = None) -> dict:
+        """Send video"""
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            with open(video_path, "rb") as f:
+                files = {"video": (video_path, f, "video/mp4")}
+                data = {"chat_id": chat_id}
+                if caption:
+                    data["caption"] = caption
+                
+                response = await client.post(
+                    f"{self.api_url}/sendVideo",
+                    data=data,
+                    files=files
+                )
+                result = response.json()
+                if not result.get("ok"):
+                    raise Exception(result.get("description", "Telegram API error"))
+                return result.get("result", {})
+
+    async def send_document(self, chat_id: str, document_path: str, caption: str = None) -> dict:
+        """Send document"""
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            with open(document_path, "rb") as f:
+                files = {"document": (document_path, f, "application/octet-stream")}
+                data = {"chat_id": chat_id}
+                if caption:
+                    data["caption"] = caption
+                
+                response = await client.post(
+                    f"{self.api_url}/sendDocument",
+                    data=data,
+                    files=files
+                )
+                result = response.json()
+                if not result.get("ok"):
+                    raise Exception(result.get("description", "Telegram API error"))
+                return result.get("result", {})
+    
     async def test_connection(self) -> tuple[bool, str, dict]:
         """Test bot token and get bot info"""
         try:

@@ -317,6 +317,84 @@ class WhatsAppService:
                 "response": data
             }
 
+    async def send_image_message(self, to: str, media_id: str, caption: str = None) -> Dict:
+        """Send an image message via WhatsApp"""
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to,
+            "type": "image",
+            "image": {"id": media_id}
+        }
+        
+        if caption:
+            payload["image"]["caption"] = caption
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                self.api_url,
+                headers={
+                    "Authorization": f"Bearer {self.access_token}",
+                    "Content-Type": "application/json"
+                },
+                json=payload
+            )
+            
+            if response.status_code != 200:
+                print(f"WhatsApp API Error (Image): {response.text}") # Debug log
+                return {
+                    "success": False,
+                    "error": response.text
+                }
+            
+            return {
+                "success": True,
+                "message_id": data.get("messages", [{}])[0].get("id"),
+                "response": data
+            }
+
+    async def send_video_message(self, to: str, media_id: str, caption: str = None) -> Dict:
+        """Send a video message via WhatsApp"""
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to,
+            "type": "video",
+            "video": {"id": media_id}
+        }
+        if caption:
+            payload["video"]["caption"] = caption
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                self.api_url,
+                headers={"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json"},
+                json=payload
+            )
+            data = response.json()
+            return {"success": response.status_code == 200, "response": data}
+
+    async def send_document_message(self, to: str, media_id: str, filename: str, caption: str = None) -> Dict:
+        """Send a document message via WhatsApp"""
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to,
+            "type": "document",
+            "document": {"id": media_id, "filename": filename}
+        }
+        if caption:
+            payload["document"]["caption"] = caption
+            
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                self.api_url,
+                headers={"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json"},
+                json=payload
+            )
+            data = response.json()
+            return {"success": response.status_code == 200, "response": data}
+
 
 
 # Database operations for WhatsApp config (SQLite & PostgreSQL via db_helper)

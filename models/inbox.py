@@ -284,19 +284,31 @@ async def create_outbox_message(
     body: str,
     recipient_id: str = None,
     recipient_email: str = None,
-    subject: str = None
+    subject: str = None,
+    attachments: Optional[List[dict]] = None
 ) -> int:
     """Create outbox message for approval (DB agnostic)."""
+    
+    # Serialize attachments
+    import json
+    attachments_json = json.dumps(attachments) if attachments else None
+    
     async with get_db() as db:
+        # Check if attachments column exists (simplified migration)
+        try:
+             await execute_sql(db, "ALTER TABLE outbox_messages ADD COLUMN attachments TEXT")
+        except:
+             pass 
+
         await execute_sql(
             db,
             """
             INSERT INTO outbox_messages 
                 (inbox_message_id, license_key_id, channel, recipient_id,
-                 recipient_email, subject, body)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                 recipient_email, subject, body, attachments)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [inbox_message_id, license_id, channel, recipient_id, recipient_email, subject, body],
+            [inbox_message_id, license_id, channel, recipient_id, recipient_email, subject, body, attachments_json],
         )
 
         row = await fetch_one(
@@ -370,7 +382,7 @@ async def get_pending_outbox(license_id: int) -> List[dict]:
             """
             SELECT o.*, i.sender_name, i.body as original_message
             FROM outbox_messages o
-            JOIN inbox_messages i ON o.inbox_message_id = i.id
+            LEFT JOIN inbox_messages i ON o.inbox_message_id = i.id
             WHERE o.license_key_id = ? AND o.status IN ('pending', 'approved')
             ORDER BY o.created_at DESC
             """,

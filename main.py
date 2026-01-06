@@ -74,6 +74,7 @@ import logging
 logger = logging.getLogger("startup")
 try:
     from routes import integrations_router, features_router, whatsapp_router, export_router, notifications_router, purchases_router, knowledge_router
+    from routes.reactions import router as reactions_router
     logger.info("Successfully imported integration routes")
 except ImportError as e:
     logger.error(f"Failed to import routes: {e}")
@@ -356,10 +357,15 @@ app.include_router(notifications_router)   # Smart Notifications & Integrations
 app.include_router(purchases_router)       # Customer Purchases
 app.include_router(knowledge_router)       # Knowledge Base (RAG)
 app.include_router(subscription_router)    # Subscription Key Management
+app.include_router(reactions_router)       # Message Reactions
 
 # JWT Authentication routes
 from routes.auth import router as auth_router
 app.include_router(auth_router)
+
+# Presence routes
+from routes.presence import router as presence_router
+app.include_router(presence_router)
 
 # Voice message routes
 try:

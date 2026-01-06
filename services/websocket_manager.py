@@ -176,6 +176,18 @@ async def broadcast_typing_indicator(license_id: int, sender_contact: str, is_ty
     ))
 
 
+async def broadcast_recording_indicator(license_id: int, sender_contact: str, is_recording: bool):
+    """Broadcast recording indicator for a conversation"""
+    manager = get_websocket_manager()
+    await manager.send_to_license(license_id, WebSocketMessage(
+        event="recording_indicator",
+        data={
+            "sender_contact": sender_contact,
+            "is_recording": is_recording
+        }
+    ))
+
+
 # ============ Reaction Broadcasting ============
 
 async def broadcast_reaction_added(license_id: int, message_id: int, emoji: str, user_type: str):

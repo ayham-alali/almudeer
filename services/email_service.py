@@ -15,6 +15,9 @@ import asyncio
 import re
 import socket
 import errno
+import os
+from email.mime.base import MIMEBase
+from email import encoders
 
 
 class EmailService:
@@ -263,9 +266,10 @@ class EmailService:
         to_email: str,
         subject: str,
         body: str,
-        reply_to_message_id: str = None
+        reply_to_message_id: str = None,
+        attachments: List[str] = None
     ) -> bool:
-        """Send email via SMTP"""
+        """Send email via SMTP with optional attachments"""
         
         def _send():
             try:
@@ -282,6 +286,29 @@ class EmailService:
                 # Add plain text body
                 text_part = MIMEText(body, 'plain', 'utf-8')
                 msg.attach(text_part)
+
+                # Add attachments
+                if attachments:
+                    for file_path in attachments:
+                        if not os.path.exists(file_path):
+                            print(f"Attachment not found: {file_path}")
+                            continue
+                            
+                        try:
+                            with open(file_path, "rb") as f:
+                                part = MIMEBase("application", "octet-stream")
+                                part.set_payload(f.read())
+                            
+                            encoders.encode_base64(part)
+                            
+                            filename = os.path.basename(file_path)
+                            part.add_header(
+                                "Content-Disposition",
+                                f"attachment; filename= {filename}",
+                            )
+                            msg.attach(part)
+                        except Exception as e:
+                            print(f"Error attaching file {file_path}: {e}")
                 
                 # Connect and send with timeout
                 server = None

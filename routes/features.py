@@ -53,12 +53,14 @@ class CustomerUpdate(BaseModel):
 
 @router.get("/customers")
 async def list_customers(
-    limit: int = 100,
+    page: int = 1,
+    page_size: int = 20,
+    search: Optional[str] = None,
     license: dict = Depends(get_license_from_header)
 ):
-    """Get all customers"""
-    customers = await get_customers(license["license_id"], limit)
-    return {"customers": customers, "total": len(customers)}
+    """Get all customers (paginated)"""
+    from services.pagination import paginate_customers
+    return await paginate_customers(license["license_id"], page, page_size, search)
 
 
 @router.get("/customers/{customer_id}")
