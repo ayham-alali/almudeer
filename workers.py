@@ -1548,6 +1548,10 @@ class MessagePoller:
 
             # Find outbox messages that are 'sent' or 'delivered' (not 'read' or 'failed')
             # and imply 'telegram' channel
+            # Calculate 24h cutoff in Python for DB compatibility
+            cutoff = datetime.utcnow() - timedelta(hours=24)
+            cutoff_value = cutoff if DB_TYPE == "postgresql" else cutoff.isoformat()
+
             async with get_db() as db:
                 rows = await fetch_all(
                     db,
@@ -1558,9 +1562,9 @@ class MessagePoller:
                       AND channel = 'telegram'
                       AND delivery_status IN ('sent', 'delivered')
                       AND platform_message_id IS NOT NULL
-                      AND created_at > datetime('now', '-24 hours')
+                      AND created_at > ?
                     """,
-                    [license_id]
+                    [license_id, cutoff_value]
                 )
             
             if not rows:
