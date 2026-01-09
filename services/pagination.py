@@ -166,7 +166,8 @@ async def paginate_crm(license_id: int,
 async def paginate_customers(license_id: int,
                              page: int = 1,
                              page_size: int = 20,
-                             search: str = None) -> Dict[str, Any]:
+                             search: str = None,
+                             segment: str = None) -> Dict[str, Any]:
     """Paginated customers list"""
     from db_helper import get_db, fetch_all
     import os
@@ -181,6 +182,27 @@ async def paginate_customers(license_id: int,
         conditions.append("(name LIKE ? OR email LIKE ? OR phone LIKE ?)")
         search_pattern = f"%{search}%"
         query_params.extend([search_pattern, search_pattern, search_pattern])
+        
+    if segment:
+        # Map frontend key (lowercase/hyphenated) to DB value (Title Case)
+        segment_map = {
+            'vip': 'VIP',
+            'high-value': 'High-Value',
+            'warm lead': 'Warm Lead',
+            'cold lead': 'Cold Lead',
+            'new': 'New',
+            'low-engagement': 'Low-Engagement'
+        }
+        
+        db_segment = segment_map.get(segment.lower())
+        
+        if db_segment == 'VIP':
+            # VIP is a separate boolean column
+            conditions.append("is_vip = 1")
+        elif db_segment:
+            # Other segments are in the segment column
+            conditions.append("segment = ?")
+            query_params.append(db_segment)
     
     where_clause = " AND ".join(conditions)
     total = await get_total_count("customers", where_clause, tuple(query_params))
@@ -195,4 +217,14 @@ async def paginate_customers(license_id: int,
     async with get_db() as db:
         items = await fetch_all(db, sql, query_params)
     
-    return paginate(items, total, params).to_dict()
+    # Calculate pagination details
+    paginated = paginate(items, total, params)
+    
+    # Return legacy format matching frontend expectation
+    return {
+        "customers": paginated.items,
+        "total": paginated.total,
+        "has_more": paginated.has_next,
+        "page": paginated.page,
+        "total_pages": paginated.total_pages
+    }

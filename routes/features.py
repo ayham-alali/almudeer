@@ -56,11 +56,12 @@ async def list_customers(
     page: int = 1,
     page_size: int = 20,
     search: Optional[str] = None,
+    segment: Optional[str] = None,
     license: dict = Depends(get_license_from_header)
 ):
     """Get all customers (paginated)"""
     from services.pagination import paginate_customers
-    return await paginate_customers(license["license_id"], page, page_size, search)
+    return await paginate_customers(license["license_id"], page, page_size, search, segment)
 
 
 @router.get("/customers/{customer_id}")
