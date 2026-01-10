@@ -4,14 +4,18 @@ Persistent service for real-time Telegram events (Typing, Recording, etc.)
 """
 import asyncio
 import logging
+import os
 from typing import Dict, Set
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
 from logging_config import get_logger
 from services.websocket_manager import broadcast_typing_indicator, broadcast_recording_indicator
-from config import TELEGRAM_API_ID, TELEGRAM_API_HASH
-from database import fetch_all, get_db
+from db_helper import fetch_all, get_db
+
+# Load environment variables
+TELEGRAM_API_ID = os.getenv("TELEGRAM_API_ID")
+TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
 
 logger = get_logger(__name__)
 
