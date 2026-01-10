@@ -248,19 +248,53 @@ async def create_rule(
 
 
 async def get_rules(license_id: int) -> List[dict]:
-    """Get all notification rules (DB agnostic)."""
+    """Get all notification rules (DB agnostic), auto-creating defaults if missing."""
     async with get_db() as db:
-        rows = await fetch_all(
+        # Fetch ALL rules (active and inactive) to check existence
+        all_rows = await fetch_all(
             db,
-            """
-            SELECT * FROM notification_rules 
-            WHERE license_key_id = ? AND is_active = TRUE
-            """,
+            "SELECT * FROM notification_rules WHERE license_key_id = ?",
             [license_id],
         )
+
+        # Check for default "waiting_for_reply" rule
+        has_waiting_rule = any(row["condition_type"] == "waiting_for_reply" for row in all_rows)
+        
+        if not has_waiting_rule:
+            # Auto-create default rule
+            try:
+                await execute_sql(
+                    db,
+                    """
+                    INSERT INTO notification_rules (license_key_id, name, condition_type, condition_value, channels, is_active)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        license_id, 
+                        "تنبيه بانتظار الرد", 
+                        "waiting_for_reply", 
+                        "true", 
+                        json.dumps(["in_app"]), 
+                        True
+                    ]
+                )
+                await commit_db(db)
+                
+                # Re-fetch to get the new rule with ID
+                all_rows = await fetch_all(
+                    db,
+                    "SELECT * FROM notification_rules WHERE license_key_id = ?",
+                    [license_id],
+                )
+            except Exception as e:
+                # Log error but don't fail the request
+                print(f"Error creating default rule: {e}")
+
+        # Return only ACTIVE rules
         return [
             {**row, "channels": json.loads(row["channels"])}
-            for row in rows
+            for row in all_rows
+            if row["is_active"]
         ]
 
 
@@ -660,6 +694,10 @@ async def process_message_notifications(
         elif rule["condition_type"] == "vip_customer":
             if message_data.get("is_vip"):
                 should_trigger = True
+
+        elif rule["condition_type"] == "waiting_for_reply":
+             # Trigger for any valid incoming message that is not auto-replied/spam
+             should_trigger = True
         
         # Trigger notification if condition met
         if should_trigger:

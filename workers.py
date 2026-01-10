@@ -1126,6 +1126,7 @@ class MessagePoller:
             self._increment_user_rate_limit(license_id)
             
             # Link message to customer and update lead score
+            is_vip = False
             try:
                 # Get message details to extract sender info
                 async with get_db() as db:
@@ -1159,6 +1160,7 @@ class MessagePoller:
                             
                             if customer and customer.get("id"):
                                 customer_id = customer["id"]
+                                is_vip = customer.get("is_vip", False)
                                 
                                 # Check if already linked to avoid duplicates
                                 existing = await fetch_one(
@@ -1253,6 +1255,40 @@ class MessagePoller:
                                 
             except Exception as crm_error:
                 logger.warning(f"Error updating CRM for message {message_id}: {crm_error}")
+
+            # NOTIFICATIONS TRIGGER
+            try:
+                from services.notification_service import process_message_notifications
+                
+                # Check if we should trigger notifications
+                # We trigger if:
+                # 1. AI processing succeeded (we are here)
+                # 2. It's not an auto-reply scenario (or auto-reply is disabled/not generated)
+                # If auto-reply IS generated, we might still want to notify if the user wants to see it, 
+                # but "waiting_for_reply" implies pending action. 
+                # However, the rule engine handles the "waiting_for_reply" check, 
+                # so we just pass the data and letting the condition logic deciding. 
+                # But we should probably flag if it was auto-replied.
+                
+                is_auto_replied = bool(auto_reply and data.get("draft_response"))
+                
+                if not is_auto_replied:
+                    notification_data = {
+                        "sender_name": sender_name or "Unknown",
+                        "sender_contact": recipient, # This might be the user's number in some contexts, but here it's likely the customer's?
+                        # Actually recipient passed to _analyze is usually the customer's ID/Phone.
+                        "body": body,
+                        "intent": data.get("intent"),
+                        "urgency": data.get("urgency"),
+                        "sentiment": data.get("sentiment"),
+                        "is_vip": is_vip,
+                        "channel": channel
+                    }
+                    
+                    await process_message_notifications(license_id, notification_data)
+                    
+            except Exception as notif_e:
+                logger.error(f"Error checking notifications for message {message_id}: {notif_e}")
             
             # AUDIO RESPONSE GENERATION
             # If input has audio attachments, generate spoken response

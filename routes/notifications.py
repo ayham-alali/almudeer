@@ -241,7 +241,8 @@ async def list_rules(license: dict = Depends(get_license_from_header)):
             {"value": "sentiment", "label": "المشاعر", "description": "إشعار عند رسالة سلبية"},
             {"value": "urgency", "label": "الأهمية", "description": "إشعار عند رسالة عاجلة"},
             {"value": "keyword", "label": "كلمة مفتاحية", "description": "إشعار عند وجود كلمة معينة"},
-            {"value": "vip_customer", "label": "عميل VIP", "description": "إشعار عند رسالة من عميل مهم"}
+            {"value": "vip_customer", "label": "عميل VIP", "description": "إشعار عند رسالة من عميل مهم"},
+            {"value": "waiting_for_reply", "label": "بانتظار الرد", "description": "إشعار عند وصول رسالة جديدة تنتظر الرد"}
         ]
     }
 
@@ -253,7 +254,7 @@ async def add_rule(
 ):
     """Create notification rule"""
     # Validate condition type
-    valid_conditions = ["sentiment", "urgency", "keyword", "vip_customer"]
+    valid_conditions = ["sentiment", "urgency", "keyword", "vip_customer", "waiting_for_reply"]
     if data.condition_type not in valid_conditions:
         raise HTTPException(status_code=400, detail="نوع الشرط غير صالح")
     
