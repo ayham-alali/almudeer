@@ -117,7 +117,7 @@ async def get_customer_presence(
                 "is_online": False,
                 "last_seen": None,
                 "last_activity": None,
-                "status_text": "غير متصل"
+                "status_text": ""  # Empty - let frontend/caller decide fallback
             }
         
         is_online = row.get("is_online", False)
@@ -249,7 +249,7 @@ def format_customer_last_seen(is_online: bool, last_time: Optional[datetime]) ->
         return "متصل الآن"
     
     if not last_time:
-        return "غير متصل"
+        return ""  # Empty - caller should use channel-specific fallback
     
     now = datetime.utcnow()
     diff = now - last_time
