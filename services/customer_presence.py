@@ -8,6 +8,11 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from logging_config import get_logger
 
+# Lazy imports to avoid circular dependencies
+# from services.telegram_phone_service import TelegramPhoneService
+# from models import get_telegram_phone_session
+
+
 logger = get_logger(__name__)
 
 
@@ -141,6 +146,83 @@ async def get_customer_presence(
         # Format status text in Arabic
         status_text = format_customer_last_seen(is_online, last_activity or last_seen)
         
+        return {
+            "is_online": is_online,
+            "last_seen": last_seen.isoformat() if last_seen else None,
+            "last_activity": last_activity.isoformat() if last_activity else None,
+            "status_text": status_text,
+            "channel": row.get("channel")
+        }
+        
+        # --- Real-Time Presence Fetching (Telegram) ---
+        # If the channel is Telegram, or we have a phone number that might be on Telegram,
+        # try to fetch real-time status if we have a connected Telegram Phone session.
+        
+        channel = row.get("channel")
+        sender_contact = sender_contact # Already available
+        
+        # Only fetch if it's likely a Telegram user
+        if channel in ('telegram', 'telegram_phone') or (channel == 'whatsapp' and sender_contact): 
+             # Note: We can't fetch for WhatsApp, but if it was cross-channel?
+             # User specifically asked for Telegram.
+             pass
+             
+        if channel in ('telegram', 'telegram_phone'):
+            try:
+                # Import here to avoid circular dependencies
+                from models import get_telegram_phone_session, get_telegram_config
+                from services.telegram_phone_service import TelegramPhoneService
+                
+                # Check for active session
+                session_data = await get_telegram_phone_session(license_id)
+                
+                if session_data and session_data.get("is_active") and session_data.get("session_string"):
+                    session_string = session_data.get("session_string")
+                    
+                    # Instantiate service (lightweight)
+                    tg_service = TelegramPhoneService()
+                    
+                    # Fetch real presence
+                    real_presence = await tg_service.get_user_presence(session_string, sender_contact)
+                    
+                    if real_presence["status_text"] != "غير معروف":
+                        # Update local DB so it's cached/persisted
+                        is_online = real_presence["is_online"]
+                        last_seen_str = real_presence["last_seen"] # ISO string
+                        
+                        last_seen_dt = None
+                        if last_seen_str:
+                             last_seen_dt = datetime.fromisoformat(last_seen_str.replace('Z', '+00:00'))
+                        
+                        # Update DB
+                        # We use update_customer_presence but need to be careful not to loop or overwrite channel incorrectly
+                        # Just update the presence fields directly or use the helper
+                        
+                        await update_customer_presence(
+                            license_id=license_id,
+                            sender_contact=sender_contact,
+                            channel=channel, # Keep existing channel
+                            is_online=is_online,
+                            last_activity=last_seen_dt # Use last seen as last activity? Or keep them separate?
+                            # Using last_seen as last_activity might be confusing if last_seen was "last month".
+                            # But last_activity usually implies "activity on OUR platform".
+                            # However, for "presence", last_seen is what we want.
+                            # Let's update `last_seen` column specifically if possible.
+                        )
+                        
+                        # Update the return object with fresh data
+                        return {
+                            "is_online": is_online,
+                            "last_seen": last_seen_str,
+                            "last_activity": last_activity.isoformat() if last_activity else None,
+                            "status_text": real_presence["status_text"],
+                            "channel": channel
+                        }
+            
+            except Exception as e:
+                logger.warning(f"Failed to fetch real-time Telegram presence: {e}")
+                # Fallback to existing data (already in `return` below if we didn't return above)
+
         return {
             "is_online": is_online,
             "last_seen": last_seen.isoformat() if last_seen else None,

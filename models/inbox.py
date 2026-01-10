@@ -458,13 +458,15 @@ async def get_inbox_conversations(
                 ORDER BY COALESCE(sender_contact, sender_id::text, 'unknown'), created_at DESC
             )
             SELECT 
-                id, channel, sender_name, sender_contact, sender_id, subject, body,
-                intent, urgency, sentiment, language, dialect, ai_summary, ai_draft_response,
-                status, created_at, received_at,
-                message_count, unread_count
-            FROM latest_per_sender
+                lps.id, lps.channel, lps.sender_name, lps.sender_contact, lps.sender_id, lps.subject, lps.body,
+                lps.intent, lps.urgency, lps.sentiment, lps.language, lps.dialect, lps.ai_summary, lps.ai_draft_response,
+                lps.status, lps.created_at, lps.received_at,
+                lps.message_count, lps.unread_count,
+                cp.is_online, cp.last_seen
+            FROM latest_per_sender lps
+            LEFT JOIN customer_presence cp ON cp.license_key_id = lps.license_key_id AND cp.sender_contact = lps.sender_contact
             WHERE {final_where}
-            ORDER BY created_at DESC
+            ORDER BY lps.created_at DESC
             LIMIT ? OFFSET ?
         """
         params = base_params + status_params + [limit, offset]
@@ -489,8 +491,11 @@ async def get_inbox_conversations(
                   AND COALESCE(m2.sender_contact, m2.sender_id, 'unknown') = COALESCE(m.sender_contact, m.sender_id, 'unknown')
                   AND m2.status = 'analyzed'
                   AND (m2.is_read = 0 OR m2.is_read IS NULL OR m2.is_read IS FALSE)
-                 ) as unread_count
+                 ) as unread_count,
+                 cp.is_online,
+                 cp.last_seen
             FROM inbox_messages m
+            LEFT JOIN customer_presence cp ON cp.license_key_id = m.license_key_id AND cp.sender_contact = m.sender_contact
             WHERE {base_where}
             AND m.id = (
                 SELECT m3.id FROM inbox_messages m3

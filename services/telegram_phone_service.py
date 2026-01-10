@@ -701,6 +701,136 @@ class TelegramPhoneService:
                 except:
                     pass
 
+    async def get_user_presence(
+        self,
+        session_string: str,
+        phone_number: str
+    ) -> Dict:
+        """
+        Get real-time presence/last seen status for a specific user
+        
+        Args:
+            session_string: Session string
+            phone_number: User's phone number or username
+        
+        Returns:
+            Dict {
+                "is_online": bool,
+                "last_seen": datetime (ISO) or None,
+                "status_text": str (Arabic description)
+            }
+        """
+        from logging_config import get_logger
+        from telethon.tl.types import (
+            UserStatusOnline, 
+            UserStatusOffline, 
+            UserStatusRecently, 
+            UserStatusLastWeek, 
+            UserStatusLastMonth,
+            UserStatusEmpty
+        )
+        from datetime import datetime, timezone, timedelta
+        
+        logger = get_logger(__name__)
+        client = None
+        
+        try:
+            client = await self.create_client_from_session(session_string)
+            
+            # Resolve entity (force fetch to get latest status)
+            # We use get_entity which might be cached, but for status we often want fresh data.
+            # However, Telethon updates status on updates. For now get_entity is the standard way.
+            try:
+                entity = await client.get_entity(phone_number)
+            except Exception:
+                # If phone number lookup fails directly, try resolving via dialogs or search?
+                # Usually if we chatted, it's cached. If not, we might need to import contact?
+                # For now assume we have chatted or it's resolveable.
+                logger.warning(f"Could not resolve entity for presence: {phone_number}")
+                return {"is_online": False, "last_seen": None, "status_text": "غير معروف"}
+
+            if not hasattr(entity, 'status'):
+                 return {"is_online": False, "last_seen": None, "status_text": "غير معروف"}
+            
+            status = entity.status
+            
+            # Parse status
+            if isinstance(status, UserStatusOnline):
+                # Defines when the user goes offline (expires)
+                expires = status.expires.replace(tzinfo=timezone.utc)
+                return {
+                    "is_online": True,
+                    "last_seen": expires.isoformat(), 
+                    "status_text": "متصل الآن"
+                }
+                
+            elif isinstance(status, UserStatusOffline):
+                was_online = status.was_online.replace(tzinfo=timezone.utc)
+                return {
+                    "is_online": False,
+                    "last_seen": was_online.isoformat(),
+                    "status_text": self._format_last_seen_date(was_online)
+                }
+                
+            elif isinstance(status, UserStatusRecently):
+                return {
+                    "is_online": False,
+                    "last_seen": None,
+                    "status_text": "آخر ظهور قريباً" 
+                }
+            
+            elif isinstance(status, UserStatusLastWeek):
+                return {
+                    "is_online": False,
+                    "last_seen": None,
+                    "status_text": "آخر ظهور خلال أسبوع"
+                }
+                
+            elif isinstance(status, UserStatusLastMonth):
+                return {
+                    "is_online": False, 
+                    "last_seen": None,
+                    "status_text": "آخر ظهور خلال شهر"
+                }
+                
+            elif isinstance(status, UserStatusEmpty):
+                 return {
+                    "is_online": False, 
+                    "last_seen": None,
+                    "status_text": "آخر ظهور مخفي"
+                }
+            
+            return {"is_online": False, "last_seen": None, "status_text": "غير متصل"}
+
+        except Exception as e:
+            logger.error(f"Failed to get presence for {phone_number}: {e}")
+            return {"is_online": False, "last_seen": None, "status_text": "غير معروف"}
+        finally:
+            if client:
+                try:
+                    await client.disconnect()
+                except:
+                    pass
+
+    def _format_last_seen_date(self, dt: datetime) -> str:
+        """Format datetime to Arabic string"""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        diff = now - dt
+        
+        if diff.total_seconds() < 60:
+            return "آخر ظهور منذ لحظات"
+        elif diff.total_seconds() < 3600:
+            minutes = int(diff.total_seconds() / 60)
+            return f"آخر ظهور منذ {minutes} دقيقة"
+        elif diff.total_seconds() < 86400:
+            hours = int(diff.total_seconds() / 3600)
+            return f"آخر ظهور منذ {hours} ساعة"
+        elif diff.days == 1:
+            return "آخر ظهور أمس"
+        else:
+            return f"آخر ظهور {dt.strftime('%Y/%m/%d')}"
+
     async def mark_as_read(
         self,
         session_string: str,
