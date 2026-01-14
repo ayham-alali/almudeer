@@ -1,0 +1,11 @@
+{
+    "is_soft_update": false,
+    "priority": "critical",
+    "min_soft_update_build": 0,
+    "rollout_percentage": 100,
+    "effective_from": null,
+    "effective_until": null,
+    "maintenance_hours": null,
+    "max_deferrals": 3,
+    "deferral_expiry_hours": 24
+}

@@ -1,0 +1,14 @@
+[
+    {
+        "version": "1.0.0",
+        "build_number": 3,
+        "release_date": "2026-01-14",
+        "changes": [
+            {
+                "type": "improvement",
+                "text_ar": "تحسينات في الأداء والاستقرار",
+                "text_en": "Performance and stability improvements"
+            }
+        ]
+    }
+]
