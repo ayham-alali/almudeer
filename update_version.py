@@ -12,11 +12,30 @@ APK_VERSION_FILE = os.path.join(STATIC_DIR, "apk_version.txt")
 CHANGELOG_FILE = os.path.join(STATIC_DIR, "changelog.json")
 UPDATE_CONFIG_FILE = os.path.join(STATIC_DIR, "update_config.json")
 VERSION_HISTORY_FILE = os.path.join(STATIC_DIR, "version_history.json")
+# iOS Store URL is stored in update_config.json, no separate file needed
 
-def update_files(build_number, is_force, notes_ar, notes_en):
+
+def atomic_write(filepath, content, is_json=False):
+    """Write to a temp file and rename atomically."""
+    dirname = os.path.dirname(filepath)
+    basename = os.path.basename(filepath)
+    temp_path = os.path.join(dirname, f".{basename}.tmp")
+    
+    try:
+        with open(temp_path, "w", encoding="utf-8") as f:
+            if is_json:
+                json.dump(content, f, indent=4, ensure_ascii=False)
+            else:
+                f.write(content)
+        os.replace(temp_path, filepath)
+    except Exception as e:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        raise e
+
+def update_files(build_number, is_force, notes_ar, notes_en, ios_url=None):
     # 1. Update minimum build number (apk_version.txt)
-    with open(APK_VERSION_FILE, "w") as f:
-        f.write(str(build_number))
+    atomic_write(APK_VERSION_FILE, str(build_number))
     print(f"✅ Updated {APK_VERSION_FILE} to {build_number}")
 
     # 2. Update update_config.json
@@ -29,8 +48,11 @@ def update_files(build_number, is_force, notes_ar, notes_en):
     config["is_soft_update"] = not is_force
     config["priority"] = "critical" if is_force else "normal"
     
-    with open(UPDATE_CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=4)
+    if ios_url:
+        config["ios_store_url"] = ios_url
+        print(f"🍏 Set iOS URL to: {ios_url}")
+    
+    atomic_write(UPDATE_CONFIG_FILE, config, is_json=True)
     print(f"✅ Updated {UPDATE_CONFIG_FILE} (Force: {is_force})")
 
     # 3. Update changelog.json
@@ -42,8 +64,7 @@ def update_files(build_number, is_force, notes_ar, notes_en):
         "changelog_en": [notes_en],
         "release_notes_url": ""
     }
-    with open(CHANGELOG_FILE, "w", encoding="utf-8") as f:
-        json.dump(changelog_data, f, indent=4, ensure_ascii=False)
+    atomic_write(CHANGELOG_FILE, changelog_data, is_json=True)
     print(f"✅ Updated {CHANGELOG_FILE}")
 
     # 4. Update version_history.json
@@ -57,8 +78,7 @@ def update_files(build_number, is_force, notes_ar, notes_en):
     existing = next((item for item in history if item.get("build_number") == build_number), None)
     if not existing:
         history.insert(0, changelog_data) # Add new version at the top
-        with open(VERSION_HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(history, f, indent=4, ensure_ascii=False)
+        atomic_write(VERSION_HISTORY_FILE, history, is_json=True)
         print(f"✅ Added to {VERSION_HISTORY_FILE}")
     else:
         print(f"ℹ️ Build {build_number} already in history, skipping append.")
@@ -70,6 +90,7 @@ def main():
     parser.add_argument("--soft", action="store_true", help="Set as SOFT update (optional)")
     parser.add_argument("--msg", type=str, default="تحسينات عامة وإصلاحات للأخطاء", help="Arabic changelog message")
     parser.add_argument("--msg-en", type=str, default="General improvements and bug fixes", help="English changelog message")
+    parser.add_argument("--ios-url", type=str, help="iOS App Store URL")
 
     args = parser.parse_args()
 
@@ -90,7 +111,7 @@ def main():
         sys.exit(0)
 
     os.makedirs(STATIC_DIR, exist_ok=True)
-    update_files(args.build, is_force, args.msg, args.msg_en)
+    update_files(args.build, is_force, args.msg, args.msg_en, args.ios_url)
     print("\n🎉 Done! Now just copy your APK and git push.")
 
 if __name__ == "__main__":

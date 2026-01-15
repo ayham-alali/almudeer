@@ -149,6 +149,20 @@ async def _init_sqlite_tables(db):
             FOREIGN KEY (customer_contact) REFERENCES customers(contact)
         )
     """)
+
+    # Update Events table (Analytics)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS update_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            event TEXT NOT NULL,
+            from_build INTEGER,
+            to_build INTEGER,
+            device_id TEXT,
+            device_type TEXT,
+            license_key TEXT
+        )
+    """)
     
     # Create indexes for performance
     await db.execute("""
@@ -226,6 +240,20 @@ async def _init_postgresql_tables(conn):
             created_at TIMESTAMP DEFAULT NOW(),
             updated_at TIMESTAMP,
             FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
+        )
+    """))
+
+    # Update Events table (Analytics)
+    await conn.execute(_adapt_sql_for_db("""
+        CREATE TABLE IF NOT EXISTS update_events (
+            id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT NOW(),
+            event VARCHAR(255) NOT NULL,
+            from_build INTEGER,
+            to_build INTEGER,
+            device_id VARCHAR(255),
+            device_type VARCHAR(50),
+            license_key VARCHAR(255)
         )
     """))
     
@@ -666,3 +694,57 @@ async def upsert_customer_lead(name: str, contact: str, notes: str) -> int:
                 await db.commit()
                 return cursor.lastrowid
     return 0
+
+
+async def save_update_event(
+    event: str,
+    from_build: int,
+    to_build: int,
+    device_id: Optional[str] = None,
+    device_type: Optional[str] = None,
+    license_key: Optional[str] = None
+):
+    """Save an update event to the database"""
+    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            await conn.execute("""
+                INSERT INTO update_events 
+                (event, from_build, to_build, device_id, device_type, license_key)
+                VALUES ($1, $2, $3, $4, $5, $6)
+            """, event, from_build, to_build, device_id, device_type, license_key)
+        finally:
+            await conn.close()
+    else:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            await db.execute("""
+                INSERT INTO update_events 
+                (event, from_build, to_build, device_id, device_type, license_key)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (event, from_build, to_build, device_id, device_type, license_key))
+            await db.commit()
+
+
+async def get_update_events(limit: int = 100) -> list:
+    """Get recent update events"""
+    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            rows = await conn.fetch("""
+                SELECT * FROM update_events 
+                ORDER BY timestamp DESC 
+                LIMIT $1
+            """, limit)
+            return [dict(row) for row in rows]
+        finally:
+            await conn.close()
+    else:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM update_events 
+                ORDER BY timestamp DESC 
+                LIMIT ?
+            """, (limit,)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]

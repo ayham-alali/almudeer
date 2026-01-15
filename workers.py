@@ -49,6 +49,7 @@ from services.gmail_oauth_service import GmailOAuthService
 from services.gmail_api_service import GmailAPIService
 from services.telegram_phone_service import TelegramPhoneService
 from services.backfill_service import get_backfill_service
+from cache import cache
 
 # Import models
 from models import (
@@ -120,60 +121,50 @@ class MessagePoller:
         # Prevents rapid retry loops within the same 5-minute cycle
         self._retried_this_cycle: Set[int] = set()
         
-        # Per-user rate limiting tracking
-        # Structure: {license_id: {"daily_count": int, "daily_reset": datetime, "minute_count": int, "minute_reset": datetime}}
-        self._user_rate_limits: Dict[int, Dict[str, Any]] = {}
+        # Per-user rate limiting is now handled via Redis/CacheManager
     
-    def _check_user_rate_limit(self, license_id: int) -> tuple[bool, str]:
+    async def _check_user_rate_limit(self, license_id: int) -> tuple[bool, str]:
         """
-        Check if user is within rate limits.
+        Check if user is within rate limits using Redis.
         Returns (allowed, reason) tuple.
         """
-        now = datetime.utcnow()
+        daily_key = f"rate_limit:daily:{license_id}"
+        minute_key = f"rate_limit:minute:{license_id}"
         
-        # Initialize tracking for new user
-        if license_id not in self._user_rate_limits:
-            self._user_rate_limits[license_id] = {
-                "daily_count": 0,
-                "daily_reset": now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1),
-                "minute_count": 0,
-                "minute_reset": now + timedelta(minutes=1),
-            }
-        
-        limits = self._user_rate_limits[license_id]
-        
-        # Reset daily counter if new day
-        if now >= limits["daily_reset"]:
-            limits["daily_count"] = 0
-            limits["daily_reset"] = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-        
-        # Reset minute counter if minute passed
-        if now >= limits["minute_reset"]:
-            limits["minute_count"] = 0
-            limits["minute_reset"] = now + timedelta(minutes=1)
+        # Get current counts (default to 0)
+        daily_count = await cache.get(daily_key) or 0
+        minute_count = await cache.get(minute_key) or 0
         
         # Check daily limit
-        if limits["daily_count"] >= self.MAX_MESSAGES_PER_USER_PER_DAY:
-            remaining = (limits["daily_reset"] - now).total_seconds() / 3600
-            return False, f"Daily limit reached ({self.MAX_MESSAGES_PER_USER_PER_DAY}/day). Resets in {remaining:.1f}h"
+        if int(daily_count) >= self.MAX_MESSAGES_PER_USER_PER_DAY:
+            return False, f"Daily limit reached ({self.MAX_MESSAGES_PER_USER_PER_DAY}/day)"
         
         # Check minute limit
-        if limits["minute_count"] >= self.MAX_MESSAGES_PER_USER_PER_MINUTE:
-            remaining = (limits["minute_reset"] - now).total_seconds()
-            return False, f"Minute limit reached ({self.MAX_MESSAGES_PER_USER_PER_MINUTE}/min). Resets in {remaining:.0f}s"
+        if int(minute_count) >= self.MAX_MESSAGES_PER_USER_PER_MINUTE:
+            return False, f"Minute limit reached ({self.MAX_MESSAGES_PER_USER_PER_MINUTE}/min)"
         
         return True, ""
     
-    def _increment_user_rate_limit(self, license_id: int):
-        """Increment rate limit counters for a user."""
-        if license_id in self._user_rate_limits:
-            self._user_rate_limits[license_id]["daily_count"] += 1
-            self._user_rate_limits[license_id]["minute_count"] += 1
-            logger.debug(
-                f"License {license_id} rate limit: "
-                f"{self._user_rate_limits[license_id]['daily_count']}/{self.MAX_MESSAGES_PER_USER_PER_DAY} daily, "
-                f"{self._user_rate_limits[license_id]['minute_count']}/{self.MAX_MESSAGES_PER_USER_PER_MINUTE} per min"
-            )
+    async def _increment_user_rate_limit(self, license_id: int):
+        """Increment rate limit counters for a user in Redis."""
+        daily_key = f"rate_limit:daily:{license_id}"
+        minute_key = f"rate_limit:minute:{license_id}"
+        
+        # Increment daily
+        d_val = await cache.increment(daily_key)
+        if d_val == 1:
+            await cache.expire(daily_key, 86400) # 24 hours
+            
+        # Increment minute
+        m_val = await cache.increment(minute_key)
+        if m_val == 1:
+            await cache.expire(minute_key, 60) # 1 minute
+            
+        logger.debug(
+            f"License {license_id} rate limit: "
+            f"{d_val}/{self.MAX_MESSAGES_PER_USER_PER_DAY} daily, "
+            f"{m_val}/{self.MAX_MESSAGES_PER_USER_PER_MINUTE} per min"
+        )
     
     async def start(self):
         """Start all polling workers"""
@@ -370,7 +361,7 @@ class MessagePoller:
                         continue
                     
                     # Check rate limit before retrying
-                    allowed, reason = self._check_user_rate_limit(license_id)
+                    allowed, reason = await self._check_user_rate_limit(license_id)
                     if not allowed:
                         logger.debug(f"Rate limit for license {license_id}: {reason}. Retry skipped.")
                         break  # Stop retrying for this license
@@ -995,7 +986,7 @@ class MessagePoller:
                 return
             
             # Check per-user rate limits (Gemini protection)
-            allowed, reason = self._check_user_rate_limit(license_id)
+            allowed, reason = await self._check_user_rate_limit(license_id)
             if not allowed:
                 logger.warning(f"Rate limit for license {license_id}: {reason}. Message {message_id} queued.")
                 # Message will be processed later when limits reset
@@ -1125,7 +1116,7 @@ class MessagePoller:
             )
             
             # Increment rate limit counter AFTER successful AI processing
-            self._increment_user_rate_limit(license_id)
+            await self._increment_user_rate_limit(license_id)
             
             # Link message to customer and update lead score
             is_vip = False

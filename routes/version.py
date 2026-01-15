@@ -30,8 +30,8 @@ import hashlib
 import time
 import threading
 from datetime import datetime, timezone
-from typing import Optional, List, Dict
 import pytz
+from database import save_update_event, get_update_events
 
 router = APIRouter(tags=["Version"])
 
@@ -65,11 +65,28 @@ UPDATE_PRIORITY_HIGH = "high"
 UPDATE_PRIORITY_NORMAL = "normal"
 UPDATE_PRIORITY_LOW = "low"
 
-# Analytics log file
-_ANALYTICS_LOG_FILE = os.path.join(_STATIC_DIR, "update_analytics.jsonl")
+UPDATE_PRIORITY_LOW = "low"
 
 # Version history file
 _VERSION_HISTORY_FILE = os.path.join(_STATIC_DIR, "version_history.json")
+
+# Localization Strings
+_MESSAGES = {
+    "ar": {
+        "rate_limit": "تم تجاوز الحد المسموح من الطلبات. يرجى المحاولة بعد قليل.",
+        "admin_required": "غير مصرح - مفتاح المسؤول مطلوب",
+        "invalid_build": "رقم البناء يجب أن يكون 1 أو أكثر",
+        "invalid_priority": "أولوية التحديث يجب أن تكون: {priorities}",
+        "update_failed": "فشل في تحديث رقم الإصدار: {error}",
+        "min_build_updated": "تم تحديث الحد الأدنى لرقم البناء",
+        "changelog_updated": "تم تحديث سجل التغييرات",
+        "changelog_failed": "فشل في تحديث سجل التغييرات: {error}",
+        "force_update_disabled": "تم إلغاء التحديث الإجباري",
+        "disable_failed": "فشل في إلغاء التحديث: {error}",
+        "update_message": "يتوفر إصدار جديد من التطبيق يحتوي على تحسينات وميزات جديدة. يرجى التحديث للمتابعة.",
+         "invalid_event": "Invalid event. Must be one of: {events}"
+    }
+}
 
 # Rate limiting configuration
 _RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "60"))  # requests per window
@@ -388,7 +405,7 @@ async def check_app_version(request: Request):
     if not is_allowed:
         raise HTTPException(
             status_code=429,
-            detail="تم تجاوز الحد المسموح من الطلبات. يرجى المحاولة بعد قليل.",
+            detail=_MESSAGES["ar"]["rate_limit"],
             headers={"Retry-After": str(_RATE_LIMIT_WINDOW)}
         )
     
@@ -436,7 +453,10 @@ async def check_app_version(request: Request):
         "rate_limit_remaining": remaining,
         
         # User message
-        "message": "يتوفر إصدار جديد من التطبيق يحتوي على تحسينات وميزات جديدة. يرجى التحديث للمتابعة.",
+        "message": _MESSAGES["ar"]["update_message"],
+        
+        # iOS
+        "ios_store_url": update_config.get("ios_store_url"),
     }
 
 
@@ -445,6 +465,7 @@ async def set_min_build_number(
     build_number: int,
     is_soft_update: bool = False,
     priority: str = UPDATE_PRIORITY_NORMAL,
+    ios_store_url: Optional[str] = None,
     x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")
 ):
     """
@@ -457,6 +478,7 @@ async def set_min_build_number(
         build_number: Minimum required build number
         is_soft_update: If true, update is optional (user can dismiss)
         priority: Update priority (critical, high, normal, low)
+        ios_store_url: Optional App Store URL for iOS users
     
     Usage:
     ```bash
@@ -473,20 +495,20 @@ async def set_min_build_number(
     if not x_admin_key or x_admin_key != _ADMIN_KEY:
         raise HTTPException(
             status_code=403,
-            detail="غير مصرح - مفتاح المسؤول مطلوب"
+            detail=_MESSAGES["ar"]["admin_required"]
         )
     
     if build_number < 1:
         raise HTTPException(
             status_code=400,
-            detail="رقم البناء يجب أن يكون 1 أو أكثر"
+            detail=_MESSAGES["ar"]["invalid_build"]
         )
     
     valid_priorities = [UPDATE_PRIORITY_CRITICAL, UPDATE_PRIORITY_HIGH, UPDATE_PRIORITY_NORMAL, UPDATE_PRIORITY_LOW]
     if priority not in valid_priorities:
         raise HTTPException(
             status_code=400,
-            detail=f"أولوية التحديث يجب أن تكون: {', '.join(valid_priorities)}"
+            detail=_MESSAGES["ar"]["invalid_priority"].format(priorities=', '.join(valid_priorities))
         )
     
     # Write to apk_version.txt
@@ -498,8 +520,10 @@ async def set_min_build_number(
         # Write update config
         update_config = {
             "is_soft_update": is_soft_update,
+            "is_soft_update": is_soft_update,
             "priority": priority,
-            "min_soft_update_build": 0
+            "min_soft_update_build": 0,
+            "ios_store_url": ios_store_url
         }
         with open(_UPDATE_CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(update_config, f, ensure_ascii=False, indent=2)
@@ -507,15 +531,16 @@ async def set_min_build_number(
     except IOError as e:
         raise HTTPException(
             status_code=500,
-            detail=f"فشل في تحديث رقم الإصدار: {str(e)}"
+            detail=_MESSAGES["ar"]["update_failed"].format(error=str(e))
         )
     
     return {
         "success": True,
-        "message": "تم تحديث الحد الأدنى لرقم البناء",
+        "message": _MESSAGES["ar"]["min_build_updated"],
         "min_build_number": build_number,
         "is_soft_update": is_soft_update,
         "priority": priority,
+        "ios_store_url": ios_store_url,
     }
 
 
@@ -548,7 +573,7 @@ async def set_changelog(
     if not x_admin_key or x_admin_key != _ADMIN_KEY:
         raise HTTPException(
             status_code=403,
-            detail="غير مصرح - مفتاح المسؤول مطلوب"
+            detail=_MESSAGES["ar"]["admin_required"]
         )
     
     try:
@@ -568,12 +593,12 @@ async def set_changelog(
     except IOError as e:
         raise HTTPException(
             status_code=500,
-            detail=f"فشل في تحديث سجل التغييرات: {str(e)}"
+            detail=_MESSAGES["ar"]["changelog_failed"].format(error=str(e))
         )
     
     return {
         "success": True,
-        "message": "تم تحديث سجل التغييرات",
+        "message": _MESSAGES["ar"]["changelog_updated"],
         "changelog": changelog_data,
     }
 
@@ -591,7 +616,7 @@ async def disable_force_update(
     if not x_admin_key or x_admin_key != _ADMIN_KEY:
         raise HTTPException(
             status_code=403,
-            detail="غير مصرح - مفتاح المسؤول مطلوب"
+            detail=_MESSAGES["ar"]["admin_required"]
         )
     
     # Reset to 0 (no one will be forced to update)
@@ -602,12 +627,12 @@ async def disable_force_update(
     except IOError as e:
         raise HTTPException(
             status_code=500,
-            detail=f"فشل في إلغاء التحديث: {str(e)}"
+            detail=_MESSAGES["ar"]["disable_failed"].format(error=str(e))
         )
     
     return {
         "success": True,
-        "message": "تم إلغاء التحديث الإجباري",
+        "message": _MESSAGES["ar"]["force_update_disabled"],
         "min_build_number": 0,
     }
 
@@ -647,7 +672,7 @@ async def track_update_event(data: UpdateEventRequest):
     if data.event not in valid_events:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid event. Must be one of: {', '.join(valid_events)}"
+            detail=_MESSAGES["ar"]["invalid_event"].format(events=', '.join(valid_events))
         )
     
     # Validate device_type if provided
@@ -656,23 +681,15 @@ async def track_update_event(data: UpdateEventRequest):
         data.device_type = "unknown"
     
     # Log analytics event
-    try:
-        os.makedirs(_STATIC_DIR, exist_ok=True)
-        log_entry = {
-            "timestamp": datetime.utcnow().isoformat(),
-            "event": data.event,
-            "from_build": data.from_build,
-            "to_build": data.to_build,
-            "device_id": data.device_id,
-            "device_type": data.device_type,
-            "license_key": data.license_key[:10] + "..." if data.license_key else None,
-        }
-        
-        with open(_ANALYTICS_LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
-    except IOError:
-        # Don't fail if analytics logging fails
-        pass
+    # Log analytics event
+    await save_update_event(
+        event=data.event,
+        from_build=data.from_build,
+        to_build=data.to_build,
+        device_id=data.device_id,
+        device_type=data.device_type,
+        license_key=data.license_key
+    )
     
     return {"success": True, "message": "Event tracked"}
 
@@ -696,23 +713,15 @@ async def get_update_analytics(
         - recent_events: Last 50 events
     """
     # Verify admin key
+    # Verify admin key
     if not x_admin_key or x_admin_key != _ADMIN_KEY:
         raise HTTPException(
             status_code=403,
-            detail="غير مصرح - مفتاح المسؤول مطلوب"
+            detail=_MESSAGES["ar"]["admin_required"]
         )
     
-    events = []
-    try:
-        if os.path.exists(_ANALYTICS_LOG_FILE):
-            with open(_ANALYTICS_LOG_FILE, "r", encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        events.append(json.loads(line.strip()))
-                    except json.JSONDecodeError:
-                        continue
-    except IOError:
-        pass
+    events: List[Dict[str, Any]] = []
+    events = await get_update_events(1000)
     
     # Calculate summary
     total_views = sum(1 for e in events if e.get("event") == "viewed")
@@ -745,7 +754,7 @@ async def get_update_analytics(
         "total_installed": total_installed,
         "adoption_rate": adoption_rate,
         "by_device_type": by_device_type,
-        "recent_events": events[-50:] if events else [],
+        "recent_events": events[:50],  # Return 50 most recent (already sorted DESC)
     }
 
 

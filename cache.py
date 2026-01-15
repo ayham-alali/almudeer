@@ -114,6 +114,38 @@ class CacheManager:
         await self.set(key, value, ttl)
         return value
 
+    async def increment(self, key: str, amount: int = 1) -> int:
+        """Increment value in cache (atomic in Redis)"""
+        if self.use_redis and self.redis_client:
+            try:
+                import asyncio
+                return await asyncio.to_thread(self.redis_client.incr, key, amount)
+            except Exception:
+                pass
+        
+        # Fallback to memory (not atomic across processes)
+        try:
+            current = self.memory_cache.get(key, 0)
+            if isinstance(current, str): 
+                current = int(current)
+            new_val = current + amount
+            self.memory_cache[key] = new_val
+            return new_val
+        except Exception:
+            return 0
+
+    async def expire(self, key: str, ttl: int) -> bool:
+        """Set expiration for a key in seconds"""
+        if self.use_redis and self.redis_client:
+            try:
+                import asyncio
+                return await asyncio.to_thread(self.redis_client.expire, key, ttl)
+            except Exception:
+                pass
+        
+        # Fallback: TTLCache has fixed TTL.
+        return False
+
 
 # Global cache instance
 cache = CacheManager()

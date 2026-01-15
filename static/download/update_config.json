@@ -7,5 +7,6 @@
     "effective_until": null,
     "maintenance_hours": null,
     "max_deferrals": 3,
-    "deferral_expiry_hours": 24
+    "deferral_expiry_hours": 24,
+    "ios_store_url": null
 }
