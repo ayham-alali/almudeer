@@ -154,6 +154,7 @@ def compare_secure(a: str, b: str) -> bool:
     return secrets.compare_digest(a, b)
 
 
+
 async def _get_min_build_number() -> int:
     """Read the minimum required build number from DB."""
     try:
@@ -161,6 +162,11 @@ async def _get_min_build_number() -> int:
         return int(val) if val else 1
     except (ValueError, TypeError):
         return 1
+
+
+async def _get_apk_signing_fingerprint() -> Optional[str]:
+    """Read the APK signing certificate fingerprint from DB."""
+    return await get_app_config("apk_signing_fingerprint")
 
 
 async def _get_changelog() -> dict:
@@ -410,6 +416,9 @@ async def check_app_version(request: Request):
         
         # iOS
         "ios_store_url": update_config.get("ios_store_url"),
+        
+        # Security
+        "apk_signing_fingerprint": await _get_apk_signing_fingerprint(),
     }
 
 
@@ -471,7 +480,54 @@ async def set_min_build_number(
         "min_build_number": build_number,
         "is_soft_update": is_soft_update,
         "priority": priority,
+        "priority": priority,
         "ios_store_url": ios_store_url,
+    }
+
+
+@router.post("/api/app/set-signing-fingerprint", summary="Set APK signing fingerprint (admin only)")
+async def set_signing_fingerprint(
+    fingerprint: str,
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")
+):
+    """
+    Set the SHA256 fingerprint of the APK signing certificate.
+    Used for security verification by the mobile app.
+    
+    Requires: X-Admin-Key header
+    """
+    if not compare_secure(x_admin_key, _ADMIN_KEY):
+        raise HTTPException(
+            status_code=403,
+            detail=_MESSAGES["ar"]["admin_required"]
+        )
+    
+    # Basic validation of SHA256 format (hex string, 64 chars) or empty to clear
+    clean_fingerprint = fingerprint.strip()
+    if clean_fingerprint:
+        # Allow colons or spaces in input, strip them for storage
+        clean_fingerprint = clean_fingerprint.replace(":", "").replace(" ", "").upper()
+        
+        # Check if valid hex and length
+        import re
+        if not re.match(r'^[0-9A-F]{64}$', clean_fingerprint):
+             raise HTTPException(
+                status_code=400,
+                detail="Invalid SHA256 fingerprint format. Must be 64 signs hex string."
+            )
+    
+    try:
+        await set_app_config("apk_signing_fingerprint", clean_fingerprint)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update fingerprint: {str(e)}"
+        )
+    
+    return {
+        "success": True,
+        "message": "APK signing fingerprint updated",
+        "fingerprint": clean_fingerprint
     }
 
 

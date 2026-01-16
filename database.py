@@ -889,3 +889,149 @@ async def get_version_history_list(limit: int = 10) -> list:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
 
+
+# ============ Version Analytics ============
+
+async def get_version_distribution() -> list:
+    """Get distribution of users across build numbers based on update events"""
+    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            # Get latest build per device from update events
+            rows = await conn.fetch("""
+                WITH latest_builds AS (
+                    SELECT DISTINCT ON (COALESCE(device_id, license_key))
+                        COALESCE(device_id, license_key) as identifier,
+                        from_build as build_number,
+                        device_type,
+                        timestamp
+                    FROM update_events
+                    WHERE from_build IS NOT NULL
+                    ORDER BY COALESCE(device_id, license_key), timestamp DESC
+                )
+                SELECT 
+                    build_number,
+                    device_type,
+                    COUNT(*) as user_count
+                FROM latest_builds
+                GROUP BY build_number, device_type
+                ORDER BY build_number DESC
+            """)
+            return [dict(row) for row in rows]
+        finally:
+            await conn.close()
+    else:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            # SQLite version using subquery
+            async with db.execute("""
+                SELECT 
+                    from_build as build_number,
+                    device_type,
+                    COUNT(DISTINCT COALESCE(device_id, license_key)) as user_count
+                FROM update_events
+                WHERE from_build IS NOT NULL
+                GROUP BY from_build, device_type
+                ORDER BY from_build DESC
+            """) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+
+async def get_update_funnel(days: int = 30) -> dict:
+    """Get update funnel metrics (viewed -> clicked -> installed)"""
+    from datetime import datetime, timedelta
+    
+    cutoff = datetime.now() - timedelta(days=days)
+    cutoff_str = cutoff.isoformat()
+    
+    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            row = await conn.fetchrow("""
+                SELECT 
+                    COUNT(*) FILTER (WHERE event = 'viewed') as views,
+                    COUNT(*) FILTER (WHERE event = 'clicked_update') as clicks,
+                    COUNT(*) FILTER (WHERE event = 'clicked_later') as laters,
+                    COUNT(*) FILTER (WHERE event = 'installed') as installs,
+                    COUNT(DISTINCT COALESCE(device_id, license_key)) as unique_devices
+                FROM update_events
+                WHERE timestamp >= $1
+            """, cutoff)
+            return dict(row) if row else {}
+        finally:
+            await conn.close()
+    else:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            async with db.execute("""
+                SELECT 
+                    SUM(CASE WHEN event = 'viewed' THEN 1 ELSE 0 END) as views,
+                    SUM(CASE WHEN event = 'clicked_update' THEN 1 ELSE 0 END) as clicks,
+                    SUM(CASE WHEN event = 'clicked_later' THEN 1 ELSE 0 END) as laters,
+                    SUM(CASE WHEN event = 'installed' THEN 1 ELSE 0 END) as installs,
+                    COUNT(DISTINCT COALESCE(device_id, license_key)) as unique_devices
+                FROM update_events
+                WHERE timestamp >= ?
+            """, (cutoff_str,)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return {
+                        "views": row[0] or 0,
+                        "clicks": row[1] or 0,
+                        "laters": row[2] or 0,
+                        "installs": row[3] or 0,
+                        "unique_devices": row[4] or 0
+                    }
+                return {}
+
+
+async def get_time_to_update_metrics() -> dict:
+    """Calculate median and average time from update release to adoption"""
+    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            # Get time between 'viewed' and 'installed' events per device
+            row = await conn.fetchrow("""
+                WITH update_times AS (
+                    SELECT 
+                        COALESCE(device_id, license_key) as identifier,
+                        MIN(CASE WHEN event = 'viewed' THEN timestamp END) as first_view,
+                        MIN(CASE WHEN event = 'installed' THEN timestamp END) as installed_at
+                    FROM update_events
+                    WHERE event IN ('viewed', 'installed')
+                    GROUP BY identifier
+                    HAVING MIN(CASE WHEN event = 'installed' THEN timestamp END) IS NOT NULL
+                )
+                SELECT 
+                    COUNT(*) as total_updates,
+                    AVG(EXTRACT(EPOCH FROM (installed_at - first_view))) as avg_seconds,
+                    PERCENTILE_CONT(0.5) WITHIN GROUP (
+                        ORDER BY EXTRACT(EPOCH FROM (installed_at - first_view))
+                    ) as median_seconds
+                FROM update_times
+                WHERE first_view IS NOT NULL
+            """)
+            if row:
+                return {
+                    "total_updates": row["total_updates"] or 0,
+                    "avg_hours": round((row["avg_seconds"] or 0) / 3600, 1),
+                    "median_hours": round((row["median_seconds"] or 0) / 3600, 1)
+                }
+            return {"total_updates": 0, "avg_hours": 0, "median_hours": 0}
+        finally:
+            await conn.close()
+    else:
+        # SQLite doesn't have PERCENTILE_CONT, return simpler metrics
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            async with db.execute("""
+                SELECT COUNT(DISTINCT device_id) as total_updates
+                FROM update_events
+                WHERE event = 'installed'
+            """) as cursor:
+                row = await cursor.fetchone()
+                return {
+                    "total_updates": row[0] if row else 0,
+                    "avg_hours": 0,
+                    "median_hours": 0,
+                    "note": "Detailed metrics available with PostgreSQL"
+                }

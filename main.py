@@ -396,7 +396,10 @@ app.include_router(health_router)
 # Version check endpoint (public, for force-update system)
 # Also includes /download/almudeer.apk endpoint for APK downloads
 from routes.version import router as version_router
+from routes.version_analytics import router as version_analytics_router
+
 app.include_router(version_router)
+app.include_router(version_analytics_router)
 
 @app.get("/debug/routes")
 async def list_all_routes(x_admin_key: str = Header(None, alias="X-Admin-Key")):
