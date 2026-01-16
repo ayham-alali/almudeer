@@ -5,10 +5,11 @@ Admin broadcast for subscription reminders, team updates, and promotions
 """
 
 import os
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends, Header, Request
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from dotenv import load_dotenv
+from rate_limiting import limiter
 
 from services.notification_service import (
     init_notification_tables,
@@ -517,12 +518,28 @@ class MobilePushToken(BaseModel):
 
 
 @router.post("/push/mobile/register")
+@limiter.limit("10/minute")  # Rate limit: 10 token registrations per minute per license
 async def register_mobile_token(
+    request: Request,  # Required for rate limiting
     data: MobilePushToken,
     license: dict = Depends(get_license_from_header)
 ):
     """Register mobile FCM token for push notifications."""
     from services.fcm_mobile_service import save_fcm_token, ensure_fcm_tokens_table
+    
+    # Basic token format validation (FCM tokens are typically 100-200+ chars)
+    if len(data.token) < 50:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid FCM token format"
+        )
+    
+    # Validate platform
+    if data.platform not in ["android", "ios"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Platform must be 'android' or 'ios'"
+        )
     
     # Ensure table exists
     await ensure_fcm_tokens_table()

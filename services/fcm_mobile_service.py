@@ -9,6 +9,7 @@ Supports both:
 
 import os
 import json
+import time
 import httpx
 from typing import Optional, List, Dict, Any
 from logging_config import get_logger
@@ -210,22 +211,33 @@ async def send_fcm_notification(
     title: str,
     body: str,
     data: Optional[dict] = None,
-    link: Optional[str] = None
+    link: Optional[str] = None,
+    badge_count: int = 1,
+    ttl_seconds: int = 86400  # Default: 24 hours
 ) -> bool:
     """
     Send push notification to a single FCM token.
     
     Uses FCM HTTP v1 API if configured (recommended), 
     otherwise falls back to legacy HTTP API (deprecated).
+    
+    Args:
+        token: FCM device token
+        title: Notification title
+        body: Notification body
+        data: Optional custom data payload
+        link: Optional deep link URL
+        badge_count: iOS badge count (default: 1)
+        ttl_seconds: Time-to-live in seconds (default: 24 hours)
     """
     # Try v1 API first
     if FCM_V1_AVAILABLE:
-        result = await _send_fcm_v1(token, title, body, data, link)
+        result = await _send_fcm_v1(token, title, body, data, link, badge_count, ttl_seconds)
         if result is not None:  # None means v1 failed, try legacy
             return result
     
     # Fallback to legacy API
-    return await _send_fcm_legacy(token, title, body, data, link)
+    return await _send_fcm_legacy(token, title, body, data, link, badge_count, ttl_seconds)
 
 
 async def _send_fcm_v1(
@@ -233,7 +245,9 @@ async def _send_fcm_v1(
     title: str,
     body: str,
     data: Optional[dict] = None,
-    link: Optional[str] = None
+    link: Optional[str] = None,
+    badge_count: int = 1,
+    ttl_seconds: int = 86400
 ) -> Optional[bool]:
     """
     Send notification via FCM HTTP v1 API.
@@ -261,16 +275,20 @@ async def _send_fcm_v1(
                 },
                 "android": {
                     "priority": "high",
+                    "ttl": f"{ttl_seconds}s",  # TTL in string format with 's' suffix
                     "notification": {
                         "sound": "default",
                         "click_action": "FLUTTER_NOTIFICATION_CLICK"
                     }
                 },
                 "apns": {
+                    "headers": {
+                        "apns-expiration": str(int(time.time()) + ttl_seconds)  # Unix timestamp when notification expires
+                    },
                     "payload": {
                         "aps": {
                             "sound": "default",
-                            "badge": 1
+                            "badge": badge_count  # Dynamic badge count
                         }
                     }
                 },
@@ -316,7 +334,9 @@ async def _send_fcm_legacy(
     title: str,
     body: str,
     data: Optional[dict] = None,
-    link: Optional[str] = None
+    link: Optional[str] = None,
+    badge_count: int = 1,
+    ttl_seconds: int = 86400
 ) -> bool:
     """
     Send notification via legacy FCM HTTP API (deprecated).
@@ -332,10 +352,12 @@ async def _send_fcm_legacy(
                 "title": title,
                 "body": body,
                 "sound": "default",
-                "click_action": "FLUTTER_NOTIFICATION_CLICK"
+                "click_action": "FLUTTER_NOTIFICATION_CLICK",
+                "badge": badge_count  # Dynamic badge for iOS
             },
             "data": data or {},
-            "priority": "high"
+            "priority": "high",
+            "time_to_live": ttl_seconds  # TTL for legacy API
         }
         
         if link:
@@ -374,17 +396,44 @@ async def send_fcm_to_license(
     title: str,
     body: str,
     data: Optional[dict] = None,
-    link: Optional[str] = None
+    link: Optional[str] = None,
+    badge_count: Optional[int] = None,  # If None, will be calculated
+    ttl_seconds: int = 86400
 ) -> int:
     """
     Send push notification to all mobile devices for a license.
     
     Returns the number of successful sends.
+    
+    Args:
+        license_id: License key ID
+        title: Notification title
+        body: Notification body
+        data: Optional custom data payload
+        link: Optional deep link URL
+        badge_count: iOS badge count (if None, calculates from unread notifications)
+        ttl_seconds: Time-to-live in seconds (default: 24 hours)
     """
-    from db_helper import get_db, fetch_all, execute_sql, commit_db
+    from db_helper import get_db, fetch_all, fetch_one, execute_sql, commit_db
     
     sent_count = 0
     expired_ids = []
+    
+    # Calculate badge count from unread notifications if not provided
+    if badge_count is None:
+        async with get_db() as db:
+            unread_row = await fetch_one(
+                db,
+                """
+                SELECT COUNT(*) as unread_count FROM notifications
+                WHERE license_key_id = ? AND is_read = FALSE
+                """,
+                [license_id]
+            )
+            badge_count = unread_row["unread_count"] if unread_row else 1
+            # Ensure badge is at least 1 for new notification
+            if badge_count < 1:
+                badge_count = 1
     
     async with get_db() as db:
         rows = await fetch_all(
@@ -405,7 +454,9 @@ async def send_fcm_to_license(
                 title=title,
                 body=body,
                 data=data,
-                link=link
+                link=link,
+                badge_count=badge_count,
+                ttl_seconds=ttl_seconds
             )
             
             if success:
