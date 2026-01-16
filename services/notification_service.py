@@ -120,6 +120,40 @@ async def init_notification_tables():
             """,
         )
 
+        # Notification analytics table for delivery/open tracking
+        await execute_sql(
+            db,
+            """
+            CREATE TABLE IF NOT EXISTS notification_analytics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                notification_id INTEGER,
+                license_key_id INTEGER NOT NULL,
+                platform TEXT DEFAULT 'unknown',
+                delivered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                opened_at TIMESTAMP,
+                notification_type TEXT,
+                FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
+            )
+            """,
+        )
+        
+        # Index for efficient analytics queries
+        await execute_sql(
+            db,
+            """
+            CREATE INDEX IF NOT EXISTS idx_analytics_license
+            ON notification_analytics(license_key_id)
+            """,
+        )
+        
+        await execute_sql(
+            db,
+            """
+            CREATE INDEX IF NOT EXISTS idx_analytics_dates
+            ON notification_analytics(delivered_at, opened_at)
+            """,
+        )
+
         await commit_db(db)
     print("OK Notification tables initialized")
 
@@ -851,4 +885,164 @@ async def test_discord_webhook(webhook_url: str) -> dict:
         priority=NotificationPriority.NORMAL
     )
     return await send_discord_notification(webhook_url, payload)
+
+
+# ============ Notification Analytics ============
+
+async def track_notification_delivery(
+    license_id: int,
+    notification_id: Optional[int] = None,
+    platform: str = "unknown",
+    notification_type: str = "general"
+) -> int:
+    """
+    Track when a notification is delivered to a device.
+    
+    Args:
+        license_id: License key ID
+        notification_id: Optional notification ID from notifications table
+        platform: Device platform (android, ios, web)
+        notification_type: Type of notification
+    
+    Returns:
+        Analytics record ID
+    """
+    async with get_db() as db:
+        await execute_sql(
+            db,
+            """
+            INSERT INTO notification_analytics 
+                (license_key_id, notification_id, platform, notification_type)
+            VALUES (?, ?, ?, ?)
+            """,
+            [license_id, notification_id, platform, notification_type]
+        )
+        
+        row = await fetch_one(
+            db,
+            "SELECT MAX(id) as id FROM notification_analytics WHERE license_key_id = ?",
+            [license_id]
+        )
+        await commit_db(db)
+        return row["id"] if row else 0
+
+
+async def track_notification_open(
+    license_id: int,
+    analytics_id: Optional[int] = None,
+    notification_id: Optional[int] = None
+) -> bool:
+    """
+    Track when a user opens/taps a notification.
+    
+    Can match by analytics_id (from track_notification_delivery) or notification_id.
+    
+    Args:
+        license_id: License key ID
+        analytics_id: Analytics record ID from track_notification_delivery
+        notification_id: Original notification ID
+    
+    Returns:
+        True if updated successfully
+    """
+    async with get_db() as db:
+        if analytics_id:
+            await execute_sql(
+                db,
+                """
+                UPDATE notification_analytics 
+                SET opened_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND license_key_id = ?
+                """,
+                [analytics_id, license_id]
+            )
+        elif notification_id:
+            # Update the most recent analytics record for this notification
+            await execute_sql(
+                db,
+                """
+                UPDATE notification_analytics 
+                SET opened_at = CURRENT_TIMESTAMP
+                WHERE notification_id = ? AND license_key_id = ? AND opened_at IS NULL
+                """,
+                [notification_id, license_id]
+            )
+        else:
+            return False
+        
+        await commit_db(db)
+        return True
+
+
+async def get_notification_stats(
+    license_id: Optional[int] = None,
+    days: int = 30
+) -> dict:
+    """
+    Get notification delivery and open rate statistics.
+    
+    Args:
+        license_id: Optional license ID to filter by (None = all licenses, admin only)
+        days: Number of days to include in stats (default: 30)
+    
+    Returns:
+        Dict with total_delivered, total_opened, open_rate, by_platform stats
+    """
+    async with get_db() as db:
+        # Build query based on whether license_id is provided
+        if license_id:
+            base_where = "WHERE license_key_id = ? AND delivered_at >= datetime('now', ?)"
+            params = [license_id, f"-{days} days"]
+        else:
+            base_where = "WHERE delivered_at >= datetime('now', ?)"
+            params = [f"-{days} days"]
+        
+        # Total delivered
+        delivered_row = await fetch_one(
+            db,
+            f"SELECT COUNT(*) as count FROM notification_analytics {base_where}",
+            params
+        )
+        total_delivered = delivered_row["count"] if delivered_row else 0
+        
+        # Total opened
+        opened_row = await fetch_one(
+            db,
+            f"SELECT COUNT(*) as count FROM notification_analytics {base_where} AND opened_at IS NOT NULL",
+            params
+        )
+        total_opened = opened_row["count"] if opened_row else 0
+        
+        # By platform breakdown
+        platform_rows = await fetch_all(
+            db,
+            f"""
+            SELECT 
+                platform,
+                COUNT(*) as delivered,
+                SUM(CASE WHEN opened_at IS NOT NULL THEN 1 ELSE 0 END) as opened
+            FROM notification_analytics 
+            {base_where}
+            GROUP BY platform
+            """,
+            params
+        )
+        
+        by_platform = {
+            row["platform"]: {
+                "delivered": row["delivered"],
+                "opened": row["opened"],
+                "open_rate": round((row["opened"] / row["delivered"]) * 100, 1) if row["delivered"] > 0 else 0
+            }
+            for row in platform_rows
+        }
+        
+        return {
+            "period_days": days,
+            "total_delivered": total_delivered,
+            "total_opened": total_opened,
+            "open_rate": round((total_opened / total_delivered) * 100, 1) if total_delivered > 0 else 0,
+            "by_platform": by_platform
+        }
+
 

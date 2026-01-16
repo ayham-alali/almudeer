@@ -71,12 +71,35 @@ async def broadcast_notification(
     """
     Send notification to all users or specific users.
     Admin-only endpoint for subscription reminders, team updates, and promotions.
+    Uses parallel sending for efficiency (max 10 concurrent).
     """
+    import asyncio
     from db_helper import get_db, fetch_all
     from database import DB_TYPE
     from logging_config import get_logger
     
     logger = get_logger(__name__)
+    
+    # Semaphore to limit concurrent notifications
+    MAX_CONCURRENT = 10
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+    
+    async def send_single_notification(license_id: int) -> bool:
+        """Send notification to a single license with semaphore control."""
+        async with semaphore:
+            try:
+                await create_notification(
+                    license_id=license_id,
+                    notification_type=data.notification_type,
+                    title=data.title,
+                    message=data.message,
+                    priority=data.priority,
+                    link=data.link
+                )
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to send notification to license {license_id}: {e}")
+                return False
     
     try:
         # Get target license IDs
@@ -96,24 +119,16 @@ async def broadcast_notification(
         if data.notification_type not in valid_types:
             data.notification_type = "team_update"
         
-        # Send notification to each license
-        sent_count = 0
-        for license_id in license_ids:
-            try:
-                await create_notification(
-                    license_id=license_id,
-                    notification_type=data.notification_type,
-                    title=data.title,
-                    message=data.message,
-                    priority=data.priority,
-                    link=data.link
-                )
-                sent_count += 1
-            except Exception as e:
-                logger.warning(f"Failed to send notification to license {license_id}: {e}")
-                continue
+        # Send notifications in parallel with controlled concurrency
+        results = await asyncio.gather(
+            *[send_single_notification(lid) for lid in license_ids],
+            return_exceptions=True
+        )
         
-        logger.info(f"Admin broadcast sent to {sent_count} users: {data.title}")
+        # Count successes (True results, excluding exceptions)
+        sent_count = sum(1 for r in results if r is True)
+        
+        logger.info(f"Admin broadcast sent to {sent_count}/{len(license_ids)} users: {data.title}")
         
         return {
             "success": True,
@@ -598,5 +613,89 @@ async def test_mobile_push(
         "success": True,
         "sent_count": sent_count,
         "message": f"تم إرسال الإشعار إلى {sent_count} جهاز"
+    }
+
+
+# ============ Notification Analytics Endpoints ============
+
+class NotificationOpenedRequest(BaseModel):
+    """Track when a notification is opened/tapped."""
+    notification_id: Optional[int] = Field(None, description="Notification ID if available")
+    analytics_id: Optional[int] = Field(None, description="Analytics tracking ID if available")
+    platform: str = Field(default="unknown", description="Platform: android, ios, web")
+
+
+@router.post("/stats/opened")
+async def track_notification_opened(
+    data: NotificationOpenedRequest,
+    license: dict = Depends(get_license_from_header)
+):
+    """Track when user opens/taps a notification. Called by mobile app."""
+    from services.notification_service import track_notification_open
+    
+    success = await track_notification_open(
+        license_id=license["license_id"],
+        analytics_id=data.analytics_id,
+        notification_id=data.notification_id
+    )
+    
+    return {
+        "success": success,
+        "message": "تم تسجيل فتح الإشعار" if success else "لم يتم العثور على الإشعار"
+    }
+
+
+@router.get("/stats")
+async def get_notification_statistics(
+    days: int = 30,
+    license: dict = Depends(get_license_from_header)
+):
+    """Get notification delivery/open statistics for the current license."""
+    from services.notification_service import get_notification_stats
+    
+    stats = await get_notification_stats(
+        license_id=license["license_id"],
+        days=days
+    )
+    
+    return {
+        "success": True,
+        **stats
+    }
+
+
+@router.get("/admin/stats")
+async def get_admin_notification_statistics(
+    days: int = 30,
+    _: None = Depends(verify_admin)
+):
+    """Get notification delivery/open statistics across all licenses. Admin only."""
+    from services.notification_service import get_notification_stats
+    
+    stats = await get_notification_stats(
+        license_id=None,  # None = all licenses
+        days=days
+    )
+    
+    return {
+        "success": True,
+        **stats
+    }
+
+
+@router.post("/admin/cleanup-tokens")
+async def cleanup_expired_tokens_endpoint(
+    days: int = 30,
+    _: None = Depends(verify_admin)
+):
+    """Cleanup expired FCM tokens. Admin only. Removes inactive tokens older than X days."""
+    from services.fcm_mobile_service import cleanup_expired_tokens
+    
+    deleted_count = await cleanup_expired_tokens(days_inactive=days)
+    
+    return {
+        "success": True,
+        "deleted_count": deleted_count,
+        "message": f"تم حذف {deleted_count} توكن منتهي الصلاحية"
     }
 

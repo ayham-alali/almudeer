@@ -213,7 +213,8 @@ async def send_fcm_notification(
     data: Optional[dict] = None,
     link: Optional[str] = None,
     badge_count: int = 1,
-    ttl_seconds: int = 86400  # Default: 24 hours
+    ttl_seconds: int = 86400,  # Default: 24 hours
+    sound: str = "default"  # Customizable notification sound
 ) -> bool:
     """
     Send push notification to a single FCM token.
@@ -229,15 +230,16 @@ async def send_fcm_notification(
         link: Optional deep link URL
         badge_count: iOS badge count (default: 1)
         ttl_seconds: Time-to-live in seconds (default: 24 hours)
+        sound: Notification sound name (default: "default")
     """
     # Try v1 API first
     if FCM_V1_AVAILABLE:
-        result = await _send_fcm_v1(token, title, body, data, link, badge_count, ttl_seconds)
+        result = await _send_fcm_v1(token, title, body, data, link, badge_count, ttl_seconds, sound)
         if result is not None:  # None means v1 failed, try legacy
             return result
     
     # Fallback to legacy API
-    return await _send_fcm_legacy(token, title, body, data, link, badge_count, ttl_seconds)
+    return await _send_fcm_legacy(token, title, body, data, link, badge_count, ttl_seconds, sound)
 
 
 async def _send_fcm_v1(
@@ -247,7 +249,8 @@ async def _send_fcm_v1(
     data: Optional[dict] = None,
     link: Optional[str] = None,
     badge_count: int = 1,
-    ttl_seconds: int = 86400
+    ttl_seconds: int = 86400,
+    sound: str = "default"
 ) -> Optional[bool]:
     """
     Send notification via FCM HTTP v1 API.
@@ -277,7 +280,7 @@ async def _send_fcm_v1(
                     "priority": "high",
                     "ttl": f"{ttl_seconds}s",  # TTL in string format with 's' suffix
                     "notification": {
-                        "sound": "default",
+                        "sound": sound,
                         "click_action": "FLUTTER_NOTIFICATION_CLICK"
                     }
                 },
@@ -287,7 +290,7 @@ async def _send_fcm_v1(
                     },
                     "payload": {
                         "aps": {
-                            "sound": "default",
+                            "sound": sound,
                             "badge": badge_count  # Dynamic badge count
                         }
                     }
@@ -336,7 +339,8 @@ async def _send_fcm_legacy(
     data: Optional[dict] = None,
     link: Optional[str] = None,
     badge_count: int = 1,
-    ttl_seconds: int = 86400
+    ttl_seconds: int = 86400,
+    sound: str = "default"
 ) -> bool:
     """
     Send notification via legacy FCM HTTP API (deprecated).
@@ -351,7 +355,7 @@ async def _send_fcm_legacy(
             "notification": {
                 "title": title,
                 "body": body,
-                "sound": "default",
+                "sound": sound,
                 "click_action": "FLUTTER_NOTIFICATION_CLICK",
                 "badge": badge_count  # Dynamic badge for iOS
             },
@@ -398,7 +402,8 @@ async def send_fcm_to_license(
     data: Optional[dict] = None,
     link: Optional[str] = None,
     badge_count: Optional[int] = None,  # If None, will be calculated
-    ttl_seconds: int = 86400
+    ttl_seconds: int = 86400,
+    sound: str = "default"  # Customizable notification sound
 ) -> int:
     """
     Send push notification to all mobile devices for a license.
@@ -456,7 +461,8 @@ async def send_fcm_to_license(
                 data=data,
                 link=link,
                 badge_count=badge_count,
-                ttl_seconds=ttl_seconds
+                ttl_seconds=ttl_seconds,
+                sound=sound
             )
             
             if success:
@@ -476,3 +482,84 @@ async def send_fcm_to_license(
             logger.info(f"FCM: Marked {len(expired_ids)} tokens as inactive")
     
     return sent_count
+
+
+async def cleanup_expired_tokens(days_inactive: int = 30) -> int:
+    """
+    Cleanup FCM tokens that have been inactive for too long.
+    
+    Removes tokens where:
+    - is_active = FALSE AND updated_at is older than days_inactive days
+    - Tokens that have never been updated and are older than days_inactive days
+    
+    Args:
+        days_inactive: Number of days of inactivity before cleanup (default: 30)
+    
+    Returns:
+        Number of tokens deleted
+    """
+    from db_helper import get_db, execute_sql, fetch_one, commit_db, DB_TYPE
+    from datetime import datetime, timedelta
+    
+    cutoff_date = datetime.utcnow() - timedelta(days=days_inactive)
+    
+    async with get_db() as db:
+        try:
+            # Count tokens to be deleted
+            if DB_TYPE == "postgresql":
+                count_row = await fetch_one(
+                    db,
+                    """
+                    SELECT COUNT(*) as count FROM fcm_tokens
+                    WHERE is_active = FALSE 
+                    AND (updated_at < %s OR (updated_at IS NULL AND created_at < %s))
+                    """,
+                    [cutoff_date, cutoff_date]
+                )
+            else:
+                count_row = await fetch_one(
+                    db,
+                    """
+                    SELECT COUNT(*) as count FROM fcm_tokens
+                    WHERE is_active = 0 
+                    AND (updated_at < ? OR (updated_at IS NULL AND created_at < ?))
+                    """,
+                    [cutoff_date.isoformat(), cutoff_date.isoformat()]
+                )
+            
+            count = count_row["count"] if count_row else 0
+            
+            if count == 0:
+                logger.info("FCM Cleanup: No expired tokens to remove")
+                return 0
+            
+            # Delete expired tokens
+            if DB_TYPE == "postgresql":
+                await execute_sql(
+                    db,
+                    """
+                    DELETE FROM fcm_tokens
+                    WHERE is_active = FALSE 
+                    AND (updated_at < %s OR (updated_at IS NULL AND created_at < %s))
+                    """,
+                    [cutoff_date, cutoff_date]
+                )
+            else:
+                await execute_sql(
+                    db,
+                    """
+                    DELETE FROM fcm_tokens
+                    WHERE is_active = 0 
+                    AND (updated_at < ? OR (updated_at IS NULL AND created_at < ?))
+                    """,
+                    [cutoff_date.isoformat(), cutoff_date.isoformat()]
+                )
+            
+            await commit_db(db)
+            logger.info(f"FCM Cleanup: Removed {count} expired tokens (inactive > {days_inactive} days)")
+            return count
+            
+        except Exception as e:
+            logger.error(f"FCM Cleanup: Error cleaning up tokens: {e}")
+            return 0
+
