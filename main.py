@@ -81,7 +81,7 @@ except ImportError as e:
     raise e
 from routes.subscription import router as subscription_router
 from security import sanitize_message, sanitize_string
-from workers import start_message_polling, stop_message_polling, start_subscription_reminders, stop_subscription_reminders
+from workers import start_message_polling, stop_message_polling, start_subscription_reminders, stop_subscription_reminders, start_token_cleanup_worker, stop_token_cleanup_worker
 from db_pool import db_pool
 from services.task_queue import get_task_queue, enqueue_ai_task, get_ai_task_status
 from services.websocket_manager import get_websocket_manager, broadcast_new_message
@@ -227,12 +227,18 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to start message polling workers: {e}")
         
-        # Start subscription reminder worker (daily check for expiring subs)
         try:
             await start_subscription_reminders()
             logger.info("Subscription reminder worker started")
         except Exception as e:
             logger.warning(f"Failed to start subscription reminder worker: {e}")
+        
+        # Start FCM token cleanup worker (daily)
+        try:
+            await start_token_cleanup_worker()
+            logger.info("FCM token cleanup worker started")
+        except Exception as e:
+            logger.warning(f"Failed to start FCM token cleanup worker: {e}")
         
         # Initialize task queue for async AI processing
         try:
@@ -281,6 +287,11 @@ async def lifespan(app: FastAPI):
         logger.info("Subscription reminder worker stopped")
     except Exception as e:
         logger.warning(f"Error stopping subscription reminder: {e}")
+    try:
+        await stop_token_cleanup_worker()
+        logger.info("FCM token cleanup worker stopped")
+    except Exception as e:
+        logger.warning(f"Error stopping token cleanup worker: {e}")
     try:
         task_queue = await get_task_queue()
         await task_queue.stop_worker()

@@ -1795,3 +1795,42 @@ async def stop_subscription_reminders():
         _subscription_reminder_task.cancel()
         _subscription_reminder_task = None
         logger.info("Stopped subscription reminder worker")
+
+
+# ============ FCM Token Cleanup Worker ============
+
+_token_cleanup_task: Optional[asyncio.Task] = None
+
+
+async def _token_cleanup_loop():
+    """Background loop that runs once per day to clean up expired FCM tokens."""
+    while True:
+        try:
+            from services.fcm_mobile_service import cleanup_expired_tokens
+            # Cleanup tokens inactive for > 30 days
+            cleaned = await cleanup_expired_tokens(days_inactive=30)
+            if cleaned > 0:
+                logger.info(f"Daily Cleanup: Removed {cleaned} expired FCM tokens")
+        except Exception as e:
+            logger.error(f"Error in token cleanup loop: {e}", exc_info=True)
+        
+        # Wait 24 hours before next check
+        # Add random jitter to avoid thundering herd if we had multiple instances
+        await asyncio.sleep(24 * 60 * 60 + random.randint(0, 3600))
+
+
+async def start_token_cleanup_worker():
+    """Start the token cleanup background task."""
+    global _token_cleanup_task
+    if _token_cleanup_task is None:
+        _token_cleanup_task = asyncio.create_task(_token_cleanup_loop())
+        logger.info("Started FCM token cleanup worker")
+
+
+async def stop_token_cleanup_worker():
+    """Stop the token cleanup background task."""
+    global _token_cleanup_task
+    if _token_cleanup_task:
+        _token_cleanup_task.cancel()
+        _token_cleanup_task = None
+        logger.info("Stopped FCM token cleanup worker")
