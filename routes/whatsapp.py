@@ -288,7 +288,25 @@ async def receive_webhook(request: Request):
                 
                 messages = service.parse_webhook_message(payload)
                 
+                # Import filters
+                from message_filters import apply_filters
+
                 for msg in messages:
+                    # Apply Filters (Spam, Groups, etc.)
+                    # We pass empty list for recent_messages for now (optional optimization)
+                    filter_msg = {
+                        "body": msg.get("body", ""),
+                        "sender_contact": msg.get("sender_phone"),
+                        "sender_name": msg.get("sender_name"),
+                        "channel": "whatsapp",
+                        "is_group": msg.get("is_group"),
+                    }
+                    
+                    should_process, reason = await apply_filters(filter_msg, license_id, [])
+                    if not should_process:
+                        print(f"WhatsApp message filtered: {reason}")
+                        continue
+
                     # ============ PROCESS DELIVERY STATUS UPDATES ============
                     if msg.get("type") == "status":
                         # WhatsApp sends: sent, delivered, read, failed

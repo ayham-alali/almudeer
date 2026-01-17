@@ -459,6 +459,8 @@ class TelegramPhoneService:
                             "subject": None,
                             "received_at": message.date,
                             "chat_id": str(dialog.id),
+                            "is_channel": dialog.is_channel,
+                            "is_group": dialog.is_group,
                             "attachments": []
                         })
                         

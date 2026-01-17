@@ -780,6 +780,8 @@ class MessagePoller:
                     "subject": msg.get("subject"),
                     "channel": "telegram",
                     "attachments": msg.get("attachments", []),
+                    "is_group": msg.get("is_group"),
+                    "is_channel": msg.get("is_channel"),
                 }
 
                 should_process, filter_reason = await apply_filters(

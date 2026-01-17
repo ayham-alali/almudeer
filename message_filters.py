@@ -407,6 +407,20 @@ def filter_urgency(message: Dict, min_urgency: str = "normal") -> tuple[bool, Op
     return True, None
 
 
+def filter_chat_types(message: Dict) -> tuple[bool, Optional[str]]:
+    """Filter messages from non-private chats (groups, channels)"""
+    # Check explicit flags
+    if message.get("is_group") or message.get("is_channel"):
+        return False, "Group/Channel message blocked"
+    
+    # Check metadata in common fields if flag missing
+    # Some services might put group_id in sender_contact or similar, but
+    # relying on explicit flags from the service layer is safer.
+    
+    return True, None
+
+
+
 # ============ Filter Manager ============
 
 class FilterManager:
@@ -423,6 +437,8 @@ class FilterManager:
         self.filter.add_rule(filter_empty)
         # Add the new automated message filter by default
         self.filter.add_rule(filter_automated_messages)
+        # Add group/channel filter
+        self.filter.add_rule(filter_chat_types)
     
     def add_custom_rule(self, rule_func: Callable):
         """Add a custom filter rule"""
