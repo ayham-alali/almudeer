@@ -461,7 +461,8 @@ async def send_fcm_to_license(
     badge_count: Optional[int] = None,  # If None, will be calculated
     ttl_seconds: int = 86400,
     sound: str = "default",  # Customizable notification sound
-    image: Optional[str] = None
+    image: Optional[str] = None,
+    notification_id: Optional[int] = None
 ) -> int:
     """
     Send push notification to all mobile devices for a license.
@@ -512,11 +513,29 @@ async def send_fcm_to_license(
             return 0
         
         for row in rows:
+            # Prepare data with tracking IDs
+            tracking_data = data.copy() if data else {}
+            if notification_id:
+                tracking_data["notification_id"] = str(notification_id)
+                
+                # Track delivery in database
+                try:
+                    from services.notification_service import track_notification_delivery
+                    analytics_id = await track_notification_delivery(
+                        license_id=license_id,
+                        notification_id=notification_id,
+                        platform=row.get("platform", "android"),
+                        notification_type=tracking_data.get("type", "general")
+                    )
+                    tracking_data["analytics_id"] = str(analytics_id)
+                except Exception as e:
+                    logger.warning(f"FCM: Failed to track delivery: {e}")
+
             success = await send_fcm_notification(
                 token=row["token"],
                 title=title,
                 body=body,
-                data=data,
+                data=tracking_data,
                 link=link,
                 badge_count=badge_count,
                 ttl_seconds=ttl_seconds,
@@ -541,6 +560,40 @@ async def send_fcm_to_license(
             logger.info(f"FCM: Marked {len(expired_ids)} tokens as inactive")
     
     return sent_count
+
+
+async def send_fcm_topic(
+    topic: str,
+    title: str,
+    body: str,
+    data: Optional[dict] = None,
+    image: Optional[str] = None
+) -> bool:
+    """
+    Send a notification to an FCM topic (efficient for broadcasts).
+    """
+    try:
+        # Prepare data payload
+        fcm_data = data.copy() if data else {}
+        
+        # Build FCM message for the topic
+        message = messaging.Message(
+            notification=messaging.Notification(
+                title=title,
+                body=body,
+                image=image
+            ),
+            data=fcm_data,
+            topic=topic
+        )
+        
+        # Send via v1 API (preferred)
+        messaging.send(message)
+        logger.info(f"FCM: Sent notification to topic {topic}")
+        return True
+    except Exception as e:
+        logger.error(f"FCM Topic error: {e}")
+        return False
 
 
 async def cleanup_expired_tokens(days_inactive: int = 30) -> int:

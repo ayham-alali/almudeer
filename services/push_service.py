@@ -229,7 +229,8 @@ async def send_push_to_license(
     message: str,
     link: Optional[str] = None,
     tag: Optional[str] = None,
-    priority: str = "normal"
+    priority: str = "normal",
+    notification_id: Optional[int] = None
 ) -> int:
     """
     Send push notification to all subscribed devices for a license.
@@ -258,6 +259,19 @@ async def send_push_to_license(
         for row in rows:
             try:
                 subscription_info = json.loads(row["subscription_info"])
+                # Track delivery
+                if notification_id:
+                    try:
+                        from services.notification_service import track_notification_delivery
+                        await track_notification_delivery(
+                            license_id=license_id,
+                            notification_id=notification_id,
+                            platform="web",
+                            notification_type="general"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Push: Tracking failed: {e}")
+
                 success = await send_push_notification(
                     subscription_info=subscription_info,
                     title=title,

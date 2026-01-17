@@ -26,6 +26,11 @@ from db_helper import (
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 
+# Notification throttling (Flood protection)
+# Format: {(license_id, sender_contact): last_sent_timestamp}
+_notification_cooldowns = {}
+_COOLDOWN_SECONDS = 30  # Max 1 notification per 30 seconds per chat
+
 
 class NotificationChannel(Enum):
     IN_APP = "in_app"
@@ -572,12 +577,25 @@ async def send_notification(
     if channels is None:
         channels = [NotificationChannel.IN_APP]
     
+    # Throttling check (Flood Protection)
+    sender_contact = payload.metadata.get("sender_contact") if payload.metadata else None
+    if sender_contact:
+        cooldown_key = (license_id, sender_contact)
+        last_sent = _notification_cooldowns.get(cooldown_key)
+        now = datetime.now()
+        
+        if last_sent and (now - last_sent).total_seconds() < _COOLDOWN_SECONDS:
+            logger.info(f"Notification Service: Skipping throttled notification for {sender_contact} (license {license_id})")
+            return {"success": True, "status": "throttled"}
+        
+        _notification_cooldowns[cooldown_key] = now
+
     # In-app notification (Database entry)
     if NotificationChannel.IN_APP in channels:
         from models import create_notification
         try:
             # 1. Save to database (Inbox)
-            await create_notification(
+            notif_obj_id = await create_notification(
                 license_id=license_id,
                 notification_type=payload.priority.value,
                 title=payload.title,
@@ -585,7 +603,7 @@ async def send_notification(
                 priority=payload.priority.value,
                 link=payload.link
             )
-            results["in_app"] = {"success": True}
+            results["in_app"] = {"success": True, "id": notif_obj_id}
 
             # 2. Trigger Mobile Push (FCM)
             # We assume IN_APP implies a desire to reach the user's device
@@ -597,7 +615,8 @@ async def send_notification(
                     body=payload.message,
                     link=payload.link,
                     data=payload.metadata,
-                    image=payload.image
+                    image=payload.image,
+                    notification_id=notif_obj_id
                 )
                 results["mobile_push"] = {"success": True, "count": fcm_count}
             except Exception as e:
@@ -612,7 +631,8 @@ async def send_notification(
                         license_id=license_id,
                         title=payload.title,
                         message=payload.message,
-                        link=payload.link or "/dashboard/notifications"
+                        link=payload.link or "/dashboard/notifications",
+                        notification_id=notif_obj_id
                     )
                     results["web_push"] = {"success": True, "count": web_count}
             except Exception as e:

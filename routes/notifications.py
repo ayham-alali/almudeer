@@ -105,6 +105,8 @@ async def broadcast_notification(
         # Get target license IDs
         if data.license_ids:
             license_ids = data.license_ids
+            # We don't use topics for specific lists of IDs yet to keep it simple,
+            # unless it's just one ID.
         else:
             # Get all active license IDs
             async with get_db() as db:
@@ -113,12 +115,25 @@ async def broadcast_notification(
                 else:
                     rows = await fetch_all(db, "SELECT id FROM license_keys WHERE is_active = 1", [])
                 license_ids = [row["id"] for row in rows]
-        
+            
+            # Efficient push delivery for "All Users" using FCM Topic
+            try:
+                from services.fcm_mobile_service import send_fcm_topic
+                await send_fcm_topic(
+                    topic="all_users",
+                    title=data.title,
+                    body=data.message,
+                    data={"link": data.link or "", "type": data.notification_type},
+                )
+            except Exception as e:
+                logger.warning(f"FCM Topic Broadcast failed: {e}")
+
         # Validate notification type
         valid_types = ["subscription_expiring", "subscription_expired", "team_update", "promotion"]
         if data.notification_type not in valid_types:
             data.notification_type = "team_update"
         
+        # We still need to create in_app entries for message history
         # Send notifications in parallel with controlled concurrency
         results = await asyncio.gather(
             *[send_single_notification(lid) for lid in license_ids],
@@ -128,7 +143,7 @@ async def broadcast_notification(
         # Count successes (True results, excluding exceptions)
         sent_count = sum(1 for r in results if r is True)
         
-        logger.info(f"Admin broadcast sent to {sent_count}/{len(license_ids)} users: {data.title}")
+        logger.info(f"Admin broadcast: In-app entries created for {sent_count}/{len(license_ids)} users: {data.title}")
         
         return {
             "success": True,
