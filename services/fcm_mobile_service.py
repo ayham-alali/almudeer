@@ -112,6 +112,17 @@ def _get_access_token() -> Optional[str]:
         
         credentials.refresh(Request())
         
+        # Log the identity we are using
+        try:
+            if hasattr(credentials, 'service_account_email'):
+                logger.info(f"FCM Auth: Using service account email: {credentials.service_account_email}")
+            if hasattr(credentials, 'project_id'):
+                logger.info(f"FCM Auth: Using project_id from credentials: {credentials.project_id}")
+                if credentials.project_id != FCM_PROJECT_ID:
+                    logger.warning(f"FCM Auth MISMATCH: Credentials project ({credentials.project_id}) != FCM_PROJECT_ID ({FCM_PROJECT_ID})")
+        except Exception as e:
+            logger.warning(f"FCM Auth: Could not log credential details: {e}")
+
         _cached_access_token = credentials.token
         _token_expiry = credentials.expiry
         
