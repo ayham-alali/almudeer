@@ -571,7 +571,7 @@ async def cleanup_expired_tokens(days_inactive: int = 30) -> int:
                     """
                     SELECT COUNT(*) as count FROM fcm_tokens
                     WHERE is_active = FALSE 
-                    AND (updated_at < %s OR (updated_at IS NULL AND created_at < %s))
+                    AND (updated_at < $1 OR (updated_at IS NULL AND created_at < $2))
                     """,
                     [cutoff_date, cutoff_date]
                 )
@@ -599,7 +599,7 @@ async def cleanup_expired_tokens(days_inactive: int = 30) -> int:
                     """
                     DELETE FROM fcm_tokens
                     WHERE is_active = FALSE 
-                    AND (updated_at < %s OR (updated_at IS NULL AND created_at < %s))
+                    AND (updated_at < $1 OR (updated_at IS NULL AND created_at < $2))
                     """,
                     [cutoff_date, cutoff_date]
                 )
