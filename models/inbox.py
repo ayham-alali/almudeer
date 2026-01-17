@@ -878,6 +878,23 @@ async def fix_stale_inbox_status(license_id: int = None) -> int:
         return 1
 
 
+async def mark_message_as_read(message_id: int, license_id: int) -> bool:
+    """Mark a single inbox message as read."""
+    async with get_db() as db:
+        query = "UPDATE inbox_messages SET is_read = 1 WHERE id = ? AND license_key_id = ?"
+        params = [message_id, license_id]
+        if DB_TYPE == "postgresql":
+            query = "UPDATE inbox_messages SET is_read = TRUE WHERE id = ? AND license_key_id = ?"
+            
+        await execute_sql(db, query, params)
+        await commit_db(db)
+        
+        # After marking as read, update the conversation's unread_count
+        row = await fetch_one(db, "SELECT sender_contact FROM inbox_messages WHERE id = ?", [message_id])
+        if row and row["sender_contact"]:
+            await upsert_conversation_state(license_id, row["sender_contact"])
+        return True
+
 async def mark_chat_read(license_id: int, sender_contact: str) -> int:
     """
     Mark all 'analyzed' messages from a sender as 'read'.
@@ -885,14 +902,12 @@ async def mark_chat_read(license_id: int, sender_contact: str) -> int:
     Returns the count of messages updated.
     """
     async with get_db() as db:
-        # Update all 'analyzed' messages from this sender to is_read=1
-        # We keep the status as 'analyzed' (Waiting for Approval) but clear the unread badge.
+        # Update all messages from this sender to is_read=1
         query = """
             UPDATE inbox_messages 
             SET is_read = 1
             WHERE license_key_id = ?
             AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
-            AND status = 'analyzed'
         """
         if DB_TYPE == "postgresql":
             # Postgres needs TRUE/FALSE for boolean

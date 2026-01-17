@@ -152,6 +152,15 @@ async def get_conversation_detail(
         "lead_score": lead_score
     }
 
+@router.post("/conversations/{sender_contact:path}/read")
+async def mark_conversation_as_read_route(
+    sender_contact: str,
+    license: dict = Depends(get_license_from_header)
+):
+    from models.inbox import mark_chat_read
+    await mark_chat_read(license["license_id"], sender_contact)
+    return {"success": True}
+
 @router.post("/conversations/{sender_contact:path}/send")
 async def send_chat_message(
     sender_contact: str,
