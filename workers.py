@@ -349,11 +349,11 @@ class MessagePoller:
                 logger.info(f"License {license_id}: Found {len(rows)} pending messages to retry")
                 
                 for row in rows:
-                    message_id = row.get("id") or row[0]
-                    body = row.get("body") or row[1]
-                    sender_contact = row.get("sender_contact") or row[2]
-                    sender_name = row.get("sender_name") or row[3]
-                    channel = row.get("channel") or row[4]
+                    message_id = row.get("id")
+                    body = row.get("body")
+                    sender_contact = row.get("sender_contact")
+                    sender_name = row.get("sender_name")
+                    channel = row.get("channel")
                     
                     # Skip if already retried this cycle (prevents rapid retry loops)
                     if message_id in self._retried_this_cycle:
