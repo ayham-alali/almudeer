@@ -462,7 +462,7 @@ async def get_inbox_conversations(
         FROM inbox_conversations ic
         LEFT JOIN customer_presence cp ON cp.license_id = ic.license_key_id AND cp.sender_contact = ic.sender_contact
         WHERE {where_sql}
-        ORDER BY updated_at DESC
+        ORDER BY ic.updated_at DESC
         LIMIT ? OFFSET ?
     """
     params.extend([limit, offset])
