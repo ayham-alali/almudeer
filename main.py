@@ -94,7 +94,6 @@ from routes.subscription import router as subscription_router
 from security import sanitize_message, sanitize_string
 from workers import start_message_polling, stop_message_polling, start_subscription_reminders, stop_subscription_reminders, start_token_cleanup_worker, stop_token_cleanup_worker
 from db_pool import db_pool
-from services.task_queue import get_task_queue, enqueue_ai_task, get_ai_task_status
 from services.websocket_manager import get_websocket_manager, broadcast_new_message
 from services.pagination import paginate_inbox, paginate_crm, paginate_customers, PaginationParams
 from services.request_batcher import get_request_batcher, batch_analyze
@@ -184,6 +183,13 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Backfill queue table creation note: {e}")
 
+        # Create task queue table for async jobs
+        try:
+            from migrations.task_queue_table import create_task_queue_table
+            await create_task_queue_table()
+        except Exception as e:
+            logger.warning(f"Task queue table creation note: {e}")
+
         
         # Create purchases table and analytics columns
         try:
@@ -252,23 +258,15 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to start FCM token cleanup worker: {e}")
         
-        # Initialize task queue for async AI processing
+        # Initialize task queue worker
         try:
-            task_queue = await get_task_queue()
+            from workers import TaskWorker
+            task_worker = TaskWorker()
+            await task_worker.start()
+            logger.info("Persistent Task Queue Worker started")
             
-            # Handler for queued AI tasks
-            async def handle_ai_task(task_type: str, payload: dict):
-                if task_type == "analyze":
-                    return await process_message(
-                        message=payload.get("message"),
-                        message_type=payload.get("message_type"),
-                        sender_name=payload.get("sender_name"),
-                        sender_contact=payload.get("sender_contact"),
-                    )
-                return {"success": False, "error": f"Unknown task: {task_type}"}
-            
-            await task_queue.start_worker(handle_ai_task)
-            logger.info("Task queue and worker started")
+            # Keep reference to prevent GC
+            app.state.task_worker = task_worker
         except Exception as e:
             logger.warning(f"Task queue initialization warning: {e}")
         
@@ -305,9 +303,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Error stopping token cleanup worker: {e}")
     try:
-        task_queue = await get_task_queue()
-        await task_queue.stop_worker()
-        logger.info("Task queue worker stopped")
+        if hasattr(app.state, "task_worker"):
+            await app.state.task_worker.stop()
+            logger.info("Persistent Task Queue Worker stopped")
     except Exception as e:
         logger.warning(f"Error stopping task queue: {e}")
     try:

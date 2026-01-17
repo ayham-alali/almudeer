@@ -13,6 +13,7 @@ import asyncio
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends, Request, BackgroundTasks
 from pydantic import BaseModel, Field
+from models.task_queue import enqueue_task
 
 from models import (
     get_inbox_messages,
@@ -312,88 +313,19 @@ async def analyze_inbox_message(
     telegram_chat_id: str = None,
     attachments: Optional[List[dict]] = None
 ):
-    """Analyze message with AI and optionally auto-reply"""
-    try:
-        from models.inbox import get_inbox_message_by_id, get_chat_history_for_llm
-        message_data = await get_inbox_message_by_id(message_id, license_id)
-        chat_history = ""
-        
-        if message_data:
-            sender = message_data.get("sender_contact") or message_data.get("sender_id")
-            if sender:
-                try: chat_history = await get_chat_history_for_llm(license_id, sender, limit=10)
-                except: pass
+    """
+    Queue message for AI analysis.
+    Replaces old direct processing with robust persistent queue.
+    """
+    await enqueue_task("analyze_message", {
+        "message_id": message_id,
+        "body": body,
+        "license_id": license_id,
+        "auto_reply": auto_reply,
+        "telegram_chat_id": telegram_chat_id,
+        "attachments": attachments
+    })
 
-        # Detect media-only
-        is_media_only = False
-        if attachments and (not body or len(body.strip()) < 3):
-            has_img = any(a.get("type", "").startswith("image") for a in attachments)
-            has_aud = any(a.get("type", "").startswith(("audio", "voice")) for a in attachments)
-            if has_img and not has_aud: is_media_only = True
-        
-        if is_media_only:
-            await update_inbox_analysis(message_id, "media", "low", "neutral", None, None, "📷 صورة بدون نص", "")
-            return
-
-        result = await process_message(message=body, attachments=attachments, history=chat_history)
-
-        if result["success"]:
-            data = result["data"]
-            # Handle possible audio response
-            has_audio_in = any(a.get("type", "").startswith(("audio", "voice")) for a in (attachments or []))
-            if has_audio_in and data.get("draft_response"):
-                try:
-                    from services.tts_service import generate_speech_to_file
-                    audio_path = await generate_speech_to_file(data["draft_response"])
-                    data["draft_response"] += f"\n[AUDIO: {audio_path}]"
-                except: pass
-
-            await update_inbox_analysis(
-                message_id=message_id,
-                intent=data["intent"], urgency=data["urgency"], sentiment=data["sentiment"],
-                language=data.get("language"), dialect=data.get("dialect"),
-                summary=data["summary"], draft_response=data["draft_response"]
-            )
-            
-            # CRM logic (Update customer, lead score, etc.)
-            try:
-                from models.customers import get_or_create_customer, increment_customer_messages, update_customer_lead_score
-                from db_helper import get_db, fetch_one, execute_sql, commit_db, DB_TYPE
-                msg = await get_inbox_message_by_id(message_id, license_id)
-                if msg and msg.get("sender_contact"):
-                    contact = msg["sender_contact"]
-                    email = contact if "@" in contact else None
-                    phone = contact if contact.replace("+", "").isdigit() else None
-                    customer = await get_or_create_customer(license_id, phone, email, msg.get("sender_name", ""))
-                    if customer:
-                        await increment_customer_messages(customer["id"])
-                        await update_customer_lead_score(license_id, customer["id"], data.get("intent"), data.get("sentiment"), 0.0)
-            except: pass
-            
-            # Notifications
-            try:
-                from services.notification_service import process_message_notifications
-                if not (auto_reply and data.get("draft_response")):
-                    await process_message_notifications(license_id, {
-                        "sender_name": message_data.get("sender_name", "Unknown"),
-                        "sender_contact": message_data.get("sender_contact"),
-                        "body": body, "intent": data.get("intent"), "urgency": data.get("urgency"), "sentiment": data.get("sentiment"),
-                        "channel": message_data.get("channel", "whatsapp"), "attachments": attachments
-                    })
-            except: pass
-
-            # Auto-reply
-            if auto_reply and data["draft_response"]:
-                outbox_id = await create_outbox_message(
-                    inbox_message_id=message_id, license_id=license_id, channel=message_data["channel"],
-                    body=data["draft_response"], recipient_id=message_data.get("sender_id"), recipient_email=message_data.get("sender_contact")
-                )
-                await approve_outbox_message(outbox_id)
-                await update_inbox_status(message_id, "auto_replied")
-                await send_approved_message(outbox_id, license_id)
-                
-    except Exception as e:
-        print(f"Error in analyze_inbox_message {message_id}: {e}")
 
 async def send_approved_message(outbox_id: int, license_id: int):
     """Full implementation of sending logic with attachment and audio support"""

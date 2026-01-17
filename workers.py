@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List, Set, Any
 
 from logging_config import get_logger
+from models.task_queue import fetch_next_task, complete_task, fail_task
 from db_helper import (
     get_db,
     fetch_one,
@@ -1834,3 +1835,79 @@ async def stop_token_cleanup_worker():
         _token_cleanup_task.cancel()
         _token_cleanup_task = None
         logger.info("Stopped FCM token cleanup worker")
+
+# ============ Task Queue Worker ============
+
+class TaskWorker:
+     """
+     Persistent Worker for DB-backed Task Queue.
+     """
+     def __init__(self, worker_id: str = "worker-main"):
+         self.worker_id = worker_id
+         self.running = False
+         self._loop_task = None
+         
+     async def start(self):
+         self.running = True
+         logger.info(f"TaskWorker {self.worker_id} started")
+         self._loop_task = asyncio.create_task(self._process_loop())
+         
+     async def stop(self):
+         self.running = False
+         if self._loop_task:
+             self._loop_task.cancel()
+             try:
+                 await self._loop_task
+             except: pass
+         logger.info(f"TaskWorker {self.worker_id} stopped")
+ 
+     async def _process_loop(self):
+         while self.running:
+             try:
+                 # 1. Fetch Task
+                 task = await fetch_next_task(self.worker_id)
+                 
+                 if not task:
+                     await asyncio.sleep(1.0) # Idle wait
+                     continue
+                 
+                 task_id = task["id"]
+                 task_type = task["task_type"]
+                 payload = task["payload"]
+                 
+                 logger.info(f"Processing task {task.get('id')}: {task_type}")
+                 
+                 # 2. Execute Logic
+                 try:
+                     result = None
+                     if task_type == "analyze_message":
+                          from services.analysis_service import process_inbox_message_logic
+                          result = await process_inbox_message_logic(
+                              message_id=payload.get("message_id"),
+                              body=payload.get("body"),
+                              license_id=payload.get("license_id"),
+                              auto_reply=payload.get("auto_reply", False),
+                              telegram_chat_id=payload.get("telegram_chat_id"),
+                              attachments=payload.get("attachments")
+                          )
+                     elif task_type == "analyze":
+                          # Generic analyze from main.py endpoint
+                          from agent import process_message
+                          result = await process_message(
+                              message=payload.get("message"),
+                              message_type=payload.get("message_type"),
+                              sender_name=payload.get("sender_name"),
+                              sender_contact=payload.get("sender_contact"),
+                          )
+                     
+                     # 3. Complete
+                     await complete_task(task_id)
+                     logger.info(f"Task {task_id} completed")
+                     
+                 except Exception as e:
+                     logger.error(f"Task {task_id} failed: {e}", exc_info=True)
+                     await fail_task(task_id, str(e))
+                     
+             except Exception as outer_e:
+                 logger.error(f"Worker loop error: {outer_e}")
+                 await asyncio.sleep(5.0)
