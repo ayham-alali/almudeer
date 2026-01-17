@@ -34,14 +34,25 @@ try:
     from google.auth.transport.requests import Request
     import datetime
     
-    FCM_V1_AVAILABLE = bool(FCM_PROJECT_ID and GOOGLE_APPLICATION_CREDENTIALS)
+    creds_valid = False
+    if GOOGLE_APPLICATION_CREDENTIALS:
+        if os.path.exists(GOOGLE_APPLICATION_CREDENTIALS):
+            creds_valid = True
+        elif GOOGLE_APPLICATION_CREDENTIALS.strip().startswith("{"):
+            creds_valid = True
+            
+    if not creds_valid and os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON"):
+        creds_valid = True
+
+    FCM_V1_AVAILABLE = bool(FCM_PROJECT_ID and creds_valid)
+    
     if FCM_V1_AVAILABLE:
         logger.info(f"FCM: v1 API configured for project '{FCM_PROJECT_ID}'")
     else:
         if not FCM_PROJECT_ID:
             logger.info("FCM: FCM_PROJECT_ID not set, will use legacy API")
-        if not GOOGLE_APPLICATION_CREDENTIALS:
-            logger.info("FCM: GOOGLE_APPLICATION_CREDENTIALS not set, will use legacy API")
+        if not creds_valid:
+            logger.info("FCM: GOOGLE_APPLICATION_CREDENTIALS not set or invalid, will use legacy API")
 except ImportError:
     logger.warning("FCM: google-auth not installed. Install with: pip install google-auth")
     logger.info("FCM: Will use legacy API if FCM_SERVER_KEY is set")
@@ -74,8 +85,18 @@ def _get_access_token() -> Optional[str]:
                 scopes=['https://www.googleapis.com/auth/firebase.messaging']
             )
             logger.debug("FCM: Using credentials from file")
+
+        # Option 2: JSON content in GOOGLE_APPLICATION_CREDENTIALS (Railway/Docker)
+        elif GOOGLE_APPLICATION_CREDENTIALS and GOOGLE_APPLICATION_CREDENTIALS.strip().startswith("{"):
+            import json as json_module
+            service_account_info = json_module.loads(GOOGLE_APPLICATION_CREDENTIALS)
+            credentials = service_account.Credentials.from_service_account_info(
+                service_account_info,
+                scopes=['https://www.googleapis.com/auth/firebase.messaging']
+            )
+            logger.debug("FCM: Using credentials from GOOGLE_APPLICATION_CREDENTIALS env var")
         
-        # Option 2: JSON content in env var (for Railway/Docker)
+        # Option 3: JSON content in dedicated env var
         elif os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON"):
             import json as json_module
             service_account_info = json_module.loads(os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON"))

@@ -39,6 +39,7 @@ async def search_knowledge(request: SearchRequest):
     return {"results": results}
 
 @router.get("/list")
+@router.get("/documents")
 async def list_documents(limit: int = 100):
     """List documents in the Knowledge Base"""
     kb = get_knowledge_base()

@@ -117,6 +117,13 @@ class RedisPubSubManager:
         try:
             await self._pubsub.unsubscribe(channel)
             logger.debug(f"Unsubscribed from Redis channel: {channel}")
+            
+            # Stop listener if no more subscriptions
+            if not self._message_handlers and self._listener_task:
+                self._listener_task.cancel()
+                self._listener_task = None
+                logger.debug("Redis listener stopped (no subscriptions)")
+                
         except Exception as e:
             logger.error(f"Failed to unsubscribe from Redis channel: {e}")
     
@@ -161,7 +168,13 @@ class RedisPubSubManager:
         except asyncio.CancelledError:
             pass
         except Exception as e:
+            # Ignore "pubsub connection not set" error which can happen during shutdown/unsubscribe
+            if "pubsub connection not set" in str(e):
+                logger.debug(f"Redis listener stopped (connection closed): {e}")
+                return
             logger.error(f"Redis listener error: {e}")
+            # Wait a bit before restarting loop if it was a transient error
+            await asyncio.sleep(1.0)
     
     async def close(self):
         """Close Redis connections"""
