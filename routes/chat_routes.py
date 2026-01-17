@@ -106,6 +106,25 @@ async def search_user_messages(
 ):
     return await search_messages(license["license_id"], query, sender_contact, limit, offset)
 
+@router.get("/conversations/{sender_contact:path}/messages")
+async def get_conversation_messages_paginated(
+    sender_contact: str,
+    cursor: Optional[str] = None,
+    limit: int = 25,
+    direction: str = "older",
+    license: dict = Depends(get_license_from_header)
+):
+    limit = min(max(1, limit), 100)
+    result = await get_conversation_messages_cursor(license["license_id"], sender_contact, limit, cursor, direction)
+    
+    from models.reactions import get_reactions_for_messages
+    msg_ids = [m["id"] for m in result["messages"] if "id" in m]
+    reactions = await get_reactions_for_messages(msg_ids) if msg_ids else {}
+    for msg in result["messages"]:
+        msg["reactions"] = reactions.get(msg.get("id"), [])
+        
+    return {**result, "sender_contact": sender_contact}
+
 @router.get("/conversations/{sender_contact:path}")
 async def get_conversation_detail(
     sender_contact: str,
@@ -132,25 +151,6 @@ async def get_conversation_detail(
         "total": len(messages),
         "lead_score": lead_score
     }
-
-@router.get("/conversations/{sender_contact:path}/messages")
-async def get_conversation_messages_paginated(
-    sender_contact: str,
-    cursor: Optional[str] = None,
-    limit: int = 25,
-    direction: str = "older",
-    license: dict = Depends(get_license_from_header)
-):
-    limit = min(max(1, limit), 100)
-    result = await get_conversation_messages_cursor(license["license_id"], sender_contact, limit, cursor, direction)
-    
-    from models.reactions import get_reactions_for_messages
-    msg_ids = [m["id"] for m in result["messages"] if "id" in m]
-    reactions = await get_reactions_for_messages(msg_ids) if msg_ids else {}
-    for msg in result["messages"]:
-        msg["reactions"] = reactions.get(msg.get("id"), [])
-        
-    return {**result, "sender_contact": sender_contact}
 
 @router.post("/conversations/{sender_contact:path}/send")
 async def send_chat_message(
