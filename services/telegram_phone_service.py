@@ -419,6 +419,12 @@ class TelegramPhoneService:
                         if not message.text and not message.media:
                             continue
                         
+                        # CRITICAL: explicit check for group/channel messages
+                        # Even if we filtered dialogs, some messages might slip through context references
+                        if message.is_group or message.is_channel:
+                            logger.debug(f"Skipping group/channel message: {message.id}")
+                            continue
+
                         # CRITICAL: Skip outgoing messages (our own sent messages)
                         # message.out = True means WE sent this message
                         if message.out:

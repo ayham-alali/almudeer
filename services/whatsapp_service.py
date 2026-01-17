@@ -174,6 +174,12 @@ class WhatsAppService:
                             "sender_name": contact.get("profile", {}).get("name"),
                             "sender_phone": contact.get("wa_id"),
                         }
+
+                        # Block Group Messages
+                        # WhatsApp messages from groups usually include 'group_id'
+                        if msg.get("group_id"):
+                            # Skip group messages
+                            continue
                         
                         # Extract message content based on type
                         msg_type = msg.get("type")
