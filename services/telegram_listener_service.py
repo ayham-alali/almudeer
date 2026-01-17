@@ -11,7 +11,8 @@ from telethon.sessions import StringSession
 
 from logging_config import get_logger
 from services.websocket_manager import broadcast_typing_indicator, broadcast_recording_indicator
-from db_helper import fetch_all, get_db
+from db_helper import fetch_all, get_db, fetch_one
+import base64
 
 # Load environment variables
 TELEGRAM_API_ID = os.getenv("TELEGRAM_API_ID")
@@ -167,6 +168,125 @@ class TelegramListenerService:
                         
                 except Exception as e:
                     logger.debug(f"Error handling Telegram UserUpdate: {e}")
+
+            # 2. New Message (Incoming)
+            @client.on(events.NewMessage(incoming=True))
+            async def msg_handler(event):
+                try:
+                    # 1. Extract basic info
+                    sender = await event.get_sender()
+                    if not sender: return
+                    
+                    # sender_contact should follow the same format as MessagePoller: phone or tg:12345
+                    sender_contact = getattr(sender, 'phone', None)
+                    if sender_contact:
+                        if not sender_contact.startswith("+"):
+                            sender_contact = "+" + sender_contact
+                    else:
+                        sender_contact = f"tg:{sender.id}"
+                    
+                    sender_name = f"{getattr(sender, 'first_name', '')} {getattr(sender, 'last_name', '')}".strip() or "Telegram User"
+                    
+                    body = event.message.message or ""
+                    channel_message_id = str(event.message.id)
+                    
+                    # 2. Deduplication check
+                    async with get_db() as db:
+                        existing = await fetch_one(
+                            db,
+                            "SELECT id FROM inbox_messages WHERE license_key_id = ? AND channel = ? AND channel_message_id = ?",
+                            [license_id, "telegram", channel_message_id]
+                        )
+                        if existing:
+                            return
+
+                    # 3. Apply Filters
+                    from message_filters import apply_filters
+                    from models.inbox import get_inbox_messages
+                    recent_messages = await get_inbox_messages(license_id, limit=20)
+                    
+                    filter_msg = {
+                        "body": body,
+                        "sender_contact": sender_contact,
+                        "sender_name": sender_name,
+                        "channel": "telegram"
+                    }
+                    
+                    should_process, reason = await apply_filters(filter_msg, license_id, recent_messages)
+                    if not should_process:
+                        logger.info(f"Telegram real-time message filtered: {reason}")
+                        return
+
+                    # 4. Handle Media (Photo/Voice)
+                    attachments = []
+                    if event.message.media:
+                        try:
+                            # Skip huge files > 5MB
+                            size = 0
+                            if hasattr(event.message.media, "document") and event.message.media.document:
+                                size = event.message.media.document.size
+                            
+                            if size < 5 * 1024 * 1024:
+                                file_bytes = await event.message.download_media(file=bytes)
+                                if file_bytes:
+                                    mime_type = "application/octet-stream"
+                                    if hasattr(event.message.media, "photo"):
+                                        mime_type = "image/jpeg"
+                                    elif hasattr(event.message.media, "document"):
+                                        mime_type = event.message.media.document.mime_type
+                                        
+                                    b64_data = base64.b64encode(file_bytes).decode('utf-8')
+                                    attachments.append({
+                                        "type": mime_type,
+                                        "base64": b64_data,
+                                        "filename": f"tg_file_{channel_message_id}"
+                                    })
+                        except Exception as media_e:
+                            logger.debug(f"Failed to download real-time media: {media_e}")
+
+                    # 5. Save to Inbox
+                    from models.inbox import save_inbox_message
+                    msg_id = await save_inbox_message(
+                        license_id=license_id,
+                        channel="telegram",
+                        body=body,
+                        sender_name=sender_name,
+                        sender_contact=sender_contact,
+                        sender_id=str(sender.id),
+                        channel_message_id=channel_message_id,
+                        received_at=event.message.date,
+                        attachments=attachments
+                    )
+                    
+                    if msg_id:
+                        logger.info(f"Saved real-time Telegram message {msg_id} for license {license_id}")
+                        
+                        # 6. Trigger AI Analysis
+                        # Local import to avoid circular dependency
+                        from routes.core_integrations import analyze_inbox_message
+                        
+                        # Get auto-reply preference
+                        async with get_db() as db:
+                            row = await fetch_one(
+                                db,
+                                "SELECT auto_reply_enabled FROM telegram_phone_sessions WHERE license_key_id = ? AND is_active = TRUE",
+                                [license_id]
+                            )
+                            auto_reply = bool(row["auto_reply_enabled"]) if row else False
+
+                        asyncio.create_task(
+                            analyze_inbox_message(
+                                message_id=msg_id,
+                                body=body,
+                                license_id=license_id,
+                                auto_reply=auto_reply,
+                                telegram_chat_id=str(sender.id),
+                                attachments=attachments
+                            )
+                        )
+                        
+                except Exception as e:
+                    logger.error(f"Error in Telegram real-time message handler: {e}")
 
             # Start receiving updates in background
             # Telethon clients run in loop automatically once connected and handlers attached?

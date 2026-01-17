@@ -2059,6 +2059,48 @@ async def analyze_inbox_message(
             except Exception as crm_error:
                 print(f"Error updating CRM for webhook message {message_id}: {crm_error}")
             
+            # NOTIFICATIONS TRIGGER - Enable Smart Notifications
+            try:
+                from services.notification_service import process_message_notifications
+                
+                is_auto_replied = bool(auto_reply and data.get("draft_response"))
+                
+                if not is_auto_replied:
+                    # Get correct channel and is_vip status
+                    channel = "whatsapp"
+                    is_vip = False
+                    
+                    if message_data:
+                        channel = message_data.get("channel") or "whatsapp"
+                        
+                        # Try to find if customer is VIP
+                        try:
+                            from models.customers import get_customer_for_message
+                            customer = await get_customer_for_message(message_id, license_id)
+                            if customer:
+                                is_vip = customer.get("is_vip", False)
+                        except:
+                            pass
+
+                    notification_data = {
+                        "sender_name": sender_name or "Unknown",
+                        "sender_contact": sender_contact or (message_data.get("sender_contact") if message_data else None),
+                        "body": body,
+                        "intent": data.get("intent"),
+                        "urgency": data.get("urgency"),
+                        "sentiment": data.get("sentiment"),
+                        "is_vip": is_vip,
+                        "channel": channel
+                    }
+                    if attachments:
+                        # Pass attachments info for notifications
+                        notification_data["attachments"] = attachments
+                        
+                    await process_message_notifications(license_id, notification_data)
+                    
+            except Exception as notif_e:
+                print(f"Error triggering smart notification: {notif_e}")
+            
             # Auto-reply if enabled
             if auto_reply and data["draft_response"]:
                 # Get message details for sending
