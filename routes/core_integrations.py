@@ -35,6 +35,7 @@ from models import (
     get_inbox_conversations_count,
     get_inbox_status_counts,
     get_conversation_messages,
+    get_conversation_messages_cursor,
     update_inbox_status,
     create_outbox_message,
     approve_outbox_message,
@@ -1486,6 +1487,63 @@ async def get_conversation_detail(
     }
 
 
+@router.get("/conversations/{sender_contact:path}/messages")
+async def get_conversation_messages_paginated(
+    sender_contact: str,
+    cursor: Optional[str] = None,
+    limit: int = 25,
+    direction: str = "older",
+    license: dict = Depends(get_license_from_header)
+):
+    """
+    Get messages for a conversation with cursor-based pagination.
+    
+    Query params:
+    - cursor: Pagination cursor (base64 encoded). Omit for initial load.
+    - limit: Number of messages to fetch (default 25, max 100)
+    - direction: "older" to load older messages (scroll up), "newer" for new messages
+    
+    Returns:
+    - messages: List of messages in chronological order
+    - next_cursor: Cursor for next page (null if no more)
+    - has_more: Whether more messages exist
+    """
+    # Clamp limit
+    limit = min(max(1, limit), 100)
+    
+    # Validate direction
+    if direction not in ["older", "newer"]:
+        direction = "older"
+    
+    result = await get_conversation_messages_cursor(
+        license_id=license["license_id"],
+        sender_contact=sender_contact,
+        limit=limit,
+        cursor=cursor,
+        direction=direction
+    )
+    
+    # Also fetch reactions for these messages
+    from models.reactions import get_reactions_for_messages
+    message_ids = [m.get("id") for m in result["messages"] if m.get("id")]
+    reactions_map = await get_reactions_for_messages(message_ids) if message_ids else {}
+    
+    # Attach reactions to messages
+    for msg in result["messages"]:
+        msg_id = msg.get("id")
+        if msg_id and msg_id in reactions_map:
+            msg["reactions"] = reactions_map[msg_id]
+        else:
+            msg["reactions"] = []
+    
+    return {
+        "messages": result["messages"],
+        "next_cursor": result["next_cursor"],
+        "has_more": result["has_more"],
+        "sender_contact": sender_contact
+    }
+
+
 @router.post("/conversations/{sender_contact:path}/send")
 async def send_conversation_message(
     sender_contact: str,
@@ -1688,6 +1746,101 @@ async def get_outbox(license: dict = Depends(get_license_from_header)):
     """Get outbox messages"""
     messages = await get_pending_outbox(license["license_id"])
     return {"messages": messages}
+
+
+# ============ Message Edit and Delete ============
+
+@router.patch("/messages/{message_id}/edit")
+async def edit_message(
+    message_id: int,
+    request: Request,
+    license: dict = Depends(get_license_from_header)
+):
+    """
+    Edit an outbox message (agent's sent message).
+    Must be within 15 minutes of sending.
+    
+    Body: { "body": "new message text" }
+    """
+    from models.inbox import edit_outbox_message
+    from services.websocket_manager import broadcast_message_edited
+    
+    try:
+        data = await request.json()
+    except:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    
+    new_body = data.get("body", "").strip()
+    if not new_body:
+        raise HTTPException(status_code=400, detail="الرجاء إدخال نص الرسالة")
+    
+    try:
+        result = await edit_outbox_message(
+            message_id=message_id,
+            license_id=license["license_id"],
+            new_body=new_body
+        )
+        
+        # Broadcast edit to connected clients
+        await broadcast_message_edited(
+            license_id=license["license_id"],
+            message_id=message_id,
+            new_body=new_body,
+            edited_at=result["edited_at"]
+        )
+        
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/messages/{message_id}")
+async def delete_message(
+    message_id: int,
+    license: dict = Depends(get_license_from_header)
+):
+    """
+    Delete an outbox message (soft delete).
+    The message is hidden but kept for audit purposes.
+    """
+    from models.inbox import soft_delete_outbox_message
+    from services.websocket_manager import broadcast_message_deleted
+    
+    try:
+        result = await soft_delete_outbox_message(
+            message_id=message_id,
+            license_id=license["license_id"]
+        )
+        
+        # Broadcast deletion to connected clients
+        await broadcast_message_deleted(
+            license_id=license["license_id"],
+            message_id=message_id
+        )
+        
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/messages/{message_id}/restore")
+async def restore_message(
+    message_id: int,
+    license: dict = Depends(get_license_from_header)
+):
+    """
+    Restore a soft-deleted message.
+    """
+    from models.inbox import restore_deleted_message
+    
+    try:
+        result = await restore_deleted_message(
+            message_id=message_id,
+            license_id=license["license_id"]
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ============ Workers Status ============

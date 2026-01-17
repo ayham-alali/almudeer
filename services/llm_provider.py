@@ -96,6 +96,42 @@ class LLMConfig:
     post_request_delay: float = field(default_factory=lambda: float(os.getenv("LLM_REQUEST_DELAY", "10.0")))
 
 
+# ============ Backoff with Jitter ============
+
+def calculate_backoff_delay(
+    base_delay: float,
+    attempt: int,
+    max_delay: float = 120.0,
+    jitter_percentage: float = 0.2
+) -> float:
+    """
+    Calculate exponential backoff delay with jitter.
+    
+    Jitter helps prevent the "thundering herd" problem where multiple
+    clients retry simultaneously after a rate limit, causing another
+    spike in requests.
+    
+    Args:
+        base_delay: Base delay in seconds
+        attempt: Current attempt number (0-indexed)
+        max_delay: Maximum delay cap in seconds
+        jitter_percentage: Random variation (0.2 = ±20%)
+        
+    Returns:
+        Delay in seconds with jitter applied
+    """
+    # Exponential backoff: base_delay * (2 ^ attempt)
+    delay = base_delay * (2 ** attempt)
+    
+    # Cap at maximum
+    delay = min(delay, max_delay)
+    
+    # Apply jitter (±jitter_percentage)
+    jitter_range = delay * jitter_percentage
+    jitter = random.uniform(-jitter_range, jitter_range)
+    
+    return max(0.1, delay + jitter)  # Ensure minimum of 100ms
+
 # ============ Global Concurrency Control ============
 
 # Global semaphore to limit concurrent LLM API calls

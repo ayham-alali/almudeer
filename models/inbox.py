@@ -675,6 +675,130 @@ async def get_conversation_messages(
         return rows
 
 
+async def get_conversation_messages_cursor(
+    license_id: int,
+    sender_contact: str,
+    limit: int = 25,
+    cursor: Optional[str] = None,
+    direction: str = "older"  # "older" (scroll up) or "newer" (new messages)
+) -> dict:
+    """
+    Get messages from a specific sender with cursor-based pagination.
+    
+    Cursor format: "{created_at_iso}_{message_id}"
+    
+    Args:
+        license_id: The license ID
+        sender_contact: The sender's contact identifier
+        limit: Number of messages to fetch
+        cursor: Pagination cursor (created_at_iso_message_id)
+        direction: "older" to get older messages, "newer" for new messages
+        
+    Returns:
+        {
+            "messages": [...],
+            "next_cursor": "2024-01-01T12:00:00_123" or None,
+            "has_more": True/False
+        }
+    """
+    import base64
+    
+    # Parse cursor if provided
+    cursor_created_at = None
+    cursor_id = None
+    if cursor:
+        try:
+            # Decode base64 cursor
+            decoded = base64.b64decode(cursor).decode('utf-8')
+            parts = decoded.rsplit('_', 1)
+            if len(parts) == 2:
+                cursor_created_at = parts[0]
+                cursor_id = int(parts[1])
+        except Exception:
+            pass  # Invalid cursor, start from beginning
+    
+    async with get_db() as db:
+        # Build query based on direction
+        if direction == "older":
+            # For scrolling up (loading older messages)
+            if cursor_created_at and cursor_id:
+                query = """
+                    SELECT * FROM inbox_messages
+                    WHERE license_key_id = ?
+                    AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
+                    AND status != 'pending'
+                    AND (created_at < ? OR (created_at = ? AND id < ?))
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?
+                """
+                params = [
+                    license_id, sender_contact, sender_contact, f"%{sender_contact}%",
+                    cursor_created_at, cursor_created_at, cursor_id, limit + 1
+                ]
+            else:
+                # No cursor - get newest messages first (bottom of chat)
+                query = """
+                    SELECT * FROM inbox_messages
+                    WHERE license_key_id = ?
+                    AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
+                    AND status != 'pending'
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?
+                """
+                params = [license_id, sender_contact, sender_contact, f"%{sender_contact}%", limit + 1]
+        else:
+            # For loading newer messages (real-time updates)
+            if cursor_created_at and cursor_id:
+                query = """
+                    SELECT * FROM inbox_messages
+                    WHERE license_key_id = ?
+                    AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
+                    AND status != 'pending'
+                    AND (created_at > ? OR (created_at = ? AND id > ?))
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT ?
+                """
+                params = [
+                    license_id, sender_contact, sender_contact, f"%{sender_contact}%",
+                    cursor_created_at, cursor_created_at, cursor_id, limit + 1
+                ]
+            else:
+                # No cursor for newer - return empty (must provide cursor)
+                return {"messages": [], "next_cursor": None, "has_more": False}
+        
+        rows = await fetch_all(db, query, params)
+        
+        # Check if there are more results
+        has_more = len(rows) > limit
+        messages = list(rows[:limit])
+        
+        # Reverse for "older" direction to get chronological order
+        if direction == "older":
+            messages.reverse()
+        
+        # Generate next cursor from oldest message (for "older" direction)
+        next_cursor = None
+        if has_more and messages:
+            if direction == "older":
+                # Cursor for loading even older messages
+                oldest = messages[0]
+            else:
+                # Cursor for loading even newer messages  
+                oldest = messages[-1]
+            
+            ts = oldest.get("created_at")
+            if hasattr(ts, 'isoformat'):
+                ts = ts.isoformat()
+            cursor_str = f"{ts}_{oldest['id']}"
+            next_cursor = base64.b64encode(cursor_str.encode('utf-8')).decode('utf-8')
+        
+        return {
+            "messages": messages,
+            "next_cursor": next_cursor,
+            "has_more": has_more
+        }
+
+
 async def ignore_chat(license_id: int, sender_contact: str) -> int:
     """
     Mark all messages from a sender as 'ignored' (entire chat).
@@ -987,3 +1111,185 @@ async def get_chat_history_for_llm(
             formatted_history.append(f"{speaker}: {content}")
             
     return "\n".join(formatted_history)
+
+
+# ============ Message Editing Functions ============
+
+async def get_outbox_message_by_id(message_id: int, license_id: int) -> Optional[dict]:
+    """Get a single outbox message by ID."""
+    async with get_db() as db:
+        row = await fetch_one(
+            db,
+            "SELECT * FROM outbox_messages WHERE id = ? AND license_key_id = ?",
+            [message_id, license_id]
+        )
+        return row
+
+
+async def edit_outbox_message(
+    message_id: int,
+    license_id: int,
+    new_body: str,
+    edit_window_minutes: int = 15
+) -> dict:
+    """
+    Edit an outbox message (agent's sent message).
+    
+    Args:
+        message_id: ID of the message to edit
+        license_id: License ID for ownership verification
+        new_body: New message content
+        edit_window_minutes: Time window for editing (default 15 minutes)
+        
+    Returns:
+        {"success": True/False, "message": str, "edited_at": str}
+        
+    Raises:
+        ValueError: If message not found, not owned, or edit window expired
+    """
+    async with get_db() as db:
+        # Get the message
+        message = await fetch_one(
+            db,
+            "SELECT * FROM outbox_messages WHERE id = ? AND license_key_id = ?",
+            [message_id, license_id]
+        )
+        
+        if not message:
+            raise ValueError("الرسالة غير موجودة")
+        
+        # Check if message was sent too long ago
+        created_at = message.get("created_at")
+        if created_at:
+            if isinstance(created_at, str):
+                from datetime import datetime
+                try:
+                    created_time = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                except:
+                    created_time = datetime.utcnow()
+            else:
+                created_time = created_at
+            
+            from datetime import datetime, timezone, timedelta
+            now = datetime.now(timezone.utc)
+            if created_time.tzinfo is None:
+                created_time = created_time.replace(tzinfo=timezone.utc)
+            
+            time_diff = now - created_time
+            if time_diff > timedelta(minutes=edit_window_minutes):
+                raise ValueError(f"لا يمكن تعديل الرسالة بعد {edit_window_minutes} دقيقة من الإرسال")
+        
+        # Store original body if this is the first edit
+        original_body = message.get("original_body") or message.get("body", "")
+        current_edit_count = message.get("edit_count", 0) or 0
+        
+        now = datetime.now(timezone.utc)
+        ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
+        
+        # Update the message
+        await execute_sql(
+            db,
+            """
+            UPDATE outbox_messages 
+            SET body = ?, 
+                edited_at = ?,
+                original_body = COALESCE(original_body, ?),
+                edit_count = ?
+            WHERE id = ? AND license_key_id = ?
+            """,
+            [new_body, ts_value, original_body, current_edit_count + 1, message_id, license_id]
+        )
+        await commit_db(db)
+        
+        return {
+            "success": True,
+            "message": "تم تعديل الرسالة بنجاح",
+            "edited_at": now.isoformat(),
+            "edit_count": current_edit_count + 1
+        }
+
+
+async def soft_delete_outbox_message(message_id: int, license_id: int) -> dict:
+    """
+    Soft delete an outbox message.
+    
+    The message is marked as deleted but kept in the database for audit purposes.
+    
+    Args:
+        message_id: ID of the message to delete
+        license_id: License ID for ownership verification
+        
+    Returns:
+        {"success": True/False, "message": str, "deleted_at": str}
+        
+    Raises:
+        ValueError: If message not found or not owned
+    """
+    async with get_db() as db:
+        # Check if message exists and is owned by this license
+        message = await fetch_one(
+            db,
+            "SELECT id, deleted_at FROM outbox_messages WHERE id = ? AND license_key_id = ?",
+            [message_id, license_id]
+        )
+        
+        if not message:
+            raise ValueError("الرسالة غير موجودة")
+        
+        if message.get("deleted_at"):
+            raise ValueError("الرسالة محذوفة مسبقاً")
+        
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
+        
+        # Soft delete
+        await execute_sql(
+            db,
+            "UPDATE outbox_messages SET deleted_at = ? WHERE id = ? AND license_key_id = ?",
+            [ts_value, message_id, license_id]
+        )
+        await commit_db(db)
+        
+        return {
+            "success": True,
+            "message": "تم حذف الرسالة بنجاح",
+            "deleted_at": now.isoformat()
+        }
+
+
+async def restore_deleted_message(message_id: int, license_id: int) -> dict:
+    """
+    Restore a soft-deleted outbox message.
+    
+    Args:
+        message_id: ID of the message to restore
+        license_id: License ID for ownership verification
+        
+    Returns:
+        {"success": True/False, "message": str}
+    """
+    async with get_db() as db:
+        message = await fetch_one(
+            db,
+            "SELECT id, deleted_at FROM outbox_messages WHERE id = ? AND license_key_id = ?",
+            [message_id, license_id]
+        )
+        
+        if not message:
+            raise ValueError("الرسالة غير موجودة")
+        
+        if not message.get("deleted_at"):
+            raise ValueError("الرسالة غير محذوفة")
+        
+        await execute_sql(
+            db,
+            "UPDATE outbox_messages SET deleted_at = NULL WHERE id = ? AND license_key_id = ?",
+            [message_id, license_id]
+        )
+        await commit_db(db)
+        
+        return {
+            "success": True,
+            "message": "تم استعادة الرسالة بنجاح"
+        }
