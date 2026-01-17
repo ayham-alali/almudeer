@@ -263,7 +263,7 @@ class TelegramListenerService:
                         
                         # 6. Trigger AI Analysis
                         # Local import to avoid circular dependency
-                        from routes.core_integrations import analyze_inbox_message
+                        from routes.chat_routes import analyze_inbox_message
                         
                         # Get auto-reply preference
                         async with get_db() as db:

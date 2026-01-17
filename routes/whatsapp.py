@@ -372,7 +372,7 @@ async def receive_webhook(request: Request):
 
                     # Analyze with AI (WhatsApp auto-analysis)
                     try:
-                        from routes.core_integrations import analyze_inbox_message  # local import to avoid cycles
+                        from routes.chat_routes import analyze_inbox_message  # local import to avoid cycles
                         import asyncio
                         
                         # Determine auto_reply from config if available

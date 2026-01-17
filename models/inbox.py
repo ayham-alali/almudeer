@@ -68,18 +68,6 @@ async def save_inbox_message(
     attachments_json = json.dumps(attachments) if attachments else None
 
     async with get_db() as db:
-        # Check if attachments and is_read columns exist (simplified migration)
-        try:
-             await execute_sql(db, "ALTER TABLE inbox_messages ADD COLUMN attachments TEXT")
-        except:
-             pass 
-        try:
-            if DB_TYPE == "postgresql":
-                await execute_sql(db, "ALTER TABLE inbox_messages ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT FALSE")
-            else:
-                await execute_sql(db, "ALTER TABLE inbox_messages ADD COLUMN is_read BOOLEAN DEFAULT 0")
-        except:
-             pass
 
         await execute_sql(
             db,
@@ -310,11 +298,6 @@ async def create_outbox_message(
     attachments_json = json.dumps(attachments) if attachments else None
     
     async with get_db() as db:
-        # Check if attachments column exists (simplified migration)
-        try:
-             await execute_sql(db, "ALTER TABLE outbox_messages ADD COLUMN attachments TEXT")
-        except:
-             pass 
 
         await execute_sql(
             db,

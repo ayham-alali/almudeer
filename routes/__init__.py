@@ -1,6 +1,9 @@
 """Al-Mudeer Routes Package"""
 
-from .core_integrations import router as integrations_router
+from .system_routes import router as system_router
+from .email_routes import router as email_router
+from .telegram_routes import router as telegram_router
+from .chat_routes import router as chat_router
 from .features import router as features_router
 from .whatsapp import router as whatsapp_router
 from .export import router as export_router
@@ -12,7 +15,10 @@ from .knowledge import router as knowledge_router
 # from .subscription import router as subscription_router
 
 __all__ = [
-    'integrations_router', 
+    'system_router',
+    'email_router',
+    'telegram_router',
+    'chat_router',
     'features_router',
     'whatsapp_router',
     'export_router',

@@ -73,9 +73,20 @@ from models import (
 import logging
 logger = logging.getLogger("startup")
 try:
-    from routes import integrations_router, features_router, whatsapp_router, export_router, notifications_router, purchases_router, knowledge_router
+    from routes import (
+        system_router, 
+        email_router, 
+        telegram_router, 
+        chat_router, 
+        features_router, 
+        whatsapp_router, 
+        export_router, 
+        notifications_router, 
+        purchases_router, 
+        knowledge_router
+    )
     from routes.reactions import router as reactions_router
-    logger.info("Successfully imported integration routes")
+    logger.info("Successfully imported modular routes")
 except ImportError as e:
     logger.error(f"Failed to import routes: {e}")
     raise e
@@ -184,11 +195,12 @@ async def lifespan(app: FastAPI):
         
         # Ensure language/dialect columns exist in inbox_messages
         try:
-            from migrations import ensure_inbox_columns
+            from migrations.manager import ensure_inbox_columns, ensure_outbox_columns
             await ensure_inbox_columns()
-            logger.info("Inbox columns verified (language, dialect)")
+            await ensure_outbox_columns()
+            logger.info("Inbox/Outbox columns verified")
         except Exception as e:
-            logger.warning(f"Inbox column migration warning: {e}")
+            logger.warning(f"Inbox/Outbox column migration warning: {e}")
         
         # Ensure user_preferences columns exist (tone, business_name, etc.)
         try:
@@ -380,10 +392,14 @@ app.add_middleware(
 )
 
 # Include routes (legacy /api/ prefix for backward compatibility)
-logger.info(f"Including integrations_router with {len(integrations_router.routes)} routes")
-app.include_router(integrations_router)    # Email & Telegram
-app.include_router(features_router)        # Customers, Analytics
-app.include_router(whatsapp_router)        # WhatsApp Business
+# Include modular routes
+logger.info("Including modular routers")
+app.include_router(system_router)
+app.include_router(email_router)
+app.include_router(telegram_router)
+app.include_router(chat_router)
+app.include_router(features_router)
+app.include_router(whatsapp_router)
 
 app.include_router(export_router)          # Export & Reports
 app.include_router(notifications_router)   # Smart Notifications & Integrations
@@ -457,9 +473,12 @@ except Exception as e:
 # These mirror the legacy routes but with versioned prefix for future compatibility
 from fastapi import APIRouter
 v1_router = APIRouter(prefix="/api/v1")
-v1_router.include_router(integrations_router.router if hasattr(integrations_router, 'router') else integrations_router, prefix="")
-v1_router.include_router(features_router.router if hasattr(features_router, 'router') else features_router, prefix="")
-v1_router.include_router(whatsapp_router.router if hasattr(whatsapp_router, 'router') else whatsapp_router, prefix="")
+v1_router.include_router(system_router)
+v1_router.include_router(email_router)
+v1_router.include_router(telegram_router)
+v1_router.include_router(chat_router)
+v1_router.include_router(features_router)
+v1_router.include_router(whatsapp_router)
 
 v1_router.include_router(export_router.router if hasattr(export_router, 'router') else export_router, prefix="")
 v1_router.include_router(notifications_router.router if hasattr(notifications_router, 'router') else notifications_router, prefix="")

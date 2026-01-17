@@ -164,6 +164,9 @@ async def ensure_inbox_columns():
                 await execute_sql(db, """
                     ALTER TABLE inbox_messages ADD COLUMN IF NOT EXISTS dialect TEXT
                 """)
+                await execute_sql(db, """
+                    ALTER TABLE inbox_messages ADD COLUMN IF NOT EXISTS attachments TEXT
+                """)
                 await commit_db(db)
             except Exception as e:
                 # Column might already exist
@@ -180,6 +183,11 @@ async def ensure_inbox_columns():
                 await commit_db(db)
             except:
                 pass
+            try:
+                await execute_sql(db, "ALTER TABLE inbox_messages ADD COLUMN attachments TEXT")
+                await commit_db(db)
+            except:
+                pass
         
         # Ensure is_read column exists (Boolean)
         if DB_TYPE == "postgresql":
@@ -193,6 +201,25 @@ async def ensure_inbox_columns():
         else:
             try:
                 await execute_sql(db, "ALTER TABLE inbox_messages ADD COLUMN is_read BOOLEAN DEFAULT 0")
+                await commit_db(db)
+            except:
+                pass
+
+
+async def ensure_outbox_columns():
+    """Ensure outbox_messages has required columns (run on startup)."""
+    from db_helper import get_db, execute_sql, commit_db, DB_TYPE
+    
+    async with get_db() as db:
+        if DB_TYPE == "postgresql":
+            try:
+                await execute_sql(db, "ALTER TABLE outbox_messages ADD COLUMN IF NOT EXISTS attachments TEXT")
+                await commit_db(db)
+            except:
+                pass
+        else:
+            try:
+                await execute_sql(db, "ALTER TABLE outbox_messages ADD COLUMN attachments TEXT")
                 await commit_db(db)
             except:
                 pass
