@@ -239,6 +239,15 @@ async def save_fcm_token(
                 """,
                 [license_id, token, platform, device_id, existing["id"]]
             )
+            
+            # Aggressive cleanup: If we have a device_id, deactivate all tokens for this license that DON'T have a device_id
+            if device_id:
+                await execute_sql(
+                    db,
+                    "UPDATE fcm_tokens SET is_active = FALSE WHERE license_key_id = ? AND device_id IS NULL",
+                    [license_id]
+                )
+            
             await commit_db(db)
             logger.info(f"FCM: Token updated for license {license_id} (device_id: {device_id})")
             return existing["id"]
@@ -252,6 +261,14 @@ async def save_fcm_token(
             """,
             [license_id, token, platform, device_id]
         )
+        
+        # Aggressive cleanup for new tokens too
+        if device_id:
+             await execute_sql(
+                db,
+                "UPDATE fcm_tokens SET is_active = FALSE WHERE license_key_id = ? AND device_id IS NULL",
+                [license_id]
+            )
         
         # Return ID
         if device_id:

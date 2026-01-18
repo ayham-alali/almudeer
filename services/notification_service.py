@@ -698,8 +698,8 @@ async def log_notification(
                 db,
                 """
                 INSERT INTO notification_log 
-                    (license_key_id, channel, priority, title, message, status, error_message)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (license_key_id, channel, priority, title, message, status, error_message, message_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     license_id,
@@ -709,6 +709,7 @@ async def log_notification(
                     payload.message,
                     "sent" if result.get("success") else "failed",
                     result.get("error"),
+                    payload.metadata.get("message_id") if payload.metadata else None
                 ],
             )
         await commit_db(db)
@@ -718,12 +719,28 @@ async def log_notification(
 
 async def process_message_notifications(
     license_id: int,
-    message_data: dict
+    message_data: dict,
+    message_id: Optional[int] = None
 ) -> List[dict]:
     """
     Process incoming message and trigger appropriate notifications
-    based on configured rules
+    based on configured rules.
+    If message_id is provided, avoids duplicate triggers.
     """
+    if message_id:
+        from db_helper import get_db, fetch_one
+        from datetime import datetime, timedelta
+        async with get_db() as db:
+            # Check if we already sent a notification for this message ID in the last 5 minutes
+            # (to avoid loops or double triggers from analysis vs polling)
+            existing = await fetch_one(
+                db,
+                "SELECT id FROM notification_log WHERE license_key_id = ? AND message_id = ? AND created_at > ?",
+                [license_id, message_id, (datetime.utcnow() - timedelta(minutes=5))]
+            )
+            if existing:
+                return []
+    
     notifications_sent = []
     
     # Get all active rules
@@ -793,7 +810,25 @@ async def process_message_notifications(
         # Title: Sender Name
         # Body: Message Preview
         sender_name = message_data.get('sender_name', 'New Message')
-        body_preview = message_data.get('body', '')[:100]
+        
+        # Handle empty/media body
+        body_text = message_data.get('body', '')
+        if not body_text or len(body_text.strip()) == 0:
+            attachments = message_data.get("attachments", [])
+            if attachments:
+                first_type = str(attachments[0].get("type", "")).lower()
+                if "image" in first_type:
+                    body_text = "📷 صورة"
+                elif "video" in first_type:
+                    body_text = "🎥 فيديو"
+                elif "audio" in first_type or "voice" in first_type:
+                    body_text = "🎤 رسالة صوتية"
+                else:
+                    body_text = "📎 ملف"
+            else:
+                body_text = "رسالة جديدة"
+        
+        body_preview = body_text[:100]
         
         # Try to get profile picture
         profile_pic = None
@@ -824,7 +859,8 @@ async def process_message_notifications(
             metadata={
                 "sender": sender_name,
                 "channel": message_data.get("channel", "-"),
-                "type": "message"
+                "type": "message",
+                "message_id": message_id
             },
             image=profile_pic
         )

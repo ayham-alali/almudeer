@@ -97,7 +97,7 @@ async def process_inbox_message_logic(
                         "body": body, "intent": data.get("intent"), "urgency": data.get("urgency"), "sentiment": data.get("sentiment"),
                         "channel": message_data.get("channel", "whatsapp") if message_data else "whatsapp",
                         "attachments": attachments
-                    })
+                    }, message_id=message_id)
             except Exception as e:
                 logger.warning(f"Notification failed for msg {message_id}: {e}")
 

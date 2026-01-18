@@ -1281,7 +1281,7 @@ class MessagePoller:
                         "channel": channel
                     }
                     
-                    await process_message_notifications(license_id, notification_data)
+                    await process_message_notifications(license_id, notification_data, message_id=message_id)
                     
             except Exception as notif_e:
                 logger.error(f"Error checking notifications for message {message_id}: {notif_e}")
