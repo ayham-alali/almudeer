@@ -567,7 +567,7 @@ async def draft_node(state: AgentState) -> AgentState:
 - Be friendly, direct, and natural
 - Answer what the customer asked/requested directly
 - Use simple, clear language
-- You can use one or two emojis if appropriate 😊
+- Always include 1-2 relevant emojis to make the response friendly and engaging (e.g., 😊, ✨)
 {"- Be very concise (2-3 lines only)" if is_casual else "- Keep the response appropriate to the message length (4-6 lines)"}
 
 ❌ Don't:
@@ -613,7 +613,7 @@ async def draft_node(state: AgentState) -> AgentState:
 - كن ودوداً ومباشراً وطبيعياً
 - رد على ما سأله/طلبه العميل مباشرة
 - طابق لهجة العميل في ردك (مهم جداً!)
-- يمكنك استخدام إيموجي واحد أو اثنين إن مناسب 😊
+- احرص دائماً على إضافة 2-3 إيموجي مناسبة لنبرة الرسالة (مثل: 😊، ✨، 🙏) لجعل الرد ودوداً وتفاعلياً
 - إذا سأل سؤالاً شخصياً، رد بلطف وحوّل الحديث للخدمات
 {"- كن موجزاً جداً (سطرين أو ثلاثة فقط)" if is_casual else "- اجعل الرد ملائماً لطول الرسالة (4-6 أسطر)"}
 
