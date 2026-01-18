@@ -85,43 +85,28 @@ async def update_delivery_status(
             inbox_message_id = row.get("inbox_message_id")
             current_status = row.get("delivery_status", "")
             
-            # Status progression: sent -> delivered -> read
-            # Only update if it's a progression (don't go backwards)
-            status_order = {"sent": 1, "delivered": 2, "read": 3, "failed": 0}
+            # Status progression: sent -> failed
+            # We only track 'sent' (single check) and 'failed'.
+            
+            status_order = {"sent": 1, "failed": 0}
+            
             current_order = status_order.get(current_status, 0)
             new_order = status_order.get(status, 0)
             
+            # If status is not in our list (e.g. read, delivered), ignore it
+            if status not in status_order:
+                 return True
+
             if new_order <= current_order and status != "failed":
                 logger.debug(f"Skipping status update (not a progression): {current_status} -> {status}")
                 return True
             
             # Update the status
-            if status == "delivered":
-                await execute_sql(
-                    db,
-                    """
-                    UPDATE outbox_messages 
-                    SET delivery_status = ?, delivered_at = ?
-                    WHERE id = ?
-                    """,
-                    [status, ts_value, outbox_id]
-                )
-            elif status == "read":
-                await execute_sql(
-                    db,
-                    """
-                    UPDATE outbox_messages 
-                    SET delivery_status = ?, read_at = ?
-                    WHERE id = ?
-                    """,
-                    [status, ts_value, outbox_id]
-                )
-            else:
-                await execute_sql(
-                    db,
-                    "UPDATE outbox_messages SET delivery_status = ? WHERE id = ?",
-                    [status, outbox_id]
-                )
+            await execute_sql(
+                db,
+                "UPDATE outbox_messages SET delivery_status = ? WHERE id = ?",
+                [status, outbox_id]
+            )
             
             await commit_db(db)
             
@@ -172,7 +157,7 @@ async def get_message_delivery_status(outbox_id: int) -> Dict[str, Any]:
             row = await fetch_one(
                 db,
                 """
-                SELECT delivery_status, delivered_at, read_at, sent_at, platform_message_id
+                SELECT delivery_status, sent_at, platform_message_id
                 FROM outbox_messages
                 WHERE id = ?
                 """,
@@ -185,8 +170,6 @@ async def get_message_delivery_status(outbox_id: int) -> Dict[str, Any]:
         return {
             "status": row.get("delivery_status") or "sent",
             "sent_at": row.get("sent_at"),
-            "delivered_at": row.get("delivered_at"),
-            "read_at": row.get("read_at"),
             "platform_message_id": row.get("platform_message_id")
         }
         

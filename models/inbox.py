@@ -966,7 +966,7 @@ async def get_full_chat_history(
                 o.id, o.channel, o.recipient_email as sender_contact, o.recipient_id as sender_id,
                 o.subject, o.body, o.status,
                 o.created_at, o.sent_at,
-                o.delivery_status, o.delivered_at, o.read_at,
+                o.delivery_status,
                 i.sender_name
             FROM outbox_messages o
             LEFT JOIN inbox_messages i ON o.inbox_message_id = i.id

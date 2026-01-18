@@ -333,19 +333,6 @@ async def receive_webhook(request: Request):
                                     timestamp=timestamp
                                 )
                                 print(f"WhatsApp delivery status update: {wa_message_id} -> {status}")
-                                
-                                # Update Customer Presence (Activity)
-                                # If they read a message, they are active.
-                                recipient = msg.get("recipient")
-                                if recipient:
-                                    is_online_activity = (status == "read")
-                                    await update_customer_presence(
-                                        license_id=license_id,
-                                        sender_contact=recipient,
-                                        channel="whatsapp",
-                                        is_online=is_online_activity,
-                                        last_activity=timestamp
-                                    )
 
                         except Exception as status_error:
                             print(f"Failed to process WhatsApp status: {status_error}")
