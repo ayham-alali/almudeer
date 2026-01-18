@@ -409,14 +409,34 @@ def filter_urgency(message: Dict, min_urgency: str = "normal") -> tuple[bool, Op
 
 def filter_chat_types(message: Dict) -> tuple[bool, Optional[str]]:
     """Filter messages from non-private chats (groups, channels)"""
-    # Check explicit flags
-    if message.get("is_group") or message.get("is_channel"):
-        return False, "Group/Channel message blocked"
     
-    # Check metadata in common fields if flag missing
-    # Some services might put group_id in sender_contact or similar, but
-    # relying on explicit flags from the service layer is safer.
+    # 1. Check explicit flags
+    if message.get("is_group"):
+        return False, "Message blocked: Source is a Group"
+        
+    if message.get("is_channel"):
+        return False, "Message blocked: Source is a Channel"
+        
+    chat_type = message.get("chat_type")
+    if chat_type and chat_type not in ["private", "sender"]: # sender is used by some internal logic
+        return False, f"Message blocked: Chat type '{chat_type}' is not private"
     
+    # 2. Check Telegram specific metadata blocks
+    # Telegram channels sometimes come as messages from a user with ID equal to the linked chat ID
+    # or negative IDs often indicate groups/channels in Telegram/MTProto
+    sender_id = str(message.get("sender_id", ""))
+    if sender_id.startswith("-100") or (sender_id.startswith("-") and len(sender_id) > 5):
+        # Allow if it's explicitly marked private? No, negative ID is never a private user.
+        return False, "Message blocked: Sender ID indicates non-private entity"
+
+    # 3. WhatsApp Checks
+    channel = message.get("channel")
+    if channel == "whatsapp":
+        # If the sender phone ends in @g.us (rarely passed here but possible)
+        sender_contact = message.get("sender_contact", "")
+        if "g.us" in sender_contact:
+             return False, "Message blocked: WhatsApp Group ID detected"
+
     return True, None
 
 

@@ -216,14 +216,34 @@ class TelegramService:
     @staticmethod
     def parse_update(update: dict) -> Optional[dict]:
         """Parse incoming webhook update"""
-        message = update.get("message") or update.get("edited_message")
+        # Handle different update types
+        message = (
+            update.get("message") or 
+            update.get("edited_message") or 
+            update.get("channel_post") or 
+            update.get("edited_channel_post")
+        )
         
+        # Also check for my_chat_member updates (bot added/removed from groups)
+        # We generally want to ignore these for inbox purposes, but if we do parse them,
+        # we must ensure they are marked as non-private.
         if not message:
+            # Check for my_chat_member to avoid crashing or false positives if we ever decided to handle them
+            # For now, return None so they are ignored by the inbox logic.
             return None
         
         chat = message.get("chat", {})
         from_user = message.get("from", {})
         
+        # In channels, "from" might be missing, so we use chat title/username
+        if not from_user and chat.get("type") == "channel":
+            from_user = {
+                "id": chat.get("id"),
+                "username": chat.get("username"),
+                "first_name": chat.get("title"),
+                "is_bot": False # Treat as user for the sake of the system
+            }
+
         # Media extraction
         attachments = []
         

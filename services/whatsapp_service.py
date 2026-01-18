@@ -176,6 +176,18 @@ class WhatsAppService:
                             "is_group": bool(msg.get("group_id")),
                         }
                         
+                        # Extra check: Some providers/versions put group_id in different places
+                        # or if we are using a specific BSP.
+                        if not parsed["is_group"]:
+                            # Check for context.group_id
+                            context = msg.get("context", {})
+                            if context.get("group_id"):
+                                parsed["is_group"] = True
+                            # If the sender ID (msg.get("from")) ends with @g.us, it's definitely a group
+                            # though usually 'from' is the individual sender in a group, but 'id' might hint it.
+                            # Standard Cloud API sends group_id at top level of message object.
+                        
+                        
                         # Extract message content based on type
                         msg_type = msg.get("type")
                         
