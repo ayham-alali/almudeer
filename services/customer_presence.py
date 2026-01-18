@@ -11,6 +11,7 @@ from logging_config import get_logger
 # Lazy imports to avoid circular dependencies
 # from services.telegram_phone_service import TelegramPhoneService
 # from models import get_telegram_phone_session
+from utils.date_utils import to_hijri_date_string
 
 
 logger = get_logger(__name__)
@@ -272,7 +273,7 @@ def format_customer_last_seen(is_online: bool, last_time: Optional[datetime]) ->
         return f"آخر ظهور منذ {diff.days} أيام"
     else:
         # Format date
-        return f"آخر ظهور {last_time.strftime('%d/%m/%Y')}"
+        return f"آخر ظهور {to_hijri_date_string(last_time)}"
 
 
 async def mark_customer_online(

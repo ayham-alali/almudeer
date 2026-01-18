@@ -14,6 +14,7 @@ import json
 
 from dependencies import get_license_from_header
 from db_helper import get_db, fetch_all, fetch_one, DB_TYPE
+from utils.date_utils import to_hijri_date_string
 
 router = APIRouter(prefix="/api/export", tags=["Export"])
 
@@ -177,6 +178,31 @@ def generate_html_report(data: dict, license_name: str = "شركتك") -> str:
     messages = data.get("messages", [])
     period = data.get("period", {})
     
+    # Convert period dates to Hijri
+    start_iso = period.get('start')
+    end_iso = period.get('end')
+    start_hijri = ""
+    end_hijri = ""
+    
+    if start_iso:
+        try:
+            start_dt = datetime.fromisoformat(start_iso)
+            start_hijri = to_hijri_date_string(start_dt)
+        except:
+            start_hijri = start_iso[:10]
+            
+    if end_iso:
+        try:
+            end_dt = datetime.fromisoformat(end_iso)
+            end_hijri = to_hijri_date_string(end_dt)
+        except:
+            end_hijri = end_iso[:10]
+
+    # Footer timestamp
+    now = datetime.now()
+    footer_date = to_hijri_date_string(now)
+    footer_time = now.strftime("%I:%M %p").replace("AM", "ص").replace("PM", "م")
+
     html = f"""
 <!DOCTYPE html>
 <html dir="rtl" lang="ar">
@@ -205,7 +231,7 @@ def generate_html_report(data: dict, license_name: str = "شركتك") -> str:
     <div class="header">
         <h1>🏢 تقرير المدير</h1>
         <p>{license_name}</p>
-        <p>الفترة: {period.get('start', '')[:10]} إلى {period.get('end', '')[:10]}</p>
+        <p>الفترة: {start_hijri} إلى {end_hijri}</p>
     </div>
     
     <div class="card">
@@ -283,7 +309,7 @@ def generate_html_report(data: dict, license_name: str = "شركتك") -> str:
     </div>
     
     <div class="footer">
-        <p>تم إنشاء هذا التقرير بواسطة المدير - {datetime.now().strftime('%Y-%m-%d %I:%M %p')}</p>
+        <p>تم إنشاء هذا التقرير بواسطة المدير - {footer_date} {footer_time}</p>
     </div>
 </body>
 </html>
