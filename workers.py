@@ -963,14 +963,16 @@ class MessagePoller:
         channel_message_id: Optional[str] = None,
         attachments: Optional[List[Dict[str, Any]]] = None
     ):
-        """Analyze message with AI and optionally auto-reply"""
+        """
+        Analyze message with AI and optionally auto-reply.
+        Refactored to use centralized analysis_service to prevent logic duplication.
+        All AI, CRM, Auto-purchase, and Notification logic is now in process_inbox_message_logic.
+        """
         try:
-            # Check for duplicate content to avoid wasting AI quota
-            # Only exact duplicates (same channel_message_id) are skipped
+            # Check for duplicate content (channel_message_id) 
             if self._is_duplicate_content(body, sender_name, channel_message_id):
-                logger.info(f"Skipping AI for message {message_id}: exact duplicate (same channel_message_id)")
-                
-                # Mark as analyzed but indicating it was skipped to prevent retry loop
+                logger.info(f"Skipping AI for message {message_id}: exact duplicate")
+                from models import update_inbox_analysis
                 try:
                     await update_inbox_analysis(
                         message_id=message_id,
@@ -980,359 +982,28 @@ class MessagePoller:
                         language=None,
                         dialect=None,
                         summary="تم تخطي التحليل: محتوى مكرر",
-                        draft_response=""  # No placeholder needed
+                        draft_response=""
                     )
-                    logger.info(f"Marked message {message_id} as duplicate-skipped")
                 except Exception as e:
                     logger.error(f"Failed to update duplicate message status: {e}")
-                
                 return
-            
-            # Check per-user rate limits (Gemini protection)
-            allowed, reason = await self._check_user_rate_limit(license_id)
-            if not allowed:
-                logger.warning(f"Rate limit for license {license_id}: {reason}. Message {message_id} queued.")
-                # Message will be processed later when limits reset
-                # For now, we skip AI processing - the message is saved but not analyzed
-                return
-            
-            # ============ MEDIA-TYPE SPECIFIC HANDLING ============
-            # Detect media-only messages (no text body)
-            is_image_only = False
-            
-            if attachments and (not body or len(body.strip()) < 3):
-                has_image = any(
-                    att.get("type", "").startswith("image") 
-                    for att in attachments
-                )
-                has_audio = any(
-                    att.get("type", "").startswith(("audio", "voice")) 
-                    for att in attachments
-                )
-                
-                # Image-only (no audio): skip AI, just save to inbox
-                if has_image and not has_audio:
-                    is_image_only = True
-            
-            if is_image_only:
-                logger.info(f"Image-only message {message_id}: saving to inbox without AI analysis")
-                await update_inbox_analysis(
-                    message_id=message_id,
-                    intent="media",
-                    urgency="low",
-                    sentiment="neutral",
-                    language=None,
-                    dialect=None,
-                    summary="📷 صورة بدون نص",
-                    draft_response=""  # Empty = no suggested response, but analyzed status
-                )
-                return
-            
-            # Fetch conversation history for context-aware AI responses
-            conversation_history = ""
-            if recipient:  # recipient contains sender_contact
-                try:
-                    # Use the new unified history function that includes both User and Agent messages
-                    from models.inbox import get_chat_history_for_llm
-                    conversation_history = await get_chat_history_for_llm(
-                        license_id=license_id,
-                        sender_contact=recipient,
-                        limit=10
-                    )
-                    if conversation_history:
-                        logger.debug(f"Loaded full chat history for {recipient}")
-                except Exception as hist_e:
-                    logger.warning(f"Failed to load conversation history: {hist_e}")
-            
-            # Fetch user preferences for AI personalization (tone, style, etc.)
-            preferences = None
-            try:
-                preferences = await get_preferences(license_id)
-            except Exception as pref_e:
-                logger.warning(f"Failed to load preferences for license {license_id}: {pref_e}")
-            
-            # Process with AI agent
-            try:
-                # Use semaphore to limit global concurrency for free LLM tiers
-                async with self.ai_semaphore:
-                    # Add timeout to prevent hanging if AI service stalls
-                    # increased from 60s to 360s (6min) to allow for rate limit handling
-                    # Gemini free tier retries can take several minutes
-                    # Define status callback for real-time updates
-                    async def on_status_update(status_msg: str):
-                        try:
-                            # Send status update message
-                            # We prefix with ⏳ to indicate temporary status
-                            await self._auto_reply(
-                                message_id=message_id,
-                                license_id=license_id,
-                                channel=channel,
-                                response_body=f"⏳ {status_msg}",
-                                recipient=recipient
-                            )
-                        except Exception as e:
-                            logger.warning(f"Failed to send status update: {e}")
 
-                    result = await asyncio.wait_for(
-                        process_message(
-                            message=body,
-                            sender_name=sender_name,
-                            sender_contact=recipient, 
-                            preferences=preferences,
-                            history=conversation_history,
-                            attachments=attachments,
-                            status_callback=on_status_update
-                        ),
-                        timeout=360.0
-                    )
-            except asyncio.TimeoutError:
-                logger.warning(f"AI processing timed out for message {message_id} - will retry next cycle")
-                # Mark as retried this cycle so we don't try to "retry pending" immediately
-                self._retried_this_cycle.add(message_id) 
-                # Message stays with placeholder, will be retried in next poll cycle (5 min)
-                # This ensures we ALWAYS eventually get an AI response
-                return
-                
-            except Exception as ai_e:
-                logger.error(f"AI processing error for message {message_id}: {ai_e} - will retry next cycle")
-                self._retried_this_cycle.add(message_id)
-                # Message stays with placeholder, will be retried in next poll cycle
-                return
+            from services.analysis_service import process_inbox_message_logic
             
-            if not result["success"]:
-                logger.warning(f"AI processing failed for message {message_id}: {result.get('error')} - will retry next cycle")
-                self._retried_this_cycle.add(message_id)
-                return
-            
-            data = result["data"]
-
-            # Update inbox with analysis (including language/dialect)
-            await update_inbox_analysis(
+            # Delegate to the centralized logic
+            await process_inbox_message_logic(
                 message_id=message_id,
-                intent=data["intent"],
-                urgency=data["urgency"],
-                sentiment=data["sentiment"],
-                language=data.get("language"),
-                dialect=data.get("dialect"),
-                summary=data["summary"],
-                draft_response=data["draft_response"],
+                body=body,
+                license_id=license_id,
+                auto_reply=auto_reply,
+                attachments=attachments
             )
             
-            # Increment rate limit counter AFTER successful AI processing
             await self._increment_user_rate_limit(license_id)
-            
-            # Link message to customer and update lead score
-            is_vip = False
-            try:
-                # Get message details to extract sender info
-                async with get_db() as db:
-                    message = await fetch_one(
-                        db,
-                        "SELECT sender_name, sender_contact FROM inbox_messages WHERE id = ?",
-                        [message_id]
-                    )
-                    
-                    if message:
-                        sender_contact = message.get("sender_contact") or recipient
-                        sender_name = message.get("sender_name") or sender_name
-                        
-                        if sender_contact:
-                            # Extract email or phone from contact
-                            email = None
-                            phone = None
-                            if "@" in sender_contact:
-                                email = sender_contact
-                            elif sender_contact.replace("+", "").replace("-", "").replace(" ", "").isdigit():
-                                phone = sender_contact
-                            
-                            
-                            # Get or create customer
-                            customer = await get_or_create_customer(
-                                license_id=license_id,
-                                phone=phone,
-                                email=email,
-                                name=sender_name
-                            )
-                            
-                            if customer and customer.get("id"):
-                                customer_id = customer["id"]
-                                is_vip = customer.get("is_vip", False)
-                                
-                                # Check if already linked to avoid duplicates
-                                existing = await fetch_one(
-                                    db,
-                                    "SELECT 1 FROM customer_messages WHERE customer_id = ? AND inbox_message_id = ?",
-                                    [customer_id, message_id]
-                                )
-                                if not existing:
-                                    # Increment message count (only for new links)
-                                    await increment_customer_messages(customer_id)
 
-                                    from db_helper import DB_TYPE
-                                    if DB_TYPE == "postgresql":
-                                        await execute_sql(
-                                            db,
-                                            """
-                                            INSERT INTO customer_messages (customer_id, inbox_message_id)
-                                            VALUES (?, ?)
-                                            ON CONFLICT (customer_id, inbox_message_id) DO NOTHING
-                                            """,
-                                            [customer_id, message_id]
-                                        )
-                                    else:
-                                        await execute_sql(
-                                            db,
-                                            """
-                                            INSERT OR IGNORE INTO customer_messages (customer_id, inbox_message_id)
-                                            VALUES (?, ?)
-                                            """,
-                                            [customer_id, message_id]
-                                        )
-                                    await commit_db(db)
-                                
-                                # Update lead score based on analysis
-                                await update_customer_lead_score(
-                                    license_id=license_id,
-                                    customer_id=customer_id,
-                                    intent=data.get("intent"),
-                                    sentiment=data.get("sentiment"),
-                                    sentiment_score=0.0  # Could be calculated from sentiment history
-                                )
-                                
-                                # === Auto-Purchase Detection ===
-                                # If intent is order-related and we find money amounts, auto-create a pending purchase
-                                intent = data.get("intent", "").lower()
-                                order_intents = ["طلب", "طلب خدمة", "order", "شراء", "اشتراك"]
-                                
-                                if any(oi in intent for oi in order_intents):
-                                    # Extract entities to find money and product info
-                                    from analysis_advanced import extract_entities
-                                    entities = extract_entities(body)
-                                    
-                                    money = entities.get("money", [])
-                                    quantities = entities.get("quantity", [])
-                                    
-                                    if money:
-                                        # Create auto-purchase for detected amounts
-                                        from models.purchases import create_purchase
-                                        for m in money[:1]:  # Only first amount detected
-                                            try:
-                                                amount_str = m.get("amount", "0").replace(",", "")
-                                                amount = float(amount_str)
-                                                
-                                                # Try to extract product name from message
-                                                # Look for common product indicators
-                                                product_name = "طلب من المحادثة"
-                                                product_patterns = [
-                                                    r'(?:اشتراك|خدمة|منتج|طلب)\s+([^\d\n,،]{3,30})',
-                                                    r'(?:أريد|أبغى|بدي)\s+([^\d\n,،]{3,30})',
-                                                ]
-                                                import re
-                                                for pattern in product_patterns:
-                                                    match = re.search(pattern, body)
-                                                    if match:
-                                                        product_name = match.group(1).strip()[:50]
-                                                        break
-                                                
-                                                # Auto-create pending purchase
-                                                await create_purchase(
-                                                    license_id=license_id,
-                                                    customer_id=customer_id,
-                                                    product_name=product_name,
-                                                    amount=amount,
-                                                    currency="SYP",  # Default to SYP
-                                                    status="pending",  # Pending for human review
-                                                    notes=f"تم إنشاؤها تلقائياً من الرسالة - {body[:100]}..."
-                                                )
-                                                logger.info(f"Auto-created pending purchase for customer {customer_id}: {amount} SYP")
-                                            except Exception as pe:
-                                                logger.warning(f"Error auto-creating purchase: {pe}")
-                                # === End Auto-Purchase Detection ===
-                                
-            except Exception as crm_error:
-                logger.warning(f"Error updating CRM for message {message_id}: {crm_error}")
-
-            # NOTIFICATIONS TRIGGER
-            try:
-                from services.notification_service import process_message_notifications
-                
-                # Check if we should trigger notifications
-                # We trigger if:
-                # 1. AI processing succeeded (we are here)
-                # 2. It's not an auto-reply scenario (or auto-reply is disabled/not generated)
-                # If auto-reply IS generated, we might still want to notify if the user wants to see it, 
-                # but "waiting_for_reply" implies pending action. 
-                # However, the rule engine handles the "waiting_for_reply" check, 
-                # so we just pass the data and letting the condition logic deciding. 
-                # But we should probably flag if it was auto-replied.
-                
-                is_auto_replied = bool(auto_reply and data.get("draft_response"))
-                
-                if not is_auto_replied:
-                    notification_data = {
-                        "sender_name": sender_name or "Unknown",
-                        "sender_contact": recipient, # This might be the user's number in some contexts, but here it's likely the customer's?
-                        # Actually recipient passed to _analyze is usually the customer's ID/Phone.
-                        "body": body,
-                        "intent": data.get("intent"),
-                        "urgency": data.get("urgency"),
-                        "sentiment": data.get("sentiment"),
-                        "is_vip": is_vip,
-                        "channel": channel
-                    }
-                    
-                    await process_message_notifications(license_id, notification_data, message_id=message_id)
-                    
-            except Exception as notif_e:
-                logger.error(f"Error checking notifications for message {message_id}: {notif_e}")
-            
-            # AUDIO RESPONSE GENERATION
-            # If input has audio attachments, generate spoken response
-            # Check for audio in attachments
-            has_audio_input = False
-            if attachments:
-                for att in attachments:
-                    att_type = att.get("type", "")
-                    if att_type.startswith("audio") or att_type.startswith("voice"):
-                        has_audio_input = True
-                        break
-            
-            if has_audio_input and data.get("draft_response"):
-                try:
-                    from services.tts_service import generate_speech_to_file
-                    # Generate speech from the response text (saves to file for WhatsApp upload)
-                    audio_path = await generate_speech_to_file(data["draft_response"])
-                    logger.info(f"Generated audio response: {audio_path}")
-                    
-                    # Append audio tag to draft response for processing in _send_message
-                    data["draft_response"] += f"\n[AUDIO: {audio_path}]"
-                    
-                    # Update inbox with the audio-tagged response
-                    await update_inbox_analysis(
-                        message_id=message_id,
-                        intent=data["intent"],
-                        urgency=data["urgency"],
-                        sentiment=data["sentiment"],
-                        language=data.get("language"),
-                        dialect=data.get("dialect"),
-                        summary=data["summary"],
-                        draft_response=data["draft_response"],
-                    )
-                except Exception as tts_e:
-                    logger.error(f"Failed to generate TTS audio: {tts_e}")
-
-            # Auto-reply if enabled
-            if auto_reply and data["draft_response"]:
-                await self._auto_reply(
-                    message_id=message_id,
-                    license_id=license_id,
-                    channel=channel,
-                    response_body=data["draft_response"],
-                    recipient=recipient
-                )
-        
         except Exception as e:
             logger.error(f"Error analyzing message {message_id}: {e}", exc_info=True)
+
     
     async def _auto_reply(
         self,
