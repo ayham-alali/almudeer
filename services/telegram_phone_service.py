@@ -739,7 +739,8 @@ class TelegramPhoneService:
             UserStatusLastMonth,
             UserStatusEmpty
         )
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta, timezone
+        from utils.date_utils import to_hijri_date_string
         
         logger = get_logger(__name__)
         client = None
@@ -846,65 +847,9 @@ class TelegramPhoneService:
         elif diff.days < 7:
              return f"آخر ظهور منذ {diff.days} أيام"
         else:
-             return f"آخر ظهور {dt.strftime('%Y/%m/%d')}"
+             return f"آخر ظهور {to_hijri_date_string(dt)}"
 
-    async def set_typing(
-        self,
-        session_string: str,
-        recipient_id: str,
-        action: str = "typing"
-    ) -> bool:
-        """
-        Send typing or recording action to a chat
-        
-        Args:
-            session_string: Session string
-            recipient_id: Recipient chat ID or username
-            action: 'typing' or 'recording'
-        """
-        from logging_config import get_logger
-        logger = get_logger(__name__)
-        
-        client = None
-        try:
-            client = await self.create_client_from_session(session_string)
-            
-            # Resolve entity
-            entity = None
-            try:
-                chat_id = int(recipient_id)
-                entity = await client.get_entity(chat_id)
-            except (ValueError, TypeError):
-                pass
-            
-            if entity is None:
-                try:
-                    entity = await client.get_entity(recipient_id)
-                except Exception:
-                    return False
 
-            from telethon import functions, types
-            
-            t_action = types.SendMessageTypingAction()
-            if action == 'recording':
-                t_action = types.SendMessageRecordAudioAction()
-                
-            await client(functions.messages.SetTypingRequest(
-                peer=entity,
-                action=t_action
-            ))
-            
-            return True
-            
-        except Exception as e:
-            logger.debug(f"Failed to set typing status: {e}")
-            return False
-        finally:
-            if client:
-                try:
-                    await client.disconnect()
-                except:
-                    pass
 
     async def mark_as_read(
         self,
