@@ -866,7 +866,7 @@ class MessagePoller:
                                 language=None,
                                 dialect=None,
                                 summary="تم دمج الرسالة مع الرد التالي",
-                                draft_response="➡️ تم الرد في الرسالة التالية (سياق متصل)"
+                                draft_response=""
                             )
                         except Exception as e:
                             logger.error(f"Failed to mark merged message {m['db_id']}: {e}")
@@ -980,7 +980,7 @@ class MessagePoller:
                         language=None,
                         dialect=None,
                         summary="تم تخطي التحليل: محتوى مكرر",
-                        draft_response="⏹️ تم تخطي هذه الرسالة (محتوى مكرر)"  # Non-placeholder value to stop retries
+                        draft_response=""  # No placeholder needed
                     )
                     logger.info(f"Marked message {message_id} as duplicate-skipped")
                 except Exception as e:
