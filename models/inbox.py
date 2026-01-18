@@ -1206,7 +1206,15 @@ async def soft_delete_outbox_message(message_id: int, license_id: int) -> dict:
             raise ValueError("الرسالة غير موجودة")
         
         if message.get("deleted_at"):
-            raise ValueError("الرسالة محذوفة مسبقاً")
+            # Already deleted, but let's re-run upsert to ensure state is clean
+            recipient = message.get("recipient_email") or message.get("recipient_id")
+            if recipient:
+                 await upsert_conversation_state(license_id, recipient)
+            return {
+                "success": True,
+                "message": "الرسالة محذوفة مسبقاً",
+                "deleted_at": message["deleted_at"] if isinstance(message["deleted_at"], str) else message["deleted_at"].isoformat()
+            }
         
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc)
@@ -1259,7 +1267,14 @@ async def soft_delete_inbox_message(message_id: int, license_id: int) -> dict:
             raise ValueError("الرسالة غير موجودة")
             
         if message.get("deleted_at"):
-            raise ValueError("الرسالة محذوفة مسبقاً")
+            # Already deleted, but ensure state is clean
+            if message.get("sender_contact"):
+                await upsert_conversation_state(license_id, message["sender_contact"])
+            return {
+                "success": True, 
+                "message": "الرسالة محذوفة مسبقاً",
+                "deleted_at": message["deleted_at"] if isinstance(message["deleted_at"], str) else message["deleted_at"].isoformat()
+            }
             
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc)
