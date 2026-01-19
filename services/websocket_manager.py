@@ -371,34 +371,6 @@ async def broadcast_task_complete(license_id: int, task_id: str, result: Dict[st
 
 
 
-# ============ Reaction Broadcasting ============
-
-async def broadcast_reaction_added(license_id: int, message_id: int, emoji: str, user_type: str):
-    """Broadcast when a reaction is added to a message"""
-    manager = get_websocket_manager()
-    await manager.send_to_license(license_id, WebSocketMessage(
-        event="reaction_added",
-        data={
-            "message_id": message_id,
-            "emoji": emoji,
-            "user_type": user_type
-        }
-    ))
-
-
-async def broadcast_reaction_removed(license_id: int, message_id: int, emoji: str, user_type: str):
-    """Broadcast when a reaction is removed from a message"""
-    manager = get_websocket_manager()
-    await manager.send_to_license(license_id, WebSocketMessage(
-        event="reaction_removed",
-        data={
-            "message_id": message_id,
-            "emoji": emoji,
-            "user_type": user_type
-        }
-    ))
-
-
 # ============ Message Edit/Delete Broadcasting ============
 
 async def broadcast_message_edited(license_id: int, message_id: int, new_body: str, edited_at: str):
