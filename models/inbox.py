@@ -586,7 +586,7 @@ async def get_conversation_messages(
             AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
             AND status != 'pending'
             AND deleted_at IS NULL
-            ORDER BY created_at ASC
+            ORDER BY created_at DESC
             LIMIT ?
             """,
             params
@@ -705,8 +705,8 @@ async def get_conversation_messages_cursor(
         messages = list(rows[:limit])
         
         # Reverse for "older" direction to get chronological order
-        if direction == "older":
-            messages.reverse()
+        # if direction == "older":
+        #    messages.reverse()
         
         # Generate next cursor from oldest message (for "older" direction)
         next_cursor = None
