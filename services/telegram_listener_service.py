@@ -269,7 +269,7 @@ class TelegramListenerService:
                             )
                             auto_reply = bool(row["auto_reply_enabled"]) if row else False
 
-                        asyncio.create_task(
+                        task = asyncio.create_task(
                             analyze_inbox_message(
                                 message_id=msg_id,
                                 body=body,

@@ -308,37 +308,46 @@ class TelegramPhoneService:
                     pass
             raise
     
-    async def test_connection(self, session_string: str) -> Tuple[bool, str, Dict]:
+    async def test_connection(self, session_string: str, client: Optional["TelegramClient"] = None) -> Tuple[bool, str, Dict]:
         """
         Test if session is still valid
         
         Args:
             session_string: Session string to test
+            client: Optional existing TelegramClient to reuse
         
         Returns:
             Tuple of (success, message, user_info)
         """
-        client = None
+        local_client = None
         try:
-            client = await self.create_client_from_session(session_string)
-            me = await client.get_me()
+            if client and client.is_connected():
+                active_client = client
+                should_disconnect = False
+            else:
+                active_client = await self.create_client_from_session(session_string)
+                local_client = active_client
+                should_disconnect = True
+
+            me = await active_client.get_me()
             
             user_info = {
                 "id": me.id,
-                "phone": me.phone,
-                "first_name": me.first_name,
-                "last_name": me.last_name,
-                "username": me.username
+                "phone": getattr(me, 'phone', None),
+                "first_name": getattr(me, 'first_name', None),
+                "last_name": getattr(me, 'last_name', None),
+                "username": getattr(me, 'username', None)
             }
             
-            await client.disconnect()
+            if should_disconnect:
+                await active_client.disconnect()
             
             return True, "الاتصال ناجح", user_info
         
         except Exception as e:
-            if client:
+            if local_client:
                 try:
-                    await client.disconnect()
+                    await local_client.disconnect()
                 except:
                     pass
             return False, f"فشل الاتصال: {str(e)}", {}

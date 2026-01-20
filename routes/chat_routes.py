@@ -406,10 +406,22 @@ async def send_approved_message(outbox_id: int, license_id: int):
                 elif channel == "telegram":
                     session = await get_telegram_phone_session_data(license_id)
                     if session:
-                        ps = TelegramPhoneService()
-                        await ps.send_message(session_string=session, recipient_id=str(message["recipient_id"]), text=body)
-                        await mark_outbox_sent(outbox_id)
-                        sent_anything = True
+                        from services.telegram_listener_service import get_telegram_listener
+                        listener = get_telegram_listener()
+                        active_client = await listener.ensure_client_active(license_id)
+                        
+                        if active_client:
+                            ps = TelegramPhoneService()
+                            await ps.send_message(
+                                session_string=session,
+                                recipient_id=str(message["recipient_id"]),
+                                text=body,
+                                client=active_client
+                            )
+                            await mark_outbox_sent(outbox_id)
+                            sent_anything = True
+                        else:
+                            print(f"Skipping Telegram send: No active client for license {license_id}")
 
                 elif channel == "email":
                     tokens = await get_email_oauth_tokens(license_id)

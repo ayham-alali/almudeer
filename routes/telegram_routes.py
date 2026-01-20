@@ -222,7 +222,12 @@ async def test_telegram_phone_connection(license: dict = Depends(get_license_fro
     try:
         session_string = await get_telegram_phone_session_data(license["license_id"])
         if not session_string: raise HTTPException(status_code=404, detail="لا توجد جلسة نشطة")
-        success, message, user_info = await get_telegram_phone_service().test_connection(session_string)
+        
+        from services.telegram_listener_service import get_telegram_listener
+        listener = get_telegram_listener()
+        active_client = await listener.ensure_client_active(license["license_id"])
+        
+        success, message, user_info = await get_telegram_phone_service().test_connection(session_string, client=active_client)
         return {"success": success, "message": message, "user": user_info}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
