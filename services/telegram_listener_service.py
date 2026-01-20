@@ -35,6 +35,7 @@ class TelegramListenerService:
         if cls._instance is None:
             cls._instance = super(TelegramListenerService, cls).__new__(cls)
             cls._instance.clients = {}  # license_id -> TelegramClient
+            cls._instance.locks = {} # license_id -> asyncio.Lock
             cls._instance.running = False
             cls._instance.monitor_task = None
             cls._instance.background_tasks = set() # Track fire-and-forget tasks
@@ -302,6 +303,7 @@ class TelegramListenerService:
         Ensure a client is active for the given license_id.
         If it's running, return it.
         If not, try to start it from the DB session.
+        Uses a lock to prevent multiple simultaneous connection attempts for the same license.
         """
         # 1. if already active, return it
         if license_id in self.clients:
@@ -312,34 +314,46 @@ class TelegramListenerService:
                 # Cleanup disconnected client
                 del self.clients[license_id]
         
-        # 2. Fetch session from DB and start
-        try:
-            async with get_db() as db:
-                row = await fetch_one(
-                    db,
-                    "SELECT session_data_encrypted, phone_number FROM telegram_phone_sessions WHERE license_key_id = ? AND is_active = TRUE",
-                    [license_id]
-                )
-                
-            if not row:
+        # Initialize lock if needed
+        if license_id not in self.locks:
+             self.locks[license_id] = asyncio.Lock()
+             
+        # 2. Acquire lock to safely start client
+        async with self.locks[license_id]:
+             # Double-check after acquiring lock in case another task beat us to it
+             if license_id in self.clients:
+                 client = self.clients[license_id]
+                 if client.is_connected():
+                     return client
+            
+             # Fetch session from DB and start
+             try:
+                async with get_db() as db:
+                    row = await fetch_one(
+                        db,
+                        "SELECT session_data_encrypted, phone_number FROM telegram_phone_sessions WHERE license_key_id = ? AND is_active = TRUE",
+                        [license_id]
+                    )
+                    
+                    if not row:
+                        logger.warning(f"No active session found for license {license_id}")
+                        return None
+                        
+                    session_data = row.get("session_data_encrypted") or row[0]
+                    phone_number = row.get("phone_number") or row[1]
+                    
+                    try:
+                        session_string = simple_decrypt(session_data)
+                    except Exception as e:
+                        logger.error(f"Failed to decrypt session: {e}")
+                        return None
+                        
+                    await self._start_client(license_id, session_string, phone_number)
+                    return self.clients.get(license_id)
+
+             except Exception as e:
+                logger.error(f"Error ensuring active client for {license_id}: {e}")
                 return None
-                
-            encrypted_data = row["session_data_encrypted"]
-            phone_number = row["phone_number"]
-            
-            try:
-                session_string = simple_decrypt(encrypted_data)
-            except Exception as e:
-                logger.error(f"Failed to decrypt session for license {license_id}: {e}")
-                return None
-                
-            await self._start_client(license_id, session_string, phone_number)
-            
-            return self.clients.get(license_id)
-            
-        except Exception as e:
-            logger.error(f"Error ensuring active client for {license_id}: {e}")
-            return None
 
     async def _stop_client(self, license_id: int):
         """Stop and remove a client"""
