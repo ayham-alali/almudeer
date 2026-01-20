@@ -340,14 +340,32 @@ class TelegramListenerService:
             if license_id in self.clients:
                 del self.clients[license_id]
             
-            # Ensure cleanup of local client if it wasn't stored or if explicit error occurred
+            # Ensure cleanup of local client
             if client:
                 try:
                     await client.disconnect()
                 except:
                     pass
-                    
-            logger.error(f"Failed to start Telegram client for license {license_id}: {e}")
+            
+            error_str = str(e)
+            logger.error(f"Failed to start Telegram client for license {license_id}: {error_str}")
+
+            # Critical: Check for Session Conflict / Revocation
+            if "used under two different IP addresses" in error_str or "auth key" in error_str.lower():
+                logger.critical(f"Telegram Session Revoked for license {license_id}. Disabling session in DB.")
+                try:
+                    from models import deactivate_telegram_phone_session
+                    # We might need a direct DB call if models isn't fully async-compatible in this context,
+                    # but assumes models functions work. 
+                    # Actually, better to use direct DB here to be sure.
+                    async with get_db() as db:
+                        await execute_sql(
+                            db, 
+                            "UPDATE telegram_phone_sessions SET is_active = FALSE, status = 'invalid_session', updated_at = ? WHERE license_key_id = ?",
+                            [datetime.now(timezone.utc), license_id]
+                        )
+                except Exception as db_e:
+                    logger.error(f"Failed to disable revoked session {license_id}: {db_e}")
 
     async def ensure_client_active(self, license_id: int) -> Optional[TelegramClient]:
         """
