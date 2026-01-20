@@ -5,7 +5,7 @@ Persistent service for real-time Telegram events (Typing, Recording, etc.)
 import asyncio
 import logging
 import os
-from typing import Dict, Set
+from typing import Dict, Set, Optional
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
