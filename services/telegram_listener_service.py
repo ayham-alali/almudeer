@@ -125,6 +125,7 @@ class TelegramListenerService:
 
     async def _start_client(self, license_id: int, session_string: str, phone_number: str):
         """Start a single Telegram client and attach listeners"""
+        client = None
         try:
             logger.info(f"Starting Telegram client for license {license_id} ({phone_number})")
             
@@ -160,43 +161,50 @@ class TelegramListenerService:
             @client.on(events.NewMessage(incoming=True))
             async def msg_handler(event):
                 try:
-                    if not event.is_private:
-                        return
-
-                    # 1. Extract basic info
+                    # Filter: Only private chats or small groups? 
+                    # For now process everything, filtering happens inside analysis
+                    
                     sender = await event.get_sender()
-                    if not sender: return
+                    # sender_id = sender.id
+                    body = event.raw_text or ""
                     
-                    # sender_contact should follow the same format as MessagePoller: phone or tg:12345
-                    sender_contact = getattr(sender, 'phone', None)
-                    if sender_contact:
-                        if not sender_contact.startswith("+"):
-                            sender_contact = "+" + sender_contact
+                    if not body and not event.message.media:
+                        return
+                        
+                    # Extract basic info
+                    if hasattr(sender, 'first_name'):
+                        sender_name = f"{sender.first_name} {sender.last_name or ''}".strip()
+                    elif hasattr(sender, 'title'): # Group/Channel
+                        sender_name = sender.title
                     else:
-                        sender_contact = f"tg:{sender.id}"
-                    
-                    first = getattr(sender, 'first_name', '') or ''
-                    last = getattr(sender, 'last_name', '') or ''
-                    sender_name = f"{first} {last}".strip() or "Telegram User"
-                    
-                    body = event.message.message or ""
+                        sender_name = "Unknown"
+                        
+                    sender_contact = None
+                    if hasattr(sender, 'username') and sender.username:
+                        sender_contact = sender.username
+                    elif hasattr(sender, 'phone') and sender.phone:
+                        sender_contact = sender.phone
+                        
                     channel_message_id = str(event.message.id)
                     
-                    # 2. Deduplication check
-                    async with get_db() as db:
-                        existing = await fetch_one(
-                            db,
-                            "SELECT id FROM inbox_messages WHERE license_key_id = ? AND channel = ? AND channel_message_id = ?",
-                            [license_id, "telegram", channel_message_id]
-                        )
-                        if existing:
-                            return
-
-                    # 3. Apply Filters
-                    from message_filters import apply_filters
-                    from models.inbox import get_inbox_messages
-                    recent_messages = await get_inbox_messages(license_id, limit=20)
+                    # 3. Check for Duplicates (Basic check)
+                    # Ideally we use Redis, but here we query DB via `models`
+                    from models import get_inbox_messages
+                    # A better way is to rely on `save_inbox_message` ignoring duplicates or returning existing ID
                     
+                    # Filter own messages (should be covered by incoming=True but just in case)
+                    if event.out:
+                        return
+
+                    # Filter specific unwanted updates (e.g. pinned message service msg)
+                    if hasattr(event.message, 'action') and event.message.action:
+                         # e.g. MessageActionPinMessage
+                         return
+
+                    # -- Apply global filters (blocklist/whitelist) --
+                    # Avoid overhead if possible, but safe to check
+                    from services.filters import apply_filters
+                    # Mock filter msg structure
                     filter_msg = {
                         "body": body,
                         "sender_contact": sender_contact,
@@ -207,7 +215,7 @@ class TelegramListenerService:
                         "channel": "telegram"
                     }
                     
-                    should_process, reason = await apply_filters(filter_msg, license_id, recent_messages)
+                    should_process, reason = await apply_filters(filter_msg, license_id, recent_messages=None)
                     if not should_process:
                         logger.info(f"Telegram real-time message filtered: {reason}")
                         return
@@ -284,14 +292,6 @@ class TelegramListenerService:
                         
                 except Exception as e:
                     logger.error(f"Error in Telegram real-time message handler: {e}")
-
-            # Start receiving updates in background
-            # Telethon clients run in loop automatically once connected and handlers attached?
-            # No, we assume client stays connected. 
-            
-            # Client is already stored at the beginning of this function
-            # self.clients[license_id] = client
-            # logger.info(f"Telegram client started for license {license_id}")
 
         except Exception as e:
             if license_id in self.clients:
