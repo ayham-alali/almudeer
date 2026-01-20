@@ -245,6 +245,17 @@ class TelegramListenerService:
                          # e.g. MessageActionPinMessage
                          return
 
+                    # CRITICAL: Block Telegram Bots from entering inbox
+                    # This prevents promotional bots, gaming bots, etc. from being processed
+                    if sender:
+                        sender_is_bot = getattr(sender, 'bot', False) or getattr(sender, 'is_bot', False)
+                        sender_username = getattr(sender, 'username', '') or ''
+                        username_is_bot = sender_username.lower().endswith('bot') if sender_username else False
+                        
+                        if sender_is_bot or username_is_bot:
+                            logger.debug(f"Blocking bot message from {sender_username or sender.id}: is_bot={sender_is_bot}")
+                            return
+
                     # -- Apply global filters (blocklist/whitelist) --
                     # Avoid overhead if possible, but safe to check
                     from message_filters import apply_filters

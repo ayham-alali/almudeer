@@ -458,6 +458,47 @@ def filter_chat_types(message: Dict) -> tuple[bool, Optional[str]]:
     return True, None
 
 
+def filter_telegram_bots(message: Dict) -> tuple[bool, Optional[str]]:
+    """
+    Filter messages from Telegram Bots.
+    Blocks promotional bots, gaming bots, and other automated accounts.
+    """
+    channel = message.get("channel", "")
+    
+    # Only apply to Telegram messages
+    if channel not in ["telegram", "telegram_bot"]:
+        return True, None
+    
+    # Check explicit is_bot flag (if passed from listener)
+    if message.get("is_bot", False):
+        return False, "Message blocked: Sender is a Telegram Bot"
+    
+    # Check sender_contact/sender_name patterns
+    sender_contact = (message.get("sender_contact") or "").lower()
+    sender_name = (message.get("sender_name") or "").lower()
+    
+    # Usernames ending with 'bot' are bots (Telegram convention)
+    if sender_contact.endswith('bot') or sender_contact.startswith('@') and sender_contact[1:].endswith('bot'):
+        return False, "Message blocked: Sender username indicates a Bot"
+    
+    # Names that are clearly bots
+    bot_name_indicators = [
+        "bot", "api", "notification", "alert", "update", "news",
+        "game", "play-to", "crypto", "nft", "token", "airdrop"
+    ]
+    
+    # Only block if name ENDS with bot or contains suspicious patterns
+    if sender_name.endswith('bot') or sender_name.endswith(' bot'):
+        return False, "Message blocked: Sender name indicates a Bot"
+    
+    # Check for gaming/crypto bot patterns in name
+    for indicator in ['play-to', 'airdrop', 'crypto game', 'nft game']:
+        if indicator in sender_name:
+            return False, f"Message blocked: Sender name contains bot indicator '{indicator}'"
+    
+    return True, None
+
+
 
 # ============ Filter Manager ============
 
@@ -477,6 +518,8 @@ class FilterManager:
         self.filter.add_rule(filter_automated_messages)
         # Add group/channel filter
         self.filter.add_rule(filter_chat_types)
+        # Add Telegram bot filter
+        self.filter.add_rule(filter_telegram_bots)
     
     def add_custom_rule(self, rule_func: Callable):
         """Add a custom filter rule"""

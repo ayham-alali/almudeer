@@ -451,6 +451,20 @@ class TelegramPhoneService:
                             logger.debug(f"Skipping self-message (sender_id matches our ID): {message.id}")
                             continue
                         
+                        # CRITICAL: Skip messages from Telegram Bots
+                        # This prevents promotional bots and gaming bots from entering inbox
+                        if sender:
+                            # Check the is_bot property (Telethon User object)
+                            sender_is_bot = getattr(sender, 'bot', False) or getattr(sender, 'is_bot', False)
+                            sender_username = getattr(sender, 'username', '') or ''
+                            
+                            # Also check username pattern (bots typically end with 'bot')
+                            username_is_bot = sender_username.lower().endswith('bot') if sender_username else False
+                            
+                            if sender_is_bot or username_is_bot:
+                                logger.debug(f"Skipping bot message from {sender_username or sender.id}: is_bot={sender_is_bot}, username_ends_bot={username_is_bot}")
+                                continue
+                        
                         # Skip messages older than since_time
                         if message.date and message.date.replace(tzinfo=None) < since_time:
                             break  # Messages are in reverse chronological order
