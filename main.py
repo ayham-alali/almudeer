@@ -24,7 +24,7 @@ load_dotenv()
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -515,6 +515,12 @@ async def verify_license(x_license_key: str = Header(None, alias="X-License-Key"
 async def robots_txt():
     """Robots.txt for crawlers"""
     return "User-agent: *\nDisallow: /"
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Return empty response for favicon requests to prevent 404 log spam."""
+    return Response(status_code=204)
 
 
 @app.get("/", response_model=HealthCheck)

@@ -504,7 +504,10 @@ class TelegramPhoneService:
                                 # Skip huge files to prevent memory issues > 5MB
                                 if hasattr(message.media, "document") and message.media.document.size > 5 * 1024 * 1024:
                                     logger.warning(f"Skipping large media file in message {message.id}")
-                                    continue
+                                    # Mark message as having skipped media so it's not retried infinitely
+                                    messages_data[-1]["media_skipped"] = True
+                                    messages_data[-1]["media_skip_reason"] = "file_too_large"
+                                    continue  # Skip downloading but keep the message
                                     
                                 # Download media to memory
                                 file_bytes = await message.download_media(file=bytes)

@@ -17,7 +17,7 @@ To trigger update:
 """
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
 import os
@@ -717,6 +717,29 @@ async def get_update_analytics(
 
 # ============ APK Download ============
 
+@router.head("/download/almudeer.apk", summary="Check APK file info (HEAD)")
+async def head_apk():
+    """
+    Return APK file headers without body.
+    Allows clients to check file existence and size before downloading.
+    """
+    if not os.path.exists(_APK_FILE):
+        raise HTTPException(
+            status_code=404,
+            detail="APK file not found. Please contact support."
+        )
+    
+    file_size = os.path.getsize(_APK_FILE)
+    return Response(
+        headers={
+            "Content-Length": str(file_size),
+            "Content-Type": "application/vnd.android.package-archive",
+            "Accept-Ranges": "bytes",
+            "Content-Disposition": "attachment; filename=almudeer.apk"
+        }
+    )
+
+
 @router.get("/download/almudeer.apk", summary="Download mobile app APK")
 async def download_apk():
     """
@@ -734,7 +757,8 @@ async def download_apk():
         filename="almudeer.apk",
         media_type="application/vnd.android.package-archive",
         headers={
-            "Content-Disposition": "attachment; filename=almudeer.apk"
+            "Content-Disposition": "attachment; filename=almudeer.apk",
+            "Accept-Ranges": "bytes"
         }
     )
 

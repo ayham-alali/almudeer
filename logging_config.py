@@ -63,6 +63,7 @@ def setup_logging(log_level: str = "INFO") -> None:
     
     # Set levels for third-party loggers
     logging.getLogger("uvicorn").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("fastapi").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
