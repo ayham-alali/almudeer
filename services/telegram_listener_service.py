@@ -300,6 +300,7 @@ class TelegramListenerService:
                                     attachments.append({
                                         "type": mime_type,
                                         "base64": b64_data,
+                                        "data": b64_data,
                                         "filename": f"tg_file_{channel_message_id}"
                                     })
                         except Exception as media_e:

@@ -343,10 +343,11 @@ async def receive_webhook(request: Request):
                     if msg.get("media_id"):
                         try:
                             content = await service.download_media(msg["media_id"])
-                            if content:
+                            if content and len(content) < 5 * 1024 * 1024:
                                 attachments.append({
                                     "type": msg.get("type", "image"),
                                     "base64": base64.b64encode(content).decode('utf-8'),
+                                    "data": base64.b64encode(content).decode('utf-8'),
                                     "file_id": msg["media_id"]
                                 })
                         except Exception as e:

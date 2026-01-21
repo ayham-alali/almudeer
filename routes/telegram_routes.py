@@ -144,7 +144,9 @@ async def telegram_webhook(
                     if file_info and file_info.get("file_path"):
                         content = await bot.download_file(file_info["file_path"])
                         if content and len(content) < 5*1024*1024:
-                            att["base64"] = base64.b64encode(content).decode('utf-8')
+                            b64 = base64.b64encode(content).decode('utf-8')
+                            att["base64"] = b64
+                            att["data"] = b64
         except: pass
 
     msg_id = await save_inbox_message(
