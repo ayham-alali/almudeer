@@ -6,6 +6,7 @@ Extracted from chat_routes.py for reuse in background workers.
 
 from typing import Optional, List, Dict
 import re
+import base64
 from logging_config import get_logger
 from models import update_inbox_analysis, create_outbox_message, approve_outbox_message, update_inbox_status
 from agent import process_message
@@ -34,6 +35,38 @@ async def process_inbox_message_logic(
             if sender:
                 try: chat_history = await get_chat_history_for_llm(license_id, sender, limit=10)
                 except: pass
+
+        # --- Voice Note Transcription (NEW) ---
+        # Decode and transcribe audio attachments so the AI can understand them
+        if attachments:
+            for att in attachments:
+                # Check for audio types
+                if att.get("type", "").startswith(("audio", "voice", "audio/ogg", "audio/mpeg", "audio/wav")):
+                    if att.get("base64"):
+                        try:
+                            logger.info(f"Transcribing voice note for message {message_id}...")
+                            audio_bytes = base64.b64decode(att["base64"])
+                            
+                            # Import here to avoid circular dependencies if any
+                            from services.voice_service import transcribe_voice_message
+                            
+                            # Transcribe
+                            trans_result = await transcribe_voice_message(audio_bytes)
+                            
+                            if trans_result["success"]:
+                                transcribed_text = trans_result["text"]
+                                logger.info(f"Transcription success for msg {message_id}: {transcribed_text[:50]}...")
+                                
+                                # Append to body
+                                if body:
+                                    body += f"\n\n[Voice Message Transcription]: {transcribed_text}"
+                                else:
+                                    body = f"[Voice Message Transcription]: {transcribed_text}"
+                            else:
+                                logger.warning(f"Transcription failed for msg {message_id}: {trans_result.get('error')}")
+                                
+                        except Exception as e:
+                            logger.error(f"Error processing voice attachment for msg {message_id}: {e}")
 
         # Detect media-only and skip full AI if just simple media
         is_media_only = False
