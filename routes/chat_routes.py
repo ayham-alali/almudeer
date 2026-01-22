@@ -178,7 +178,7 @@ async def send_chat_message(
     recipient_id = history[0].get("sender_id")
     
     outbox_id = await create_outbox_message(
-        inbox_message_id=0,
+        inbox_message_id=None,
         license_id=license["license_id"],
         channel=channel,
         body=body,

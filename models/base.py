@@ -138,7 +138,7 @@ async def init_enhanced_tables():
         await execute_sql(db, """
             CREATE TABLE IF NOT EXISTS outbox_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                inbox_message_id INTEGER NOT NULL,
+                inbox_message_id INTEGER,
                 license_key_id INTEGER NOT NULL,
                 channel TEXT NOT NULL,
                 recipient_id TEXT,
@@ -228,13 +228,19 @@ async def init_enhanced_tables():
         except:
             pass
 
-        # Migration for inbox_messages deleted_at
         try:
             await execute_sql(db, """
                 ALTER TABLE inbox_messages ADD COLUMN deleted_at TIMESTAMP
             """)
         except:
             pass
+
+        # Migration for outbox_messages inbox_message_id (PostgreSQL only)
+        if DB_TYPE == "postgresql":
+            try:
+                await execute_sql(db, "ALTER TABLE outbox_messages ALTER COLUMN inbox_message_id DROP NOT NULL")
+            except Exception as e:
+                print(f"Postgres Migration (drop not null) skipped: {e}")
 
         await commit_db(db)
         print("Enhanced tables initialized")
