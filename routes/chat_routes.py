@@ -50,9 +50,6 @@ class ApprovalRequest(BaseModel):
     action: str = Field(..., description="approve or ignore")
     edited_body: Optional[str] = None
 
-class ReactionRequest(BaseModel):
-    emoji: str = Field(..., description="Emoji to react with")
-
 class ForwardRequest(BaseModel):
     target_channel: str
     target_contact: str
@@ -124,13 +121,6 @@ async def get_conversation_messages_paginated(
 ):
     limit = min(max(1, limit), 100)
     result = await get_conversation_messages_cursor(license["license_id"], sender_contact, limit, cursor, direction)
-    
-    from models.reactions import get_reactions_for_messages
-    msg_ids = [m["id"] for m in result["messages"] if "id" in m]
-    reactions = await get_reactions_for_messages(msg_ids) if msg_ids else {}
-    for msg in result["messages"]:
-        msg["reactions"] = reactions.get(msg.get("id"), [])
-        
     return {**result, "sender_contact": sender_contact}
 
 @router.get("/conversations/{sender_contact:path}")
@@ -305,35 +295,11 @@ async def delete_multiple_conversations_route(
     return {"success": True, "count": len(request.sender_contacts), "message": "تم حذف المحادثات بنجاح"}
 
 
-# --- Reactions ---
-
 @router.post("/inbox/{message_id}/read")
 async def mark_message_as_read_route(message_id: int, license: dict = Depends(get_license_from_header)):
     from models.inbox import mark_message_as_read
     await mark_message_as_read(message_id, license["license_id"])
     return {"success": True}
-
-@router.post("/messages/{message_id}/reactions")
-async def add_reaction_route(message_id: int, reaction: ReactionRequest, license: dict = Depends(get_license_from_header)):
-    from models.reactions import add_reaction
-    from services.websocket_manager import broadcast_reaction_added
-    result = await add_reaction(message_id, license["license_id"], reaction.emoji, "agent")
-    if result["success"]:
-        await broadcast_reaction_added(license["license_id"], message_id, reaction.emoji, "agent")
-        return result
-    raise HTTPException(status_code=500, detail="فشل إضافة التفاعل")
-
-@router.delete("/messages/{message_id}/reactions/{emoji}")
-async def remove_reaction_route(message_id: int, emoji: str, license: dict = Depends(get_license_from_header)):
-    from models.reactions import remove_reaction
-    from services.websocket_manager import broadcast_reaction_removed
-    import urllib.parse
-    emoji = urllib.parse.unquote(emoji)
-    result = await remove_reaction(message_id, license["license_id"], emoji, "agent")
-    if result["success"]:
-        await broadcast_reaction_removed(license["license_id"], message_id, emoji, "agent")
-        return result
-    raise HTTPException(status_code=500, detail="فشل إزالة التفاعل")
 
 
 # --- Internal Background Tasks Implementation (Original core_integrations.py logic) ---
