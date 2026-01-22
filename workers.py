@@ -200,7 +200,7 @@ class MessagePoller:
                 
                 # Get all active licenses with integrations
                 active_licenses = await self._get_active_licenses()
-                now_iso = datetime.utcnow().isoformat()
+                now_iso = datetime.now(timezone.utc).isoformat()
                 self.status["email_polling"]["last_check"] = now_iso
                 self.status["telegram_polling"]["last_check"] = now_iso
                 
@@ -229,7 +229,7 @@ class MessagePoller:
                 
                 # Wait 300 seconds (5 minutes) before next poll - optimized for Gemini free tier
                 # This ensures we stay well within 15 RPM limit even with 10 users
-                next_ts = (datetime.utcnow() + timedelta(seconds=300)).isoformat()
+                next_ts = (datetime.now(timezone.utc) + timedelta(seconds=300)).isoformat()
                 self.status["email_polling"]["next_check"] = next_ts
                 await asyncio.sleep(300)
                 
@@ -474,7 +474,7 @@ class MessagePoller:
                 since_hours = 1
                 
             # Update last checked timestamp
-            self.status["email_polling"]["last_check"] = datetime.utcnow().isoformat()
+            self.status["email_polling"]["last_check"] = datetime.now(timezone.utc).isoformat()
             
             # Fetch emails
             # If backfill, fetch more (e.g. 500), otherwise standard limit

@@ -6,7 +6,7 @@ MTProto client for Telegram user accounts (phone numbers)
 import asyncio
 import os
 from typing import Optional, Dict, Tuple, List
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import time
 # Telethon imports moved to methods to avoid import-time side effects
 # from telethon import TelegramClient
@@ -93,7 +93,9 @@ class TelegramPhoneService:
                 last_error = e
                 # Exponential backoff: 1s, 2s, 4s
                 wait_time = 2 ** attempt
-                print(f"Telegram RPC error (attempt {attempt+1}/{retries}): {e}. Retrying in {wait_time}s...")
+                from logging_config import get_logger
+                logger = get_logger(__name__)
+                logger.warning(f"Telegram RPC error (attempt {attempt+1}/{retries}): {e}. Retrying in {wait_time}s...")
                 await asyncio.sleep(wait_time)
             except Exception as e:
                 # Don't retry other errors
@@ -396,8 +398,8 @@ class TelegramPhoneService:
             my_user_id = me.id if me else None
             logger.debug(f"Telegram phone session user ID: {my_user_id}")
             
-            # Calculate time threshold
-            since_time = datetime.now() - timedelta(hours=since_hours)
+            # Calculate time threshold (timezone-aware)
+            since_time = datetime.now(timezone.utc) - timedelta(hours=since_hours)
             
             # Get dialogs (conversations) with retry
             dialogs = await self._execute_with_retry(
@@ -408,6 +410,11 @@ class TelegramPhoneService:
             for dialog in dialogs[:limit]:
                 # Skip if it's a channel/group where we're not admin
                 if dialog.is_channel or dialog.is_group:
+                    continue
+                
+                # OPTIMIZATION: Skip dialogs where the last message is older than since_time
+                if dialog.message and dialog.message.date and dialog.message.date < since_time:
+                    logger.debug(f"Skipping dialog {dialog.id} - no recent messages (last: {dialog.message.date})")
                     continue
                 
                 # Filter out chats that are already replied to (last message is from us)
@@ -469,7 +476,7 @@ class TelegramPhoneService:
                                 continue
                         
                         # Skip messages older than since_time
-                        if message.date and message.date.replace(tzinfo=None) < since_time:
+                        if message.date and message.date < since_time:
                             break  # Messages are in reverse chronological order
                         
                         # sender was already fetched above for the self-message check
@@ -503,7 +510,7 @@ class TelegramPhoneService:
                             try:
                                 # Skip huge files to prevent memory issues > 5MB
                                 if hasattr(message.media, "document") and message.media.document.size > 5 * 1024 * 1024:
-                                    logger.warning(f"Skipping large media file in message {message.id}")
+                                    logger.info(f"Skipping large media file in message {message.id} (size: {message.media.document.size} bytes)")
                                     # Mark message as having skipped media so it's not retried infinitely
                                     messages_data[-1]["media_skipped"] = True
                                     messages_data[-1]["media_skip_reason"] = "file_too_large"
