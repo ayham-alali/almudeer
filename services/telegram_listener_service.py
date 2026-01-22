@@ -84,16 +84,9 @@ class TelegramListenerService:
         logger.info("Stopping Telegram Listener Service...")
         self.running = False
         
-        # Release lock if we own it
-        lock_file = "telegram_listener.lock"
-        try:
-            if os.path.exists(lock_file):
-                with open(lock_file, "r") as f:
-                    pid = int(f.read().strip())
-                if pid == os.getpid():
-                    os.remove(lock_file)
-        except Exception:
-            pass
+        # Release distributed lock if we own it
+        if self.distributed_lock:
+            await self.distributed_lock.release()
 
         if self.monitor_task:
             self.monitor_task.cancel()

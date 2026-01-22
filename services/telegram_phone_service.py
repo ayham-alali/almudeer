@@ -584,28 +584,45 @@ class TelegramPhoneService:
                 client_created_locally = True
             
             # CRITICAL: Fetch dialogs first to populate the entity cache
-            # This allows get_entity to resolve user IDs that the session has chatted with
+            # This allows get_entity to resolve user IDs that the session has chatted with.
+            # Increased limit to 500 to catch older conversations.
             logger.debug(f"Fetching dialogs to populate entity cache before sending to {recipient_id}")
-            await self._execute_with_retry(client.get_dialogs, limit=100)
+            await self._execute_with_retry(client.get_dialogs, limit=500)
             
-            # Try to parse as int (chat ID) or use as username
+            # Try to resolve entity
             entity = None
             try:
-                chat_id = int(recipient_id)
-                entity = await client.get_entity(chat_id)
-            except (ValueError, TypeError):
-                # Not a valid integer, try as username
-                pass
+                # 1. Try resolving directly (works if in cache or is phone/username)
+                chat_id_int = None
+                try:
+                    chat_id_int = int(recipient_id)
+                except:
+                    pass
+                
+                if chat_id_int:
+                    entity = await client.get_entity(chat_id_int)
+                else:
+                    entity = await client.get_entity(recipient_id)
             except Exception as e:
-                logger.warning(f"Failed to get entity by ID {recipient_id}: {e}")
+                logger.warning(f"Initial get_entity failed for {recipient_id}: {e}")
             
-            # If ID lookup failed, try as username/phone
+            # 2. Robust Fallback: Manually search dialogs if direct resolution failed for an ID
             if entity is None:
                 try:
-                    entity = await client.get_entity(recipient_id)
+                    chat_id_int = int(recipient_id)
+                    logger.debug(f"Entity not in cache for ID {recipient_id}. Manually searching dialogs...")
+                    async for dialog in client.iter_dialogs(limit=500):
+                        if dialog.id == chat_id_int:
+                            entity = dialog.entity
+                            break
+                except (ValueError, TypeError):
+                    pass # Not a numeric ID, can't use this fallback
                 except Exception as e:
-                    logger.error(f"Failed to get entity by username/phone {recipient_id}: {e}")
-                    raise ValueError(f"Cannot find any entity corresponding to '{recipient_id}'")
+                    logger.warning(f"Manual dialog search failed for {recipient_id}: {e}")
+            
+            if entity is None:
+                logger.error(f"Cannot find any entity corresponding to '{recipient_id}' after dialog search")
+                raise ValueError(f"Cannot find any entity corresponding to '{recipient_id}'")
             
             sent_message = await self._execute_with_retry(
                 client.send_message,
@@ -660,24 +677,40 @@ class TelegramPhoneService:
             
             # Fetch dialogs first to populate entity cache
             logger.debug(f"Fetching dialogs before sending voice to {recipient_id}")
-            await client.get_dialogs(limit=100)
+            await client.get_dialogs(limit=500)
             
             # Resolve entity
             entity = None
             try:
-                chat_id = int(recipient_id)
-                entity = await client.get_entity(chat_id)
+                chat_id_int = None
+                try:
+                    chat_id_int = int(recipient_id)
+                except:
+                    pass
+                
+                if chat_id_int:
+                    entity = await client.get_entity(chat_id_int)
+                else:
+                    entity = await client.get_entity(recipient_id)
             except (ValueError, TypeError):
                 pass
             except Exception as e:
                 logger.warning(f"Failed to get entity by ID {recipient_id}: {e}")
             
+            # Fallback search
             if entity is None:
                 try:
-                    entity = await client.get_entity(recipient_id)
-                except Exception as e:
-                    logger.error(f"Failed to get entity {recipient_id}: {e}")
-                    raise ValueError(f"Cannot find entity '{recipient_id}'")
+                    chat_id_int = int(recipient_id)
+                    async for dialog in client.iter_dialogs(limit=500):
+                        if dialog.id == chat_id_int:
+                            entity = dialog.entity
+                            break
+                except:
+                    pass
+
+            if entity is None:
+                logger.error(f"Cannot find entity '{recipient_id}'")
+                raise ValueError(f"Cannot find entity '{recipient_id}'")
             
             # Send voice message
             sent_message = await client.send_file(
@@ -720,22 +753,38 @@ class TelegramPhoneService:
                 client_created_locally = True
             
             # Fetch dialogs first
-            await client.get_dialogs(limit=100)
+            await client.get_dialogs(limit=500)
             
             # Resolve entity
             entity = None
             try:
-                chat_id = int(recipient_id)
-                entity = await client.get_entity(chat_id)
+                chat_id_int = None
+                try:
+                    chat_id_int = int(recipient_id)
+                except:
+                    pass
+                
+                if chat_id_int:
+                    entity = await client.get_entity(chat_id_int)
+                else:
+                    entity = await client.get_entity(recipient_id)
             except (ValueError, TypeError):
                 pass
             
+            # Fallback
             if entity is None:
                 try:
-                    entity = await client.get_entity(recipient_id)
-                except Exception as e:
-                    logger.error(f"Failed to get entity {recipient_id}: {e}")
-                    raise ValueError(f"Cannot find entity '{recipient_id}'")
+                    chat_id_int = int(recipient_id)
+                    async for dialog in client.iter_dialogs(limit=500):
+                        if dialog.id == chat_id_int:
+                            entity = dialog.entity
+                            break
+                except:
+                    pass
+
+            if entity is None:
+                logger.error(f"Cannot find entity '{recipient_id}'")
+                raise ValueError(f"Cannot find entity '{recipient_id}'")
             
             # Send file
             sent_message = await client.send_file(

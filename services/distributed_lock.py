@@ -1,5 +1,7 @@
 import os
 import asyncio
+import time
+from datetime import datetime, timezone
 from logging_config import get_logger
 from db_helper import get_db, execute_sql, fetch_one, DB_TYPE
 
@@ -7,57 +9,53 @@ logger = get_logger(__name__)
 
 class DistributedLock:
     """
-    Distributed lock mechanism using Database.
-    - Postgres: Uses Advisory Locks (session-level).
-    - SQLite: Uses a simple lock table with heartbeats.
+    Distributed lock mechanism using a dedicated Database table.
+    Works for both SQLite and PostgreSQL.
+    Uses a heartbeat (keep-alive) to ensure the lock is released if the process crashes.
     """
     
     def __init__(self, lock_id: int, lock_name: str = "telegram_listener"):
-        self.lock_id = lock_id # Integer ID for Postgres Advisory Lock
+        self.lock_id = lock_id
         self.lock_name = lock_name
         self.locked = False
         self._keepalive_task = None
+        self._lock_timeout = 30 # Seconds until lock expires without heartbeat
         
     async def acquire(self) -> bool:
         """Try to acquire the distributed lock"""
         try:
             async with get_db() as db:
-                if DB_TYPE == "postgresql":
-                    # key must be 64-bit int. We use lock_id.
-                    # pg_try_advisory_lock(key) returns boolean immediately
-                    row = await fetch_one(db, "SELECT pg_try_advisory_lock($1) as locked", [self.lock_id])
-                    if row and row['locked']:
-                        self.locked = True
-                        logger.info(f"Acquired distributed lock (Postgres ID {self.lock_id})")
-                        return True
-                    else:
-                        return False
-                else:
-                    # SQLite Fallback: Use table 'system_locks'
-                    # Create table if not exists
-                    await self._ensure_sqlite_table(db)
-                    
-                    # Try to insert or update if expired
-                    import time
-                    now = int(time.time())
-                    # Expire after 30 seconds
-                    
-                    # 1. Clear expired locks
-                    await execute_sql(db, "DELETE FROM system_locks WHERE lock_name = ? AND expires_at < ?", [self.lock_name, now])
-                    
-                    # 2. Try insert
-                    try:
-                        await execute_sql(db, "INSERT INTO system_locks (lock_name, expires_at) VALUES (?, ?)", [self.lock_name, now + 30])
-                        self.locked = True
-                        self._start_keepalive()
-                        logger.info(f"Acquired distributed lock (SQLite {self.lock_name})")
-                        return True
-                    except Exception:
-                        # Already exists
-                        return False
+                await self._ensure_table_exists(db)
+                
+                now = int(time.time())
+                
+                # 1. Clean up expired locks first
+                await execute_sql(db, "DELETE FROM system_locks WHERE lock_name = ? AND expires_at < ?", [self.lock_name, now])
+                if DB_TYPE != "postgresql":
+                    from db_helper import commit_db
+                    await commit_db(db)
+                
+                # 2. Try to insert the lock
+                try:
+                    await execute_sql(
+                        db, 
+                        "INSERT INTO system_locks (lock_name, expires_at, holder_pid) VALUES (?, ?, ?)", 
+                        [self.lock_name, now + self._lock_timeout, os.getpid()]
+                    )
+                    if DB_TYPE != "postgresql":
+                        from db_helper import commit_db
+                        await commit_db(db)
+                        
+                    self.locked = True
+                    self._start_keepalive()
+                    logger.info(f"Acquired distributed lock '{self.lock_name}' (PID {os.getpid()})")
+                    return True
+                except Exception:
+                    # Could not insert (lock already held by another active process)
+                    return False
                         
         except Exception as e:
-            logger.error(f"Error acquiring distributed lock: {e}")
+            logger.error(f"Error acquiring distributed lock '{self.lock_name}': {e}")
             return False
 
     async def release(self):
@@ -65,42 +63,78 @@ class DistributedLock:
         if not self.locked:
             return
 
+        # Stop heartbeat first
         if self._keepalive_task:
             self._keepalive_task.cancel()
+            try:
+                await self._keepalive_task
+            except asyncio.CancelledError:
+                pass
             self._keepalive_task = None
 
         try:
             async with get_db() as db:
-                if DB_TYPE == "postgresql":
-                    await execute_sql(db, "SELECT pg_advisory_unlock($1)", [self.lock_id])
-                else:
-                    await execute_sql(db, "DELETE FROM system_locks WHERE lock_name = ?", [self.lock_name])
+                await execute_sql(
+                    db, 
+                    "DELETE FROM system_locks WHERE lock_name = ? AND holder_pid = ?", 
+                    [self.lock_name, os.getpid()]
+                )
+                if DB_TYPE != "postgresql":
+                    from db_helper import commit_db
+                    await commit_db(db)
             
-            logger.info("Released distributed lock")
+            logger.info(f"Released distributed lock '{self.lock_name}'")
             self.locked = False
 
         except Exception as e:
-            logger.error(f"Error releasing lock: {e}")
+            logger.error(f"Error releasing distributed lock '{self.lock_name}': {e}")
 
-    async def _ensure_sqlite_table(self, db):
-        await execute_sql(db, """
+    async def _ensure_table_exists(self, db):
+        """Ensure the system_locks table exists"""
+        sql = """
             CREATE TABLE IF NOT EXISTS system_locks (
                 lock_name TEXT PRIMARY KEY,
-                expires_at INTEGER 
+                expires_at INTEGER,
+                holder_pid INTEGER,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        """)
+        """
+        # Note: commit_db is handled by execute_sql or context manager in some db_helper versions, 
+        # but here we follow the safe pattern.
+        await execute_sql(db, sql)
+        if DB_TYPE != "postgresql":
+            from db_helper import commit_db
+            await commit_db(db)
 
     def _start_keepalive(self):
-        """Start background task to refresh lock (SQLite only)"""
+        """Start background task to refresh the lock expiry"""
+        if self._keepalive_task:
+            return
+            
         async def keepalive():
-            import time
+            logger.debug(f"Starting keep-alive for lock '{self.lock_name}'")
             while self.locked:
-                await asyncio.sleep(10)
                 try:
+                    # Sleep for a fraction of the timeout
+                    await asyncio.sleep(self._lock_timeout // 3)
+                    
                     async with get_db() as db:
                         now = int(time.time())
-                        await execute_sql(db, "UPDATE system_locks SET expires_at = ? WHERE lock_name = ?", [now + 30, self.lock_name])
+                        await execute_sql(
+                            db, 
+                            "UPDATE system_locks SET expires_at = ? WHERE lock_name = ? AND holder_pid = ?", 
+                            [now + self._lock_timeout, self.lock_name, os.getpid()]
+                        )
+                        if DB_TYPE != "postgresql":
+                            from db_helper import commit_db
+                            await commit_db(db)
+                        logger.debug(f"Refreshed lock '{self.lock_name}'")
+                except asyncio.CancelledError:
+                    break
                 except Exception as e:
-                    logger.error(f"Error refreshing lock: {e}")
+                    logger.error(f"Error refreshing distributed lock '{self.lock_name}': {e}")
+                    # If we fail to refresh, should we consider ourself unlocked?
+                    # For now, we continue and hope next refresh works.
+                    await asyncio.sleep(5)
         
         self._keepalive_task = asyncio.create_task(keepalive())
