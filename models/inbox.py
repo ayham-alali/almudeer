@@ -599,6 +599,53 @@ async def get_inbox_status_counts(license_id: int) -> dict:
         }
 
 
+async def _get_sender_aliases(db, license_id: int, sender_contact: str) -> tuple:
+    """
+    Get all sender_contact and sender_id variants for a given sender.
+    This handles the case where the same Telegram user may have messages
+    stored with different identifiers (phone, username, or user ID).
+    
+    Returns:
+        Tuple of (all_contacts: set, all_ids: set)
+    """
+    # Handle tg: prefix
+    check_ids = [sender_contact]
+    if sender_contact.startswith("tg:"):
+        check_ids.append(sender_contact[3:])
+    
+    placeholders = ", ".join(["?" for _ in check_ids])
+    
+    # Query for all aliases
+    params = [license_id]
+    params.extend(check_ids)  # sender_contact IN
+    params.extend(check_ids)  # sender_id IN
+    params.append(f"%{sender_contact}%")  # LIKE
+    
+    aliases = await fetch_all(db, f"""
+        SELECT DISTINCT sender_contact, sender_id 
+        FROM inbox_messages 
+        WHERE license_key_id = ?
+        AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
+        AND deleted_at IS NULL
+    """, params)
+    
+    # Build comprehensive identifier sets
+    all_contacts = set([sender_contact])
+    all_ids = set()
+    
+    for row in aliases:
+        if row.get("sender_contact"):
+            all_contacts.add(row["sender_contact"])
+        if row.get("sender_id"):
+            all_ids.add(str(row["sender_id"]))
+    
+    # Also check if sender_contact looks like a plain ID and add it to all_ids
+    if sender_contact.isdigit():
+        all_ids.add(sender_contact)
+    
+    return all_contacts, all_ids
+
+
 async def get_conversation_messages(
     license_id: int,
     sender_contact: str,
@@ -607,30 +654,39 @@ async def get_conversation_messages(
     """
     Get all messages from a specific sender (for conversation detail view).
     NOTE: Excludes 'pending' status messages - only shows messages after AI responds.
-    """
-    # Handle the tg: prefix for telegram user IDs
-    # Handle tg: prefix for telegram user IDs
-    check_ids = [sender_contact]
-    if sender_contact.startswith("tg:"):
-        check_ids.append(sender_contact[3:])  # Add ID without tg: prefix
-
-    # Create placeholders for OR condition
-    # (sender_contact IN (?, ?) OR sender_id IN (?, ?) OR sender_contact LIKE ?)
-    placeholders = ", ".join(["?" for _ in check_ids])
     
-    params = [license_id]
-    params.extend(check_ids) # For sender_contact IN
-    params.extend(check_ids) # For sender_id IN
-    params.append(f"%{sender_contact}%") # For LIKE
-    params.append(limit)
-
+    Uses comprehensive alias matching to find all messages from the same sender,
+    even if stored with different identifier formats (phone, username, ID).
+    """
     async with get_db() as db:
+        # Get all aliases for this sender
+        all_contacts, all_ids = await _get_sender_aliases(db, license_id, sender_contact)
+        
+        # Build comprehensive WHERE clause
+        conditions = []
+        params = [license_id]
+        
+        # Match by sender_contact
+        if all_contacts:
+            contact_placeholders = ", ".join(["?" for _ in all_contacts])
+            conditions.append(f"sender_contact IN ({contact_placeholders})")
+            params.extend(list(all_contacts))
+        
+        # Match by sender_id
+        if all_ids:
+            id_placeholders = ", ".join(["?" for _ in all_ids])
+            conditions.append(f"sender_id IN ({id_placeholders})")
+            params.extend(list(all_ids))
+        
+        where_clause = " OR ".join(conditions) if conditions else "1=0"
+        params.append(limit)
+        
         rows = await fetch_all(
             db,
             f"""
             SELECT * FROM inbox_messages
             WHERE license_key_id = ?
-            AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
+            AND ({where_clause})
             AND status != 'pending'
             AND deleted_at IS NULL
             ORDER BY created_at DESC
@@ -653,19 +709,8 @@ async def get_conversation_messages_cursor(
     
     Cursor format: "{created_at_iso}_{message_id}"
     
-    Args:
-        license_id: The license ID
-        sender_contact: The sender's contact identifier
-        limit: Number of messages to fetch
-        cursor: Pagination cursor (created_at_iso_message_id)
-        direction: "older" to get older messages, "newer" for new messages
-        
-    Returns:
-        {
-            "messages": [...],
-            "next_cursor": "2024-01-01T12:00:00_123" or None,
-            "has_more": True/False
-        }
+    Uses comprehensive alias matching to find all messages from the same sender,
+    even if stored with different identifier formats (phone, username, ID).
     """
     import base64
     
@@ -683,14 +728,26 @@ async def get_conversation_messages_cursor(
         except Exception:
             pass  # Invalid cursor, start from beginning
     
-    # Handle tg: prefix
-    check_ids = [sender_contact]
-    if sender_contact.startswith("tg:"):
-        check_ids.append(sender_contact[3:])
-        
-    placeholders = ", ".join(["?" for _ in check_ids])
-    
     async with get_db() as db:
+        # Get all aliases for this sender
+        all_contacts, all_ids = await _get_sender_aliases(db, license_id, sender_contact)
+        
+        # Build comprehensive WHERE clause for sender matching
+        conditions = []
+        base_params = [license_id]
+        
+        if all_contacts:
+            contact_placeholders = ", ".join(["?" for _ in all_contacts])
+            conditions.append(f"sender_contact IN ({contact_placeholders})")
+            base_params.extend(list(all_contacts))
+        
+        if all_ids:
+            id_placeholders = ", ".join(["?" for _ in all_ids])
+            conditions.append(f"sender_id IN ({id_placeholders})")
+            base_params.extend(list(all_ids))
+        
+        sender_where = " OR ".join(conditions) if conditions else "1=0"
+        
         # Build query based on direction
         if direction == "older":
             # For scrolling up (loading older messages)
@@ -698,49 +755,40 @@ async def get_conversation_messages_cursor(
                 query = f"""
                     SELECT * FROM inbox_messages
                     WHERE license_key_id = ?
-                    AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
+                    AND ({sender_where})
                     AND status != 'pending'
+                    AND deleted_at IS NULL
                     AND (created_at < ? OR (created_at = ? AND id < ?))
                     ORDER BY created_at DESC, id DESC
                     LIMIT ?
                 """
-                params = [license_id]
-                params.extend(check_ids)
-                params.extend(check_ids)
-                params.append(f"%{sender_contact}%")
-                params.extend([cursor_created_at, cursor_created_at, cursor_id, limit + 1])
+                params = base_params + [cursor_created_at, cursor_created_at, cursor_id, limit + 1]
             else:
                 # No cursor - get newest messages first (bottom of chat)
                 query = f"""
                     SELECT * FROM inbox_messages
                     WHERE license_key_id = ?
-                    AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
+                    AND ({sender_where})
                     AND status != 'pending'
+                    AND deleted_at IS NULL
                     ORDER BY created_at DESC, id DESC
                     LIMIT ?
                 """
-                params = [license_id]
-                params.extend(check_ids)
-                params.extend(check_ids)
-                params.append(f"%{sender_contact}%")
-                params.append(limit + 1)
+                params = base_params + [limit + 1]
         else:
             # For loading newer messages (real-time updates)
             if cursor_created_at and cursor_id:
                 query = f"""
                     SELECT * FROM inbox_messages
                     WHERE license_key_id = ?
-                    AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
+                    AND ({sender_where})
                     AND status != 'pending'
+                    AND deleted_at IS NULL
                     AND (created_at > ? OR (created_at = ? AND id > ?))
                     ORDER BY created_at ASC, id ASC
                     LIMIT ?
                 """
-                params = [license_id]
-                params.extend(check_ids)
-                params.extend(check_ids)
-                params.append(f"%{sender_contact}%")
-                params.extend([cursor_created_at, cursor_created_at, cursor_id, limit + 1])
+                params = base_params + [cursor_created_at, cursor_created_at, cursor_id, limit + 1]
             else:
                 # No cursor for newer - return empty (must provide cursor)
                 return {"messages": [], "next_cursor": None, "has_more": False}
@@ -856,43 +904,41 @@ async def approve_chat_messages(license_id: int, sender_contact: str) -> int:
     Mark all 'analyzed' messages from a sender as 'approved'.
     Used when replying to a conversation to ensure the whole thread is marked as handled.
     Returns the count of messages updated.
+    
+    Uses comprehensive alias matching to find all messages from the same sender.
     """
     async with get_db() as db:
+        # Get all aliases for this sender
+        all_contacts, all_ids = await _get_sender_aliases(db, license_id, sender_contact)
+        
+        # Build comprehensive WHERE clause
+        conditions = []
+        params = [license_id]
+        
+        if all_contacts:
+            contact_placeholders = ", ".join(["?" for _ in all_contacts])
+            conditions.append(f"sender_contact IN ({contact_placeholders})")
+            params.extend(list(all_contacts))
+        
+        if all_ids:
+            id_placeholders = ", ".join(["?" for _ in all_ids])
+            conditions.append(f"sender_id IN ({id_placeholders})")
+            params.extend(list(all_ids))
+        
+        sender_where = " OR ".join(conditions) if conditions else "1=0"
+        
         # Update all 'analyzed' messages from this sender
         await execute_sql(
             db,
-            """
+            f"""
             UPDATE inbox_messages 
             SET status = 'approved'
             WHERE license_key_id = ?
-            AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
+            AND ({sender_where})
             AND status = 'analyzed'
             """,
-            [license_id, sender_contact, sender_contact, f"%{sender_contact}%"]
+            params
         )
-        
-        # Get count of affected rows (optional, or just return 0 to be fast)
-        # For meaningful return value:
-        # Use database-agnostic date comparison
-        if DB_TYPE == "postgresql":
-            date_filter = "processed_at >= NOW() - INTERVAL '1 minute'"
-        else:
-            date_filter = "processed_at >= datetime('now', '-1 minute')"
-        
-        row = await fetch_one(
-            db,
-            f"""
-            SELECT COUNT(*) as count FROM inbox_messages
-            WHERE license_key_id = ?
-            AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
-            AND status = 'approved'
-            AND {date_filter}
-            """, 
-            # Note: The count query is tricky because we just updated them. 
-            # Simpler to just return 1 or ignore count to avoid complex logic.
-            [license_id, sender_contact, sender_contact, f"%{sender_contact}%"]
-        )
-        # So we'll just return 0 or query count of all approved.
         
         await commit_db(db)
         await upsert_conversation_state(license_id, sender_contact)
@@ -959,27 +1005,49 @@ async def mark_message_as_read(message_id: int, license_id: int) -> bool:
 
 async def mark_chat_read(license_id: int, sender_contact: str) -> int:
     """
-    Mark all 'analyzed' messages from a sender as 'read'.
+    Mark all messages from a sender as 'read'.
     This clears the unread badge for the conversation.
     Returns the count of messages updated.
+    
+    Uses comprehensive alias matching to find all messages from the same sender.
     """
     async with get_db() as db:
+        # Get all aliases for this sender
+        all_contacts, all_ids = await _get_sender_aliases(db, license_id, sender_contact)
+        
+        # Build comprehensive WHERE clause
+        conditions = []
+        params = [license_id]
+        
+        if all_contacts:
+            contact_placeholders = ", ".join(["?" for _ in all_contacts])
+            conditions.append(f"sender_contact IN ({contact_placeholders})")
+            params.extend(list(all_contacts))
+        
+        if all_ids:
+            id_placeholders = ", ".join(["?" for _ in all_ids])
+            conditions.append(f"sender_id IN ({id_placeholders})")
+            params.extend(list(all_ids))
+        
+        sender_where = " OR ".join(conditions) if conditions else "1=0"
+        
         # Update all messages from this sender to is_read=1
-        query = """
-            UPDATE inbox_messages 
-            SET is_read = 1
-            WHERE license_key_id = ?
-            AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
-        """
         if DB_TYPE == "postgresql":
-            # Postgres needs TRUE/FALSE for boolean
-            query = query.replace("is_read = 1", "is_read = TRUE")
+            query = f"""
+                UPDATE inbox_messages 
+                SET is_read = TRUE
+                WHERE license_key_id = ?
+                AND ({sender_where})
+            """
+        else:
+            query = f"""
+                UPDATE inbox_messages 
+                SET is_read = 1
+                WHERE license_key_id = ?
+                AND ({sender_where})
+            """
             
-        await execute_sql(
-            db,
-            query,
-            [license_id, sender_contact, sender_contact, f"%{sender_contact}%"]
-        )
+        await execute_sql(db, query, params)
         await commit_db(db)
         await upsert_conversation_state(license_id, sender_contact)
         return 1
@@ -996,27 +1064,32 @@ async def get_full_chat_history(
     """
     Get complete chat history including both incoming (inbox) and outgoing (outbox) messages.
     Returns messages sorted by timestamp, each marked with 'direction' field.
+    
+    Uses comprehensive alias matching to find all messages from the same sender,
+    even if stored with different identifier formats (phone, username, ID).
     """
     async with get_db() as db:
-        # Get incoming messages (from client to us)
-        # NOTE: Exclude 'pending' status - only show messages after AI responds
-        # Handle tg: prefix
-        check_ids = [sender_contact]
-        if sender_contact.startswith("tg:"):
-            check_ids.append(sender_contact[3:])
-            
-        placeholders = ", ".join(["?" for _ in check_ids])
+        # Get all aliases for this sender
+        all_contacts, all_ids = await _get_sender_aliases(db, license_id, sender_contact)
+        
+        # Build comprehensive WHERE clause for sender matching
+        conditions = []
+        inbox_params = [license_id]
+        
+        if all_contacts:
+            contact_placeholders = ", ".join(["?" for _ in all_contacts])
+            conditions.append(f"sender_contact IN ({contact_placeholders})")
+            inbox_params.extend(list(all_contacts))
+        
+        if all_ids:
+            id_placeholders = ", ".join(["?" for _ in all_ids])
+            conditions.append(f"sender_id IN ({id_placeholders})")
+            inbox_params.extend(list(all_ids))
+        
+        sender_where = " OR ".join(conditions) if conditions else "1=0"
+        inbox_params.append(limit)
         
         # Get incoming messages (from client to us)
-        # NOTE: Exclude 'pending' status - only show messages after AI responds
-        
-        # Build params
-        params = [license_id]
-        params.extend(check_ids) # sender_contact IN
-        params.extend(check_ids) # sender_id IN
-        params.append(f"%{sender_contact}%") # LIKE
-        params.append(limit)
-        
         inbox_rows = await fetch_all(
             db,
             f"""
@@ -1028,26 +1101,30 @@ async def get_full_chat_history(
                 created_at, received_at
             FROM inbox_messages
             WHERE license_key_id = ?
-            AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
+            AND ({sender_where})
             AND status != 'pending'
             AND deleted_at IS NULL
             ORDER BY created_at ASC
             LIMIT ?
             """,
-            params
+            inbox_params
         )
         
-        # Get outgoing messages (from us to client) - sent replies
-        # Include delivery_status for real receipt display
-        # Get outgoing messages (from us to client) - sent replies
-        # Include delivery_status for real receipt display
-        
-        # Build params for outbox
-        # Outbox checks recipient_email or recipient_id
+        # Build params for outbox (uses recipient_email and recipient_id)
+        out_conditions = []
         out_params = [license_id]
-        out_params.extend(check_ids) # recipient_email IN
-        out_params.extend(check_ids) # recipient_id IN
-        out_params.append(f"%{sender_contact}%") # LIKE
+        
+        if all_contacts:
+            contact_placeholders = ", ".join(["?" for _ in all_contacts])
+            out_conditions.append(f"o.recipient_email IN ({contact_placeholders})")
+            out_params.extend(list(all_contacts))
+        
+        if all_ids:
+            id_placeholders = ", ".join(["?" for _ in all_ids])
+            out_conditions.append(f"o.recipient_id IN ({id_placeholders})")
+            out_params.extend(list(all_ids))
+        
+        out_where = " OR ".join(out_conditions) if out_conditions else "1=0"
         out_params.append(limit)
         
         outbox_rows = await fetch_all(
@@ -1062,7 +1139,7 @@ async def get_full_chat_history(
             FROM outbox_messages o
             LEFT JOIN inbox_messages i ON o.inbox_message_id = i.id
             WHERE o.license_key_id = ?
-            AND (o.recipient_email IN ({placeholders}) OR o.recipient_id IN ({placeholders}) OR o.recipient_email LIKE ?)
+            AND ({out_where})
             AND o.status IN ('sent', 'approved')
             AND o.deleted_at IS NULL
             ORDER BY o.created_at ASC
