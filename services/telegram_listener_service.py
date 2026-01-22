@@ -216,21 +216,24 @@ class TelegramListenerService:
                         return
                         
                     # Extract basic info
-                    if hasattr(sender, 'first_name'):
-                        sender_name = f"{sender.first_name} {sender.last_name or ''}".strip()
+                    sender_name = "Unknown"
+                    if hasattr(sender, 'first_name') and sender.first_name:
+                        sender_name = f"{sender.first_name or ''} {sender.last_name or ''}".strip()
                     elif hasattr(sender, 'title'): # Group/Channel
                         sender_name = sender.title
-                    else:
-                        sender_name = "Unknown"
+                    elif hasattr(sender, 'username') and sender.username:
+                        sender_name = sender.username
                         
                     sender_contact = None
-                    # FIX: Prioritize phone to match telegram_phone_service and prevent duplicates
+                    # Normalize contact extraction to match telegram_phone_service.py
                     if hasattr(sender, 'phone') and sender.phone:
                         # Normalize phone: always add + prefix
                         phone = sender.phone
                         sender_contact = "+" + phone if phone.isdigit() else phone
                     elif hasattr(sender, 'username') and sender.username:
-                        sender_contact = sender.username
+                        sender_contact = f"@{sender.username}"
+                    elif hasattr(sender, 'id'):
+                        sender_contact = str(sender.id)
                         
                     channel_message_id = str(event.message.id)
                     

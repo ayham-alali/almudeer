@@ -1434,7 +1434,7 @@ async def soft_delete_conversation(license_id: int, sender_contact: str) -> dict
     
     # Handle tg: prefix similar to other functions
     check_ids = [sender_contact]
-    if sender_contact.startswith("tg:"):
+    if sender_contact and sender_contact.startswith("tg:"):
         check_ids.append(sender_contact[3:])
         
     placeholders = ", ".join(["?" for _ in check_ids])
@@ -1748,7 +1748,7 @@ async def upsert_conversation_state(
         
         # Handle tg: prefix for accurate counts
         check_ids = [sender_contact]
-        if sender_contact.startswith("tg:"):
+        if sender_contact and sender_contact.startswith("tg:"):
             check_ids.append(sender_contact[3:])
             
         placeholders = ", ".join(["?" for _ in check_ids])
