@@ -105,6 +105,8 @@ class TelegramListenerService:
         """Periodically check for active sessions and start listeners"""
         while self.running:
             try:
+                # Heartbeat log - indicates leader is active and healthy
+                logger.info(f"[Heartbeat] Telegram Leader (PID: {os.getpid()}) syncing sessions...")
                 await self._sync_sessions()
             except Exception as e:
                 logger.error(f"Error syncing Telegram sessions: {e}")
@@ -399,7 +401,7 @@ class TelegramListenerService:
         # If we don't hold the distributed lock, we cannot start clients.
         # This handles multi-container deployments (Railway) correctly.
         if not self.distributed_lock or not self.distributed_lock.locked:
-             logger.warning(f"Process {os.getpid()} cannot start Telegram client (Not the Leader). Telegram features restricted to Leader process.")
+             logger.info(f"Process {os.getpid()} in standby mode (Not the Leader). Skipping client initialization.")
              return None
         # ----------------------
         

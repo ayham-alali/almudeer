@@ -706,7 +706,7 @@ class MessagePoller:
                 # If we can't get the managed client, we should NOT try to create our own
                 # independent one, as that triggers the session conflict.
                 # Just log and skip this poll cycle.
-                logger.warning(f"Skipping Telegram poll for {license_id}: No active client available in listener")
+                logger.info(f"Skipping Telegram poll for {license_id}: Process in Standby Mode")
                 return
 
             # Fetch messages using the managed client

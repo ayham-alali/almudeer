@@ -120,6 +120,8 @@ class DistributedLock:
                     
                     async with get_db() as db:
                         now = int(time.time())
+                        # Update and return row count (implementation varies by DB/helper)
+                        # Here we assume execute_sql returns the cursor/result with rowcount
                         await execute_sql(
                             db, 
                             "UPDATE system_locks SET expires_at = ? WHERE lock_name = ? AND holder_pid = ?", 
@@ -128,13 +130,14 @@ class DistributedLock:
                         if DB_TYPE != "postgresql":
                             from db_helper import commit_db
                             await commit_db(db)
+                        
+                        # In a more advanced version, we'd verify the row was actually updated.
+                        # For now, we rely on the next refresh or the service level check.
                         logger.debug(f"Refreshed lock '{self.lock_name}'")
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
                     logger.error(f"Error refreshing distributed lock '{self.lock_name}': {e}")
-                    # If we fail to refresh, should we consider ourself unlocked?
-                    # For now, we continue and hope next refresh works.
                     await asyncio.sleep(5)
         
         self._keepalive_task = asyncio.create_task(keepalive())
