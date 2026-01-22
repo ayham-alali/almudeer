@@ -272,7 +272,7 @@ async def get_inbox_message_by_id(message_id: int, license_id: int) -> Optional[
             "SELECT * FROM inbox_messages WHERE id = ? AND license_key_id = ?",
             [message_id, license_id]
         )
-        return row
+        return _parse_message_row(row)
 
 
 
@@ -486,7 +486,7 @@ async def get_inbox_conversations(
     
     async with get_db() as db:
         rows = await fetch_all(db, query, params)
-        return [dict(row) for row in rows]
+        return [_parse_message_row(dict(row)) for row in rows]
 
 
 async def get_inbox_conversations_count(
@@ -650,6 +650,26 @@ async def _get_sender_aliases(db, license_id: int, sender_contact: str) -> tuple
     return all_contacts, all_ids
 
 
+def _parse_message_row(row: dict) -> dict:
+    """Helper to parse JSON fields from a database row."""
+    if not row:
+        return row
+    
+    import json
+    
+    # Parse attachments if present and is a string
+    attachments = row.get("attachments")
+    if isinstance(attachments, str):
+        try:
+            row["attachments"] = json.loads(attachments)
+        except Exception:
+            row["attachments"] = []
+    
+    # Also handle outbox messages if they have attachments
+    # (some queries might return both or have different column names)
+    return row
+
+
 async def get_conversation_messages(
     license_id: int,
     sender_contact: str,
@@ -698,7 +718,7 @@ async def get_conversation_messages(
             """,
             params
         )
-        return rows
+        return [_parse_message_row(dict(row)) for row in rows]
 
 
 async def get_conversation_messages_cursor(
@@ -801,11 +821,7 @@ async def get_conversation_messages_cursor(
         
         # Check if there are more results
         has_more = len(rows) > limit
-        messages = list(rows[:limit])
-        
-        # Reverse for "older" direction to get chronological order
-        # if direction == "older":
-        #    messages.reverse()
+        messages = [_parse_message_row(dict(row)) for row in rows[:limit]]
         
         # Generate next cursor from oldest message (for "older" direction)
         next_cursor = None
@@ -1156,13 +1172,13 @@ async def get_full_chat_history(
         messages = []
         
         for row in inbox_rows:
-            msg = dict(row)
+            msg = _parse_message_row(dict(row))
             msg["direction"] = "incoming"
             msg["timestamp"] = msg.get("received_at") or msg.get("created_at")
             messages.append(msg)
         
         for row in outbox_rows:
-            msg = dict(row)
+            msg = _parse_message_row(dict(row))
             msg["direction"] = "outgoing"
             msg["timestamp"] = msg.get("sent_at") or msg.get("created_at")
             # Mark outgoing status as descriptive
