@@ -780,6 +780,15 @@ async def process_message_notifications(
     
     sender_contact = message_data.get("sender_contact")
 
+    # Skip notifications for chat channels (only allow system alerts)
+    # System alerts use send_notification() directly, not this function
+    CHAT_CHANNELS = {"whatsapp", "telegram", "telegram_bot", "telegram_phone", "gmail", "email"}
+    message_channel = message_data.get("channel", "").lower()
+    if message_channel in CHAT_CHANNELS:
+        logger.info(f"Notification Service: Skipping notification for chat channel '{message_channel}' (disabled)")
+        return []
+
+
     # 1. Deduplication (Same message ID processed recently?)
     # This prevents loops if both "polling" and "analysis" try to notify
     if message_id:

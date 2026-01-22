@@ -1148,6 +1148,12 @@ async def create_smart_notification(
     """Create smart notifications based on events"""
     data = data or {}
     
+    # Skip chat message notifications (keep only system alerts)
+    CHAT_MESSAGE_EVENTS = {"new_message", "urgent_message", "negative_sentiment", "vip_message"}
+    if event_type in CHAT_MESSAGE_EVENTS:
+        return None  # Chat notifications disabled
+
+    
     notifications_map = {
         "new_message": {
             "type": "message",
