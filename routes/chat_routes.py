@@ -402,18 +402,16 @@ async def send_approved_message(outbox_id: int, license_id: int):
                         listener = get_telegram_listener()
                         active_client = await listener.ensure_client_active(license_id)
                         
-                        if active_client:
-                            ps = TelegramPhoneService()
-                            await ps.send_message(
-                                session_string=session,
-                                recipient_id=str(message["recipient_id"]),
-                                text=body,
-                                client=active_client
-                            )
-                            await mark_outbox_sent(outbox_id)
-                            sent_anything = True
-                        else:
-                            print(f"Skipping Telegram send: No active client for license {license_id}")
+                        # Fallback: Always try to send, even if listener is absent (e.g. non-leader process)
+                        ps = TelegramPhoneService()
+                        await ps.send_message(
+                            session_string=session,
+                            recipient_id=str(message["recipient_id"]),
+                            text=body,
+                            client=active_client # Might be None, ps will handle it
+                        )
+                        await mark_outbox_sent(outbox_id)
+                        sent_anything = True
 
                 elif channel == "email":
                     tokens = await get_email_oauth_tokens(license_id)
@@ -512,15 +510,15 @@ async def send_approved_message(outbox_id: int, license_id: int):
                                 listener = get_telegram_listener()
                                 active_client = await listener.ensure_client_active(license_id)
                                 
-                                if active_client:
-                                    ps = TelegramPhoneService()
-                                    await ps.send_file(
-                                        session_string=session,
-                                        recipient_id=str(message["recipient_id"]),
-                                        file_path=tmp_path,
-                                        client=active_client
-                                    )
-                                    sent_anything = True
+                                # Fallback: Always try to send
+                                ps = TelegramPhoneService()
+                                await ps.send_file(
+                                    session_string=session,
+                                    recipient_id=str(message["recipient_id"]),
+                                    file_path=tmp_path,
+                                    client=active_client # Might be None
+                                )
+                                sent_anything = True
 
                         elif channel == "email":
                            # Email attachments are handled in batch with the text, but if we have ONLY attachments here (no body), we send them.
@@ -568,13 +566,15 @@ async def send_approved_message(outbox_id: int, license_id: int):
                         listener = get_telegram_listener()
                         active_client = await listener.ensure_client_active(license_id)
                         
-                        if active_client:
-                            ps = TelegramPhoneService()
+                        # Fallback: Always try to send
+                        ps = TelegramPhoneService()
+                        recipient = message.get("recipient_id") or message.get("sender_id")
+                        if recipient:
                             await ps.send_voice(
                                 session_string=session,
-                                recipient_id=str(message["recipient_id"]),
+                                recipient_id=str(recipient),
                                 audio_path=audio_path,
-                                client=active_client
+                                client=active_client # Might be None
                             )
                             sent_anything = True
                 
