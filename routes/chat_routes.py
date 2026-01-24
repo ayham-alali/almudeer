@@ -29,7 +29,9 @@ from models import (
     create_outbox_message,
     approve_outbox_message,
     get_pending_outbox,
+    get_pending_outbox,
     mark_outbox_sent,
+    mark_outbox_failed,
     get_email_oauth_tokens,
     get_whatsapp_config,
     get_telegram_phone_session_data,
@@ -437,6 +439,11 @@ async def send_approved_message(outbox_id: int, license_id: int):
                         sent_anything = True
             except Exception as e:
                 print(f"Error sending text via {channel}: {e}")
+                # We don't mark failed here yet, as we might send attachments/audio next? 
+                # Actually, usually it's one or the other or mixed.
+                # If text fails, we should probably fail the whole message or continue?
+                # Let's log it, and if at the end sent_anything is False, we mark failed.
+                pass
 
         # 2. SEND ATTACHMENTS
         if message.get("attachments"):
@@ -573,8 +580,14 @@ async def send_approved_message(outbox_id: int, license_id: int):
                 
                 if sent_anything and not message.get("status") == "sent":
                     await mark_outbox_sent(outbox_id)
+                elif not sent_anything:
+                    # If we tried to send but didn't succeed (e.g. invalid config or channel error)
+                    await mark_outbox_failed(outbox_id, "Failed to send message via any channel")
+
             except Exception as e:
                 print(f"Error sending audio via {channel}: {e}")
+                await mark_outbox_failed(outbox_id, str(e))
 
     except Exception as e:
         print(f"Error sending message {outbox_id}: {e}")
+        await mark_outbox_failed(outbox_id, str(e))

@@ -467,6 +467,49 @@ async def approve_outbox_message(message_id: int, edited_body: str = None):
             get_logger(__name__).warning(f"Broadcast failed in approve_outbox: {e}")
 
 
+async def mark_outbox_failed(message_id: int, error_message: str = None):
+    """Mark outbox message as failed (DB agnostic)."""
+
+    now = datetime.utcnow()
+    ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
+
+    async with get_db() as db:
+        # Get message details before update for upsert_conversation_state
+        message_row = await fetch_one(db, "SELECT license_key_id, inbox_message_id FROM outbox_messages WHERE id = ?", [message_id])
+
+        await execute_sql(
+            db,
+            """
+            UPDATE outbox_messages SET
+                status = 'failed', failed_at = ?, error_message = ?
+            WHERE id = ?
+            """,
+            [ts_value, error_message, message_id],
+        )
+        await commit_db(db)
+
+        if message_row and message_row["inbox_message_id"]:
+            # Fetch sender_contact from the original inbox message
+            inbox_msg = await fetch_one(db, "SELECT sender_contact FROM inbox_messages WHERE id = ?", [message_row["inbox_message_id"]])
+            if inbox_msg and inbox_msg["sender_contact"]:
+                await upsert_conversation_state(message_row["license_key_id"], inbox_msg["sender_contact"])
+
+        # Broadcast status update
+        try:
+            from services.websocket_manager import broadcast_message_status_update
+            if message_row:
+                lic_id = message_row["license_key_id"]
+                await broadcast_message_status_update(lic_id, {
+                    "outbox_id": message_id,
+                    "status": "failed",
+                    "error": error_message,
+                    "timestamp": ts_value.isoformat() if hasattr(ts_value, 'isoformat') else str(ts_value)
+                })
+        except Exception as e:
+            from logging_config import get_logger
+            get_logger(__name__).warning(f"Broadcast failed in mark_failed: {e}")
+
+
 async def mark_outbox_sent(message_id: int):
     """Mark outbox message as sent (DB agnostic)."""
 

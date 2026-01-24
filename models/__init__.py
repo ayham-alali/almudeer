@@ -156,7 +156,9 @@ __all__ = [
     "create_outbox_message",
     "approve_outbox_message",
     "mark_outbox_sent",
+    "approve_outbox_message",
     "mark_outbox_sent",
+    "mark_outbox_failed",
     "get_pending_outbox",
     "search_messages",
     # Customers
