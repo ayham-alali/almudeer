@@ -26,9 +26,20 @@ if not ADMIN_KEY:
 
 async def verify_admin(x_admin_key: str = Header(None, alias="X-Admin-Key")):
     """Verify admin key"""
-    if not x_admin_key or x_admin_key.strip() != ADMIN_KEY.strip():
+    # Robust normalization: remove ALL whitespace (interior/exterior)
+    # This handles accidental newlines/spaces in environment variables
+    clean_env_key = "".join(ADMIN_KEY.split()) if ADMIN_KEY else ""
+    clean_received_key = "".join(x_admin_key.split()) if x_admin_key else ""
+    
+    if not clean_received_key or clean_received_key != clean_env_key:
         from logging_config import get_logger
-        get_logger(__name__).warning(f"Admin authentication failed: Incorrect or missing key from remote.")
+        logger = get_logger(__name__)
+        logger.warning(
+            f"Admin authentication failed. "
+            f"Received len: {len(clean_received_key)}, "
+            f"Expected len: {len(clean_env_key)}. "
+            f"Function: verify_admin"
+        )
         raise HTTPException(status_code=403, detail="غير مصرح - Admin key required")
 
 
