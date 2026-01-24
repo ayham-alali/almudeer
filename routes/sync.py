@@ -139,7 +139,6 @@ async def _process_operation(op: SyncOperation, license_id: int, background_task
     )
     from models.inbox import (
         get_inbox_message_by_id,
-        ignore_chat,
         approve_chat_messages,
         update_inbox_status,
         soft_delete_message,
@@ -182,15 +181,17 @@ async def _process_operation(op: SyncOperation, license_id: int, background_task
             return SyncResult(operation_id=op.id, success=True)
             
         elif op.type == "ignore":
+            # LEGACY: Treat ignore as 'approve' (handled) for unified inbox
             message_id = op.payload.get("messageId")
             message = await get_inbox_message_by_id(message_id, license_id)
             
             if message:
                 sender = message.get("sender_contact") or message.get("sender_id")
                 if sender:
-                    await ignore_chat(license_id, sender)
+                    # Mark all as approved (handled)
+                    await approve_chat_messages(license_id, sender)
                 else:
-                    await update_inbox_status(message_id, "ignored")
+                    await update_inbox_status(message_id, "approved")
             
             return SyncResult(operation_id=op.id, success=True)
             
