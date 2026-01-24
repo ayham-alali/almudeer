@@ -2014,3 +2014,27 @@ async def upsert_conversation_state(
              await execute_sql(db, sql, params)
         
         await commit_db(db)
+
+
+def _parse_message_row(row: Optional[dict]) -> Optional[dict]:
+    """Parse JSON fields and normalize status for UI."""
+    if not row:
+        return None
+    
+    # Standardize as dict
+    msg = dict(row)
+    
+    # Parse attachments safely
+    import json
+    if "attachments" in msg and isinstance(msg["attachments"], str):
+        try:
+            msg["attachments"] = json.loads(msg["attachments"])
+        except:
+            msg["attachments"] = []
+    
+    # Normalize status for outgoing messages in consistent UI format
+    # 'approved' means it's ready to go, and usually shown as 'sending' in UI
+    if msg.get("direction") == "outgoing" and msg.get("status") == "approved":
+        msg["status"] = "sending"
+        
+    return msg
