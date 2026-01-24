@@ -837,8 +837,23 @@ async def get_conversation_messages_cursor(
             decoded = base64.b64decode(cursor).decode('utf-8')
             parts = decoded.rsplit('_', 1)
             if len(parts) == 2:
-                cursor_created_at = parts[0]
+                # Parse timestamp to datetime object
+                # asyncpg requires datetime object, not string
+                try:
+                    cursor_created_at = datetime.fromisoformat(parts[0])
+                    # Ensure naive UTC if needed (similar to save_inbox_message)
+                    if cursor_created_at.tzinfo is not None:
+                        cursor_created_at = cursor_created_at.astimezone(timezone.utc).replace(tzinfo=None)
+                except ValueError:
+                    # Fallback or treat as invalid
+                    cursor_created_at = None
+                
                 cursor_id = int(parts[1])
+                
+                # If parsing failed, invalidate cursor
+                if cursor_created_at is None:
+                    cursor_id = None
+                    
         except Exception:
             pass  # Invalid cursor, start from beginning
     
