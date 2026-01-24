@@ -264,11 +264,15 @@ async def edit_message_route(message_id: int, request: Request, license: dict = 
     return result
 
 @router.delete("/messages/{message_id}")
-async def delete_message_route(message_id: int, license: dict = Depends(get_license_from_header)):
+async def delete_message_route(
+    message_id: int, 
+    type: Optional[str] = None,
+    license: dict = Depends(get_license_from_header)
+):
     from models.inbox import soft_delete_message
     from services.websocket_manager import broadcast_message_deleted
     try:
-        result = await soft_delete_message(message_id, license["license_id"])
+        result = await soft_delete_message(message_id, license["license_id"], msg_type=type)
         await broadcast_message_deleted(license["license_id"], message_id)
         return result
     except ValueError as e:

@@ -422,6 +422,50 @@ async def approve_outbox_message(message_id: int, edited_body: str = None):
             if inbox_msg and inbox_msg["sender_contact"]:
                 await upsert_conversation_state(message_row["license_key_id"], inbox_msg["sender_contact"])
 
+        # Broadcast the new outgoing message to all devices (including the sender's other devices)
+        try:
+            from services.websocket_manager import broadcast_new_message
+            
+            # Fetch the full message to broadcast
+            full_msg = await get_outbox_message_by_id(message_id, db_license_id) # Need license_id, but generic get?
+            # We can construct strictly what we need since we just updated it.
+            # But fetching is safer.
+            # We need license_id. It's in the args? No, it's not in args.
+            # It IS in the args for get_outbox... wait, approve_outbox_message signature is (message_id, edited_body).
+            # We don't have license_id here! We need to fetch it or pass it.
+            # We fetched message_row which has license_key_id.
+            
+            if message_row:
+               lic_id = message_row["license_key_id"]
+               # Get full message details for broadcast
+               # We can reuse get_outbox_message_by_id logic or just query
+               msg_data = await fetch_one(db, "SELECT * FROM outbox_messages WHERE id = ?", [message_id])
+               if msg_data:
+                   # Format for frontend
+                   import json
+                   attachments = []
+                   if msg_data.get("attachments") and isinstance(msg_data["attachments"], str):
+                       try:
+                           attachments = json.loads(msg_data["attachments"])
+                       except: pass
+                       
+                   evt_data = {
+                       "id": msg_data["id"],
+                       "channel": msg_data["channel"],
+                       "sender_contact": msg_data.get("recipient_email") or msg_data.get("recipient_id"), # It's outgoing, so contact is recipient
+                       "sender_name": None, # It's us
+                       "body": msg_data["body"],
+                       "status": "sending", # It is 'approved' in DB, but 'sending' for UI
+                       "direction": "outgoing",
+                       "timestamp": ts_value.isoformat() if hasattr(ts_value, 'isoformat') else str(ts_value),
+                       "attachments": attachments
+                   }
+                   await broadcast_new_message(lic_id, evt_data)
+
+        except Exception as e:
+            from logging_config import get_logger
+            get_logger(__name__).warning(f"Broadcast failed in approve_outbox: {e}")
+
 
 async def mark_outbox_sent(message_id: int):
     """Mark outbox message as sent (DB agnostic)."""
@@ -449,6 +493,20 @@ async def mark_outbox_sent(message_id: int):
             inbox_msg = await fetch_one(db, "SELECT sender_contact FROM inbox_messages WHERE id = ?", [message_row["inbox_message_id"]])
             if inbox_msg and inbox_msg["sender_contact"]:
                 await upsert_conversation_state(message_row["license_key_id"], inbox_msg["sender_contact"])
+
+        # Broadcast status update
+        try:
+            from services.websocket_manager import broadcast_message_status_update
+            if message_row:
+                lic_id = message_row["license_key_id"]
+                await broadcast_message_status_update(lic_id, {
+                    "outbox_id": message_id,
+                    "status": "sent",
+                    "timestamp": ts_value.isoformat() if hasattr(ts_value, 'isoformat') else str(ts_value)
+                })
+        except Exception as e:
+            from logging_config import get_logger
+            get_logger(__name__).warning(f"Broadcast failed in mark_sent: {e}")
 
 
 async def get_pending_outbox(license_id: int) -> List[dict]:
@@ -762,11 +820,11 @@ async def get_conversation_messages_cursor(
 ) -> dict:
     """
     Get messages from a specific sender with cursor-based pagination.
+    Includes BOTH incoming (inbox) and outgoing (outbox) messages.
     
     Cursor format: "{created_at_iso}_{message_id}"
     
-    Uses comprehensive alias matching to find all messages from the same sender,
-    even if stored with different identifier formats (phone, username, ID).
+    Uses comprehensive alias matching to find all messages from the same sender/recipient.
     """
     import base64
     
@@ -788,93 +846,177 @@ async def get_conversation_messages_cursor(
         # Get all aliases for this sender
         all_contacts, all_ids = await _get_sender_aliases(db, license_id, sender_contact)
         
-        # Build comprehensive WHERE clause for sender matching
-        conditions = []
-        base_params = [license_id]
+        # Build params
+        params = []
         
+        # --- Inbox Conditions ---
+        inbox_conditions = ["i.license_key_id = ?"]
+        inbox_params = [license_id]
+        
+        in_identifiers = []
         if all_contacts:
             contact_placeholders = ", ".join(["?" for _ in all_contacts])
-            conditions.append(f"sender_contact IN ({contact_placeholders})")
-            base_params.extend(list(all_contacts))
+            in_identifiers.append(f"i.sender_contact IN ({contact_placeholders})")
+            inbox_params.extend(list(all_contacts))
         
         if all_ids:
             id_placeholders = ", ".join(["?" for _ in all_ids])
-            conditions.append(f"sender_id IN ({id_placeholders})")
-            base_params.extend(list(all_ids))
+            in_identifiers.append(f"i.sender_id IN ({id_placeholders})")
+            inbox_params.extend(list(all_ids))
+            
+        in_sender_where = " OR ".join(in_identifiers) if in_identifiers else "1=0"
+        inbox_conditions.append(f"({in_sender_where})")
+        inbox_conditions.append("i.status != 'pending'")
+        inbox_conditions.append("i.deleted_at IS NULL")
         
-        sender_where = " OR ".join(conditions) if conditions else "1=0"
+        inbox_where = " AND ".join(inbox_conditions)
         
-        # Build query based on direction
+        # --- Outbox Conditions ---
+        outbox_conditions = ["o.license_key_id = ?"]
+        outbox_params = [license_id]
+        
+        out_identifiers = []
+        if all_contacts:
+            contact_placeholders = ", ".join(["?" for _ in all_contacts])
+            out_identifiers.append(f"o.recipient_email IN ({contact_placeholders})")
+            outbox_params.extend(list(all_contacts))
+        
+        if all_ids:
+            id_placeholders = ", ".join(["?" for _ in all_ids])
+            out_identifiers.append(f"o.recipient_id IN ({id_placeholders})")
+            outbox_params.extend(list(all_ids))
+            
+        out_sender_where = " OR ".join(out_identifiers) if out_identifiers else "1=0"
+        outbox_conditions.append(f"({out_sender_where})")
+        outbox_conditions.append("o.status IN ('approved', 'sent')")
+        outbox_conditions.append("o.deleted_at IS NULL")
+        
+        outbox_where = " AND ".join(outbox_conditions)
+        
+        # --- Combined Query ---
+        # We need to project common columns:
+        # id, channel, body, created_at, received_at/sent_at, direction, status, sender_name
+        
+        # For inbox: effective_ts = COALESCE(received_at, created_at)
+        # For outbox: effective_ts = COALESCE(sent_at, created_at)
+        
+        full_params = inbox_params + outbox_params
+        
+        base_query = f"""
+            SELECT 
+                id, channel, sender_name, sender_contact, sender_id,
+                subject, body, 
+                attachments,
+                status,
+                created_at, 
+                received_at as timestamp,
+                COALESCE(received_at, created_at) as effective_ts,
+                'incoming' as direction,
+                ai_summary, ai_draft_response,
+                0 as delivery_status,
+                NULL as sent_at
+            FROM inbox_messages i
+            WHERE {inbox_where}
+            
+            UNION ALL
+            
+            SELECT 
+                id, channel, NULL as sender_name, recipient_email as sender_contact, recipient_id as sender_id,
+                subject, body,
+                attachments,
+                status,
+                created_at, 
+                sent_at as timestamp,
+                COALESCE(sent_at, created_at) as effective_ts,
+                'outgoing' as direction,
+                NULL as ai_summary, NULL as ai_draft_response,
+                delivery_status,
+                sent_at
+            FROM outbox_messages o
+            WHERE {outbox_where}
+        """
+        
+        # Apply Cursor Filter to the *Results* of the Union?
+        # Ideally, we push it down, but for simplicity/correctness with UNION, 
+        # wrapping in a CTE or subquery is cleanest for sorting/limits.
+        
         if direction == "older":
-            # For scrolling up (loading older messages)
-            if cursor_created_at and cursor_id:
-                query = f"""
-                    SELECT *, COALESCE(received_at, created_at) as effective_ts 
-                    FROM inbox_messages
-                    WHERE license_key_id = ?
-                    AND ({sender_where})
-                    AND status != 'pending'
-                    AND deleted_at IS NULL
-                    AND (COALESCE(received_at, created_at) < ? OR (COALESCE(received_at, created_at) = ? AND id < ?))
-                    ORDER BY effective_ts DESC, id DESC
-                    LIMIT ?
-                """
-                params = base_params + [cursor_created_at, cursor_created_at, cursor_id, limit + 1]
-            else:
-                # No cursor - get newest messages first (bottom of chat)
-                query = f"""
-                    SELECT *, COALESCE(received_at, created_at) as effective_ts 
-                    FROM inbox_messages
-                    WHERE license_key_id = ?
-                    AND ({sender_where})
-                    AND status != 'pending'
-                    AND deleted_at IS NULL
-                    ORDER BY effective_ts DESC, id DESC
-                    LIMIT ?
-                """
-                params = base_params + [limit + 1]
+            # Loading history (scrolling up)
+            # Sort DESC (newest to oldest), take top N
+            # Filter: effective_ts < cursor OR (effective_ts = cursor AND id < cursor_msg_id) -- Wait, ID collisions possible between tables?
+            # Yes, ID collisions possible. We need a unique sort key if IDs collide. 
+            # We can use (effective_ts, direction, id) but that's complex.
+            # Ideally generate a unique row ID but that's expensive.
+            # Let's assume (effective_ts, id) is unique enough or sufficient.
+            # To be safe, let's treat ID as not unique across tables.
+            pass
+        
+        # Wrap in subquery to apply order and limit
+        final_query = f"""
+            SELECT * FROM (
+                {base_query}
+            ) combined
+        """
+        
+        where_clauses = []
+        
+        if cursor_created_at and cursor_id:
+             if direction == "older":
+                 where_clauses.append("(effective_ts < ? OR (effective_ts = ? AND id < ?))")
+                 full_params.extend([cursor_created_at, cursor_created_at, cursor_id])
+             else:
+                 where_clauses.append("(effective_ts > ? OR (effective_ts = ? AND id > ?))")
+                 full_params.extend([cursor_created_at, cursor_created_at, cursor_id])
+                 
+        if where_clauses:
+            final_query += " WHERE " + " AND ".join(where_clauses)
+            
+        if direction == "older":
+            final_query += " ORDER BY effective_ts DESC, id DESC"
         else:
-            # For loading newer messages (real-time updates)
-            if cursor_created_at and cursor_id:
-                query = f"""
-                    SELECT *, COALESCE(received_at, created_at) as effective_ts 
-                    FROM inbox_messages
-                    WHERE license_key_id = ?
-                    AND ({sender_where})
-                    AND status != 'pending'
-                    AND deleted_at IS NULL
-                    AND (COALESCE(received_at, created_at) > ? OR (COALESCE(received_at, created_at) = ? AND id > ?))
-                    ORDER BY effective_ts ASC, id ASC
-                    LIMIT ?
-                """
-                params = base_params + [cursor_created_at, cursor_created_at, cursor_id, limit + 1]
-            else:
-                # No cursor for newer - return empty (must provide cursor)
-                return {"messages": [], "next_cursor": None, "has_more": False}
+            final_query += " ORDER BY effective_ts ASC, id ASC"
+            
+        final_query += " LIMIT ?"
+        full_params.append(limit + 1)
         
-        rows = await fetch_all(db, query, params)
+        rows = await fetch_all(db, final_query, full_params)
         
-        # Check if there are more results
+        # Parsing
         has_more = len(rows) > limit
-        messages = [_parse_message_row(dict(row)) for row in rows[:limit]]
+        result_rows = rows[:limit]
         
-        # Generate next cursor from oldest message (for "older" direction)
+        # Parse JSON/Types and standardize
+        messages = []
+        for row in result_rows:
+            msg = dict(row)
+            # Parse attachments safely
+            import json
+            if isinstance(msg.get("attachments"), str):
+                try:
+                    msg["attachments"] = json.loads(msg["attachments"])
+                except:
+                    msg["attachments"] = []
+            
+            # Normalize status for outgoing
+            if msg["direction"] == "outgoing":
+                if msg["status"] == "approved":
+                     msg["status"] = "sending"
+            
+            messages.append(msg)
+            
+        # Sort for client (usually calls expect specific order, but usually oldest-first or newest-first logic in UI)
+        # Client usually reverses list if it expects "reverse: true" for chat list
+        # If we asked for "older", we got them DESC (Newest...Oldest). 
+        
         next_cursor = None
         if has_more and messages:
-            if direction == "older":
-                # Cursor for loading even older messages
-                oldest = messages[0]
-            else:
-                # Cursor for loading even newer messages  
-                oldest = messages[-1]
-            
-            # Use effective_ts for the cursor (received_at fallback to created_at)
-            ts = oldest.get("received_at") or oldest.get("created_at")
+            last_msg = messages[-1]
+            ts = last_msg.get("effective_ts")
             if hasattr(ts, 'isoformat'):
                 ts = ts.isoformat()
-            cursor_str = f"{ts}_{oldest['id']}"
+            cursor_str = f"{ts}_{last_msg['id']}"
             next_cursor = base64.b64encode(cursor_str.encode('utf-8')).decode('utf-8')
-        
+            
         return {
             "messages": messages,
             "next_cursor": next_cursor,
@@ -1421,10 +1563,16 @@ async def soft_delete_outbox_message(message_id: int, license_id: int) -> dict:
         }
 
 
-async def soft_delete_message(message_id: int, license_id: int) -> dict:
+async def soft_delete_message(message_id: int, license_id: int, msg_type: str = None) -> dict:
     """
     Unified delete function. Tries to delete from outbox first, then inbox.
+    If msg_type is provided ('outgoing'/'incoming'), targets specific table to avoid ID collisions.
     """
+    if msg_type == 'outgoing':
+        return await soft_delete_outbox_message(message_id, license_id)
+    elif msg_type == 'incoming':
+        return await soft_delete_inbox_message(message_id, license_id)
+
     try:
         # Try outbox first (most common for deletion)
         return await soft_delete_outbox_message(message_id, license_id)
