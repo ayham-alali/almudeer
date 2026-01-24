@@ -130,19 +130,59 @@ class TelegramPhoneService:
         # 2. If it's a numeric ID and failed, try to find a resolvable alias in our DB
         if chat_id_int:
             try:
-                # Search Dialogs (More thorough than get_entity sometimes)
+                from db_helper import get_db, fetch_one
+                async with get_db() as db:
+                    # Look for ANY message from this sender that has a phone number or username
+                    row = await fetch_one(db, """
+                        SELECT sender_contact 
+                        FROM inbox_messages 
+                        WHERE sender_id = ? 
+                          AND sender_contact IS NOT NULL 
+                          AND sender_contact != sender_id
+                          AND sender_contact != ''
+                        LIMIT 1
+                    """, [str(chat_id_int)])
+                    
+                    if row:
+                        alias = row.get("sender_contact") or row[0]
+                        logger.info(f"Found resolvable alias '{alias}' for ID {recipient_id} in DB")
+                        try:
+                            # Try resolving by the alias (phone/username) which is more reliable
+                            entity = await client.get_entity(alias)
+                            if entity:
+                                return entity
+                        except Exception as e:
+                            logger.debug(f"Failed to resolve DB alias '{alias}': {e}")
+                
+                # 3. Try to fetch all dialogs first to populate cache (sometimes needed)
+                logger.debug(f"Entity {recipient_id} not in cache/DB. Fetching dialogs...")
+                await client.get_dialogs()
+                
+                # 4. Search Dialogs (More thorough than get_entity sometimes)
                 logger.debug(f"Entity {recipient_id} not in cache. Searching dialogs...")
                 async for dialog in client.iter_dialogs(limit=200):
                     if dialog.id == chat_id_int:
                         return dialog.entity
                 
-                # 3. Last Resort: Search messages if entity still not found
+                # 5. Last Resort: Search messages if entity still not found
                 logger.debug(f"Searching messages for {recipient_id}...")
                 async for msg in client.iter_messages(None, limit=50, search=str(chat_id_int)):
                     if msg.peer_id and (getattr(msg.peer_id, 'user_id', None) == chat_id_int or 
                                        getattr(msg.peer_id, 'channel_id', None) == chat_id_int or
                                        getattr(msg.peer_id, 'chat_id', None) == chat_id_int):
                         return await msg.get_sender() or await client.get_entity(msg.peer_id)
+                
+                # 6. Final Resort: Attempt to resolve via GetFullUser
+                # Sometimes calling this with a PeerUser(id) forces resolution if the ID is valid.
+                logger.debug(f"Attempting GetFullUser resolution for {recipient_id}...")
+                from telethon.tl.functions.users import GetFullUserRequest
+                from telethon.tl.types import PeerUser
+                try:
+                    full_user = await client(GetFullUserRequest(PeerUser(chat_id_int)))
+                    if full_user and full_user.users:
+                        return full_user.users[0]
+                except Exception as e:
+                    logger.debug(f"GetFullUserRequest failed for {recipient_id}: {e}")
 
             except Exception as e:
                 logger.warning(f"Extended resolution failed for {recipient_id}: {e}")
