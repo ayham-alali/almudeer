@@ -142,7 +142,8 @@ class GmailAPIService:
         to_email: str,
         subject: str,
         body: str,
-        reply_to_message_id: str = None
+        reply_to_message_id: str = None,
+        attachments: List[Dict] = None
     ) -> Dict:
         """
         Send an email message
@@ -150,14 +151,16 @@ class GmailAPIService:
         Args:
             to_email: Recipient email address
             subject: Email subject
+            subject: Email subject
             body: Email body (plain text)
             reply_to_message_id: Optional Gmail message ID to reply to
+            attachments: Optional list of dicts with 'filename' and 'base64' keys
         
         Returns:
             Dictionary with sent message info
         """
         # Create MIME message
-        msg = MIMEMultipart('alternative')
+        msg = MIMEMultipart('mixed') if attachments else MIMEMultipart('alternative')
         msg['To'] = to_email
         msg['Subject'] = subject
         
@@ -183,8 +186,46 @@ class GmailAPIService:
                 pass  # Continue even if we can't get thread info
         
         # Add plain text body
-        text_part = MIMEText(body, 'plain', 'utf-8')
-        msg.attach(text_part)
+        # If it's mixed (has attachments), we need to nest the alternative part (text/html)
+        if attachments:
+            msg_alt = MIMEMultipart('alternative')
+            msg_alt.attach(MIMEText(body, 'plain', 'utf-8'))
+            msg.attach(msg_alt)
+        else:
+            msg.attach(MIMEText(body, 'plain', 'utf-8'))
+        
+        # Add attachments
+        if attachments:
+            from email.mime.base import MIMEBase
+            from email import encoders
+            import mimetypes
+            
+            for att in attachments:
+                if not att.get("base64") or not att.get("filename"):
+                    continue
+                    
+                content_type, encoding = mimetypes.guess_type(att["filename"])
+                if content_type is None or encoding is not None:
+                    # No guess could be made, or the file is encoded (compressed), so
+                    # use a generic bag-of-bits type.
+                    content_type = 'application/octet-stream'
+                
+                main_type, sub_type = content_type.split('/', 1)
+                
+                try:
+                    file_data = base64.b64decode(att["base64"])
+                    
+                    part = MIMEBase(main_type, sub_type)
+                    part.set_payload(file_data)
+                    encoders.encode_base64(part)
+                    part.add_header(
+                        'Content-Disposition',
+                        f'attachment; filename="{att["filename"]}"'
+                    )
+                    msg.attach(part)
+                except Exception as e:
+                    print(f"Error attaching file {att['filename']}: {e}")
+
         
         # Encode message as base64url
         raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode()

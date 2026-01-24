@@ -421,14 +421,122 @@ async def send_approved_message(outbox_id: int, license_id: int):
                 elif channel == "email":
                     tokens = await get_email_oauth_tokens(license_id)
                     if tokens:
+                        # Extract attachments for email
+                        import json
+                        email_attachments = []
+                        if message.get("attachments"):
+                            if isinstance(message["attachments"], str):
+                                try: email_attachments = json.loads(message["attachments"])
+                                except: pass
+                            elif isinstance(message["attachments"], list):
+                                email_attachments = message["attachments"]
+
                         gs = GmailAPIService(tokens["access_token"], tokens.get("refresh_token"), GmailOAuthService())
-                        await gs.send_message(to_email=message["recipient_email"], subject=message.get("subject", "رد"), body=body)
+                        await gs.send_message(
+                            to_email=message["recipient_email"], 
+                            subject=message.get("subject", "رد"), 
+                            body=body,
+                            attachments=email_attachments
+                        )
                         await mark_outbox_sent(outbox_id)
                         sent_anything = True
             except Exception as e:
                 print(f"Error sending text via {channel}: {e}")
 
-        # 2. SEND ATTACHMENTS (Skipped logic for brevity, would implement similar to original)
+        # 2. SEND ATTACHMENTS
+        if message.get("attachments"):
+            import json
+            import mimetypes
+            
+            attachments_list = []
+            if isinstance(message["attachments"], str):
+                try:
+                    attachments_list = json.loads(message["attachments"])
+                except: pass
+            elif isinstance(message["attachments"], list):
+                attachments_list = message["attachments"]
+                
+            for att in attachments_list:
+                if not att.get("base64") or not att.get("filename"):
+                    continue
+                
+                try:
+                    # Generic handling: Write to temp file
+                    file_data = base64.b64decode(att["base64"])
+                    suffix = os.path.splitext(att["filename"])[1]
+                    
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                        tmp.write(file_data)
+                        tmp_path = tmp.name
+                    
+                    try:
+                        mime_type = att.get("mime_type") or mimetypes.guess_type(att["filename"])[0] or "application/octet-stream"
+                        
+                        if channel == "whatsapp":
+                            config = await get_whatsapp_config(license_id)
+                            if config:
+                                from services.whatsapp_service import WhatsAppService
+                                ws = WhatsAppService(config["phone_number_id"], config["access_token"])
+                                mid = await ws.upload_media(tmp_path, mime_type=mime_type)
+                                if mid:
+                                    if mime_type.startswith("image/"):
+                                        await ws.send_image_message(message["recipient_id"], mid)
+                                    elif mime_type.startswith("video/"):
+                                        await ws.send_video_message(message["recipient_id"], mid)
+                                    else:
+                                        await ws.send_document_message(message["recipient_id"], mid, att["filename"])
+                                    sent_anything = True
+
+                        elif channel == "telegram_bot":
+                             from db_helper import get_db, fetch_one
+                             async with get_db() as db:
+                                row = await fetch_one(db, "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?", [license_id])
+                                if row:
+                                    ts = TelegramService(row["bot_token"])
+                                    if mime_type.startswith("image/"):
+                                        await ts.send_photo(chat_id=message["recipient_id"], photo_path=tmp_path)
+                                    elif mime_type.startswith("video/"):
+                                        await ts.send_video(chat_id=message["recipient_id"], video_path=tmp_path)
+                                    elif mime_type.startswith("audio/"):
+                                        await ts.send_audio(chat_id=message["recipient_id"], audio_path=tmp_path)
+                                    else:
+                                        await ts.send_document(chat_id=message["recipient_id"], document_path=tmp_path)
+                                    sent_anything = True
+
+                        elif channel == "telegram":
+                            session = await get_telegram_phone_session_data(license_id)
+                            if session:
+                                from services.telegram_listener_service import get_telegram_listener
+                                listener = get_telegram_listener()
+                                active_client = await listener.ensure_client_active(license_id)
+                                
+                                if active_client:
+                                    ps = TelegramPhoneService()
+                                    await ps.send_file(
+                                        session_string=session,
+                                        recipient_id=str(message["recipient_id"]),
+                                        file_path=tmp_path,
+                                        client=active_client
+                                    )
+                                    sent_anything = True
+
+                        elif channel == "email":
+                           # Email attachments are handled in batch with the text, but if we have ONLY attachments here (no body), we send them.
+                           # However, standard flow is: send_approved_message is called once. 
+                           # If we already sent text in block #1, we shouldn't send another email just for attachments? - Logic flaw potential.
+                           # Optimization: We should group outgoing email into ONE call with both text and attachments.
+                           # But for now, let's assume if body existed it was sent. If we send attachments separately it might be spammy.
+                           # Let's fix block #1 to include attachments if channel is email.
+                           pass 
+                           
+                    finally:
+                        try:
+                            os.remove(tmp_path)
+                        except: pass
+                        
+                except Exception as att_e:
+                    print(f"Error sending attachment {att.get('filename')}: {att_e}")
+
         # 3. SEND AUDIO
         if audio_path:
             try:
@@ -449,6 +557,23 @@ async def send_approved_message(outbox_id: int, license_id: int):
                         if row:
                             ts = TelegramService(row["bot_token"])
                             await ts.send_voice(chat_id=message["recipient_id"], audio_path=audio_path)
+                            sent_anything = True
+
+                elif channel == "telegram":
+                    session = await get_telegram_phone_session_data(license_id)
+                    if session:
+                        from services.telegram_listener_service import get_telegram_listener
+                        listener = get_telegram_listener()
+                        active_client = await listener.ensure_client_active(license_id)
+                        
+                        if active_client:
+                            ps = TelegramPhoneService()
+                            await ps.send_voice(
+                                session_string=session,
+                                recipient_id=str(message["recipient_id"]),
+                                audio_path=audio_path,
+                                client=active_client
+                            )
                             sent_anything = True
                 
                 if sent_anything and not message.get("status") == "sent":
