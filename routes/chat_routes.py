@@ -317,6 +317,16 @@ async def mark_message_as_read_route(message_id: int, license: dict = Depends(ge
     return {"success": True}
 
 
+@router.post("/conversations/{sender_contact:path}/read")
+async def mark_conversation_read_route(
+    sender_contact: str,
+    license: dict = Depends(get_license_from_header)
+):
+    from models.inbox import mark_chat_read
+    count = await mark_chat_read(license["license_id"], sender_contact)
+    return {"success": True, "count": count}
+
+
 # --- Internal Background Tasks Implementation (Original core_integrations.py logic) ---
 
 async def analyze_inbox_message(
