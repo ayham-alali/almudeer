@@ -210,19 +210,14 @@ async def approve_chat_message(
     background_tasks: BackgroundTasks,
     license: dict = Depends(get_license_from_header)
 ):
-    from models.inbox import get_inbox_message_by_id, ignore_chat, approve_chat_messages
+    from models.inbox import get_inbox_message_by_id, approve_chat_messages
     message = await get_inbox_message_by_id(message_id, license["license_id"])
     if not message: 
         from logging_config import get_logger
         get_logger(__name__).warning(f"Approve attempt for non-existent message: {message_id} (License ID: {license['license_id']})")
         raise HTTPException(status_code=404, detail="الرسالة غير موجودة")
     
-    if approval.action == "ignore":
-        sender = message.get("sender_contact") or message.get("sender_id")
-        count = await ignore_chat(license["license_id"], sender) if sender else 1
-        return {"success": True, "message": f"تم تجاهل المحادثة ({count} رسائل)"}
-    
-    elif approval.action == "approve":
+    if approval.action == "approve":
         body = approval.edited_body or message.get("ai_draft_response")
         if not body: raise HTTPException(status_code=400, detail="لا يوجد رد للإرسال")
         

@@ -538,15 +538,13 @@ async def get_inbox_conversations(
     This is O(1) per page instead of O(N) full scan.
     """
     params = [license_id]
-    where_clauses = ["license_key_id = ?"]
+    where_clauses = ["license_key_id = ?", "ic.status != 'pending'"]
     
-    if status and status != "all":
-        where_clauses.append("status = ?")
-        params.append(status)
-        
-    if channel and channel != "all":
-        where_clauses.append("channel = ?")
+    if channel:
+        where_clauses.append("ic.channel = ?")
         params.append(channel)
+        
+    # status filter removed to unify inbox
         
     where_sql = " AND ".join(where_clauses)
     
@@ -577,76 +575,15 @@ async def get_inbox_conversations_count(
 ) -> int:
     """
     Get total number of unique conversations (senders).
-    Counts conversations by their LATEST message status (same logic as get_inbox_conversations).
+    Uses the optimized inbox_conversations table.
     """
-    from db_helper import DB_TYPE
+    query = "SELECT COUNT(*) as count FROM inbox_conversations WHERE license_key_id = ? AND status != 'pending'"
+    params = [license_id]
     
-    # Build base WHERE for license (always applied)
-    base_where = "license_key_id = ?"
-    base_params = [license_id]
-    
-    # Channel filter can be applied in base query
     if channel:
-        base_where += " AND channel = ?"
-        base_params.append(channel)
-    
-    # Build status filter (applied AFTER grouping)
-    # NOTE: Always exclude 'pending' - messages before AI responds should not be counted
-    status_filter = ""
-    status_params = []
-    if status == 'sent':
-        status_filter = "status IN ('approved', 'sent', 'auto_replied')"
-    elif status:
-        status_filter = "status = ?"
-        status_params.append(status)
-    
-    # Always exclude 'pending' status (before AI responds)
-    pending_filter = "status != 'pending'"
-    
-    if DB_TYPE == "postgresql":
-        # PostgreSQL: Count unique senders where latest message matches status
-        # Build combined WHERE for final filter
-        final_where_parts = [pending_filter]
-        if status_filter:
-            final_where_parts.append(status_filter)
-        final_where = " AND ".join(final_where_parts)
+        query += " AND channel = ?"
+        params.append(channel)
         
-        query = f"""
-            WITH latest_per_sender AS (
-                SELECT DISTINCT ON (COALESCE(sender_contact, sender_id::text, 'unknown'))
-                    status
-                FROM inbox_messages
-                WHERE {base_where}
-                ORDER BY COALESCE(sender_contact, sender_id::text, 'unknown'), created_at DESC
-            )
-            SELECT COUNT(*) as count
-            FROM latest_per_sender
-            WHERE {final_where}
-        """
-        params = base_params + status_params
-    else:
-        # SQLite version - count conversations where latest message matches status
-        # Build combined WHERE for final filter
-        final_filter_parts = [pending_filter]
-        if status_filter:
-            final_filter_parts.append(status_filter)
-        final_filter = " AND ".join(final_filter_parts)
-        
-        query = f"""
-            SELECT COUNT(*) as count
-            FROM inbox_messages m
-            WHERE {base_where}
-            AND m.id = (
-                SELECT m3.id FROM inbox_messages m3
-                WHERE m3.license_key_id = m.license_key_id
-                AND COALESCE(m3.sender_contact, m3.sender_id, 'unknown') = COALESCE(m.sender_contact, m.sender_id, 'unknown')
-                ORDER BY m3.created_at DESC
-                LIMIT 1
-            )
-            AND {final_filter}
-        """
-        params = base_params + status_params
-    
     async with get_db() as db:
         row = await fetch_one(db, query, params)
         return row["count"] if row else 0
@@ -655,28 +592,19 @@ async def get_inbox_conversations_count(
 async def get_inbox_status_counts(license_id: int) -> dict:
     """Get counts using the optimized inbox_conversations table."""
     async with get_db() as db:
-        # We count CONVERSATIONS (rows in inbox_conversations), not individual messages
-        # This aligns with the "Inbox" view
+        # We count ALL CONVERSATIONS since we are unifying the inbox
+        # status IN ('analyzed', 'sent', 'ignored', 'approved', 'auto_replied')
+        # Basically anything not 'pending'
         
         analyzed_row = await fetch_one(db, """
             SELECT COUNT(*) as count FROM inbox_conversations 
             WHERE license_key_id = ? AND status = 'analyzed'
         """, [license_id])
         
-        sent_row = await fetch_one(db, """
-            SELECT COUNT(*) as count FROM inbox_conversations 
-            WHERE license_key_id = ? AND status = 'sent'
-        """, [license_id])
-        
-        ignored_row = await fetch_one(db, """
-            SELECT COUNT(*) as count FROM inbox_conversations 
-            WHERE license_key_id = ? AND status = 'ignored'
-        """, [license_id])
-        
         return {
             "analyzed": analyzed_row["count"] if analyzed_row else 0,
-            "sent": sent_row["count"] if sent_row else 0,
-            "ignored": ignored_row["count"] if ignored_row else 0
+            "sent": 0,
+            "ignored": 0
         }
 
 
@@ -1039,77 +967,7 @@ async def get_conversation_messages_cursor(
         }
 
 
-async def ignore_chat(license_id: int, sender_contact: str) -> int:
-    """
-    Mark all messages from a sender as 'ignored' (entire chat).
-    Returns the count of messages updated.
-    
-    Robustness:
-    - Finds all aliases (sender_id, sender_contact) associated with this connection
-    - Updates all messages matching ANY of these aliases
-    - Commits immediately
-    """
-    from logging_config import get_logger
-    logger = get_logger(__name__)
-    
-    logger.info(f"ignore_chat called: license_id={license_id}, sender_contact='{sender_contact}'")
-    
-    async with get_db() as db:
-        # 1. Find all sender_ids and sender_contacts associated with this contact
-        # This handles cases where some messages have username and others have user_id
-        aliases_rows = await fetch_all(
-            db,
-            """
-            SELECT DISTINCT sender_contact, sender_id 
-            FROM inbox_messages 
-            WHERE license_key_id = ? 
-            AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
-            """,
-            [license_id, sender_contact, sender_contact, f"%{sender_contact}%"]
-        )
-        
-        # Collect all unique identifiers
-        identifiers = set()
-        identifiers.add(sender_contact)
-        for r in aliases_rows:
-            if r.get("sender_contact"): identifiers.add(r["sender_contact"])
-            if r.get("sender_id"): identifiers.add(str(r["sender_id"]))
-            
-        logger.info(f"Identified aliases for ignore: {identifiers}")
-        
-        # Build dynamic OR query
-        conditions = []
-        params = [license_id]
-        for ident in identifiers:
-            conditions.append("sender_contact = ? OR sender_id = ?")
-            params.extend([ident, ident])
-            
-        where_clause = f"license_key_id = ? AND ({' OR '.join(conditions)})"
-        
-        # Update
-        await execute_sql(
-            db,
-            f"UPDATE inbox_messages SET status = 'ignored' WHERE {where_clause}",
-            params
-        )
-        
-        # CRITICAL: Commit immediately
-        await commit_db(db)
-        
-        # Count result
-        # Note: We can just return the number of updated rows if the driver supported it,
-        # but for now we count again.
-        row = await fetch_one(
-            db,
-            f"SELECT COUNT(*) as count FROM inbox_messages WHERE {where_clause} AND status = 'ignored'",
-            params
-        )
-        result_count = row["count"] if row else 0
-        logger.info(f"Messages now with status='ignored': {result_count}")
-        
-        if result_count > 0:
-            await upsert_conversation_state(license_id, sender_contact)
-        return result_count
+# ignore_chat removed as per request to unify inbox
 
 
 async def approve_chat_messages(license_id: int, sender_contact: str) -> int:
