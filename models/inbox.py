@@ -913,7 +913,7 @@ async def get_conversation_messages_cursor(
                 COALESCE(received_at, created_at) as effective_ts,
                 'incoming' as direction,
                 ai_summary, ai_draft_response,
-                0 as delivery_status,
+                NULL as delivery_status,
                 NULL as sent_at
             FROM inbox_messages i
             WHERE {inbox_where}
