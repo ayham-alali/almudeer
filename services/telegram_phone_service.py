@@ -635,8 +635,8 @@ class TelegramPhoneService:
                     logger.warning(f"Manual dialog search failed for {recipient_id}: {e}")
             
             if entity is None:
-                logger.error(f"Cannot find any entity corresponding to '{recipient_id}' after dialog search")
-                raise ValueError(f"Cannot find any entity corresponding to '{recipient_id}'")
+                logger.error(f"Cannot find any entity corresponding to '{recipient_id}' after dialog search and message history fallback.")
+                raise ValueError(f"لم نتمكن من العثور على جهة الاتصال {recipient_id}. هل قام بمراسلتك مؤخراً؟")
             
             sent_message = await self._execute_with_retry(
                 client.send_message,
