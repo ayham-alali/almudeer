@@ -24,23 +24,37 @@ if not ADMIN_KEY:
     raise ValueError("ADMIN_KEY environment variable is required")
 
 
-async def verify_admin(x_admin_key: str = Header(None, alias="X-Admin-Key")):
-    """Verify admin key"""
-    # Robust normalization: remove ALL whitespace (interior/exterior)
-    # This handles accidental newlines/spaces in environment variables
-    clean_env_key = "".join(ADMIN_KEY.split()) if ADMIN_KEY else ""
-    clean_received_key = "".join(x_admin_key.split()) if x_admin_key else ""
-    
-    if not clean_received_key or clean_received_key != clean_env_key:
-        from logging_config import get_logger
-        logger = get_logger(__name__)
-        logger.warning(
-            f"Admin authentication failed. "
-            f"Received len: {len(clean_received_key)}, "
-            f"Expected len: {len(clean_env_key)}. "
-            f"Function: verify_admin"
-        )
-        raise HTTPException(status_code=403, detail="غير مصرح - Admin key required")
+async def verify_admin(
+    x_admin_key: str = Header(None, alias="X-Admin-Key"),
+    x_license_key: str = Header(None, alias="X-License-Key")
+):
+    """
+    Verify authentication level.
+    Returns a dict with session info for use in endpoint handlers.
+    """
+    # 1. Check for Admin Key
+    if x_admin_key:
+        clean_env_key = "".join(ADMIN_KEY.split()) if ADMIN_KEY else ""
+        clean_received_key = "".join(x_admin_key.split()) if x_admin_key else ""
+        
+        if clean_received_key and clean_received_key == clean_env_key:
+            return {"is_admin": True, "license_id": None}
+
+    # 2. Check for License Key (Regular User Access)
+    if x_license_key:
+        from database import validate_license_key
+        result = await validate_license_key(x_license_key)
+        if result.get("valid"):
+            return {"is_admin": False, "license_id": result["license_id"]}
+
+    # 3. Both failed - Log and Reject
+    from logging_config import get_logger
+    logger = get_logger(__name__)
+    logger.warning(
+        f"Authentication failed for {x_admin_key[:5] if x_admin_key else 'None'} / {x_license_key[:5] if x_license_key else 'None'}. "
+        f"Function: verify_admin"
+    )
+    raise HTTPException(status_code=403, detail="غير مصرح - مفتاح المدير أو مفتاح الاشتراك مطلوب")
 
 
 # ============ Schemas ============
@@ -82,14 +96,13 @@ class SubscriptionUpdate(BaseModel):
 @router.post("/create", response_model=SubscriptionResponse)
 async def create_subscription(
     subscription: SubscriptionCreate,
-    _: None = Depends(verify_admin)
+    auth: dict = Depends(verify_admin)
 ):
     """
-    Create a new subscription key for a client.
-    
-    This endpoint allows easy generation of subscription keys with customizable
-    validity period and request limits.
+    Create a new subscription key for a client (Admin Only).
     """
+    if not auth["is_admin"]:
+        raise HTTPException(status_code=403, detail="هذا الإجراء متاح لمدير النظام فقط")
     import os
     from logging_config import get_logger
     
@@ -132,13 +145,15 @@ async def create_subscription(
 async def list_subscriptions(
     active_only: bool = False,
     limit: int = 100,
-    _: None = Depends(verify_admin)
+    auth: dict = Depends(verify_admin)
 ):
     """
-    List all subscriptions with filtering options.
+    List subscriptions with appropriate access level.
+    Admins see all, users see only their own.
     """
     import os
     from database import DB_TYPE, DATABASE_PATH, DATABASE_URL, POSTGRES_AVAILABLE
+    from datetime import datetime
     
     try:
         subscriptions = []
@@ -205,6 +220,10 @@ async def list_subscriptions(
                         
                         subscriptions.append(row_dict)
         
+        # Filter for non-admin users: only show their own subscription
+        if not auth["is_admin"]:
+            subscriptions = [s for s in subscriptions if s["id"] == auth["license_id"]]
+        
         return SubscriptionListResponse(
             subscriptions=subscriptions,
             total=len(subscriptions)
@@ -220,9 +239,11 @@ async def list_subscriptions(
 @router.get("/{license_id}")
 async def get_subscription(
     license_id: int,
-    _: None = Depends(verify_admin)
+    auth: dict = Depends(verify_admin)
 ):
     """Get details of a specific subscription"""
+    if not auth["is_admin"] and license_id != auth["license_id"]:
+        raise HTTPException(status_code=403, detail="غير مصرح لك بالوصول إلى بيانات هذا الاشتراك")
     from database import get_license_key_by_id, DB_TYPE
     from db_helper import get_db, fetch_one
     
@@ -294,9 +315,11 @@ async def get_subscription(
 async def update_subscription(
     license_id: int,
     update: SubscriptionUpdate,
-    _: None = Depends(verify_admin)
+    auth: dict = Depends(verify_admin)
 ):
-    """Update subscription settings"""
+    """Update subscription settings (Admin Only)"""
+    if not auth["is_admin"]:
+        raise HTTPException(status_code=403, detail="هذا الإجراء متاح لمدير النظام فقط")
     from database import DB_TYPE, DATABASE_PATH, DATABASE_URL, POSTGRES_AVAILABLE
     from db_helper import get_db, fetch_one, execute_sql, commit_db
     from logging_config import get_logger
@@ -384,9 +407,11 @@ async def update_subscription(
 @router.post("/{license_id}/regenerate-key")
 async def regenerate_subscription_key(
     license_id: int,
-    _: None = Depends(verify_admin)
+    auth: dict = Depends(verify_admin)
 ):
-    """Regenerate and save license key for old subscriptions that don't have encrypted key"""
+    """Regenerate and save license key (Admin Only)"""
+    if not auth["is_admin"]:
+        raise HTTPException(status_code=403, detail="هذا الإجراء متاح لمدير النظام فقط")
     from database import DB_TYPE, hash_license_key
     from db_helper import get_db, fetch_one, execute_sql, commit_db
     from security import encrypt_sensitive_data
@@ -451,9 +476,11 @@ async def regenerate_subscription_key(
 @router.delete("/{license_id}")
 async def delete_subscription(
     license_id: int,
-    _: None = Depends(verify_admin)
+    auth: dict = Depends(verify_admin)
 ):
-    """Delete a subscription permanently (hard delete)"""
+    """Delete a subscription permanently (Admin Only)"""
+    if not auth["is_admin"]:
+        raise HTTPException(status_code=403, detail="هذا الإجراء متاح لمدير النظام فقط")
     from db_helper import get_db, fetch_one, execute_sql, commit_db
     from database import DB_TYPE
     from models import delete_preferences
@@ -574,9 +601,11 @@ async def validate_subscription_key(
 async def get_subscription_usage(
     license_id: int,
     days: int = 30,
-    _: None = Depends(verify_admin)
+    auth: dict = Depends(verify_admin)
 ):
     """Get usage statistics for a subscription"""
+    if not auth["is_admin"] and license_id != auth["license_id"]:
+        raise HTTPException(status_code=403, detail="غير مصرح لك بالوصول إلى إحصائيات هذا الاشتراك")
     from database import DB_TYPE
     from db_helper import get_db, fetch_all, fetch_one
     
