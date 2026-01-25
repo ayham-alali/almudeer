@@ -47,7 +47,7 @@ async def fix_int32_range_issues():
                     else:
                         logger.warning(f"Could not change message_reactions.message_id: {e}")
                 
-                # 3. Fix outbox_messages.inbox_message_id
+                # 3. Fix outbox_messages.inbox_message_id and outbox_messages.id
                 try:
                     await execute_sql(db, """
                         ALTER TABLE outbox_messages 
@@ -59,6 +59,18 @@ async def fix_int32_range_issues():
                         logger.debug(f"outbox_messages.inbox_message_id already BIGINT or error: {e}")
                     else:
                         logger.warning(f"Could not change outbox_messages.inbox_message_id: {e}")
+
+                try:
+                    await execute_sql(db, """
+                        ALTER TABLE outbox_messages 
+                        ALTER COLUMN id TYPE BIGINT
+                    """)
+                    logger.info("✅ Changed outbox_messages.id to BIGINT")
+                except Exception as e:
+                    if "already" in str(e).lower() or "does not exist" in str(e).lower():
+                        logger.debug(f"outbox_messages.id already BIGINT or error: {e}")
+                    else:
+                        logger.warning(f"Could not change outbox_messages.id: {e}")
                 
                 # 4. Fix customer_messages.inbox_message_id if table exists
                 try:
