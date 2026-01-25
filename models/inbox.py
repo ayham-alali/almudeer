@@ -1998,6 +1998,8 @@ async def upsert_conversation_state(
             # No valid messages? (Maybe all pending or deleted).
             # We keep the conversation entry with 0 counts so it stays in Inbox
             # unless explicitly deleted via soft_delete_conversation.
+            ts_now = datetime.now(timezone.utc).replace(tzinfo=None) if DB_TYPE == "postgresql" else datetime.now().isoformat()
+            
             await execute_sql(
                 db, 
                 """
@@ -2006,7 +2008,7 @@ async def upsert_conversation_state(
                     unread_count = 0, message_count = 0, updated_at = ?
                 WHERE license_key_id = ? AND sender_contact = ?
                 """, 
-                [ts_value, license_id, sender_contact]
+                [ts_now, license_id, sender_contact]
             )
             return
 
@@ -2078,7 +2080,7 @@ async def upsert_conversation_state(
         cols = ", ".join(fields)
         
         if DB_TYPE == "postgresql":
-            # Simple upsert
+            # PostgreSQL upsert
             sql = f"""
                 INSERT INTO inbox_conversations ({cols}) VALUES ({placeholders})
                 ON CONFLICT (license_key_id, sender_contact) DO UPDATE SET
@@ -2093,7 +2095,6 @@ async def upsert_conversation_state(
             """
             if sender_name: sql += ", sender_name = EXCLUDED.sender_name"
             if channel: sql += ", channel = EXCLUDED.channel"
-            
             await execute_sql(db, sql, params)
             
         else:

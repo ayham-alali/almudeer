@@ -272,4 +272,54 @@ async def ensure_user_preferences_columns():
                     logger.debug(f"Note: user_preferences.{col_name} check: {e}")
                 pass
     
-    logger.info("User preferences columns verified")
+async def ensure_inbox_conversations_pk():
+    """Ensure inbox_conversations has a primary key on (license_key_id, sender_contact)."""
+    from db_helper import get_db, execute_sql, commit_db, DB_TYPE
+    from logging_config import get_logger
+    
+    logger = get_logger(__name__)
+    
+    async with get_db() as db:
+        if DB_TYPE == "postgresql":
+            try:
+                # Check if PK exists
+                # This query is robust for PostgreSQL
+                row = await db.fetchrow("""
+                    SELECT 1
+                    FROM pg_index i
+                    JOIN pg_class c ON c.oid = i.indrelid
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE c.relname = 'inbox_conversations'
+                    AND n.nspname = 'public'
+                    AND i.indisprimary
+                """)
+                
+                if not row:
+                    logger.info("Adding missing Primary Key to inbox_conversations...")
+                    # 1. Cleanup duplicates just in case
+                    await execute_sql(db, """
+                        DELETE FROM inbox_conversations a USING (
+                            SELECT MIN(ctid) as ctid, license_key_id, sender_contact
+                            FROM inbox_conversations 
+                            GROUP BY license_key_id, sender_contact HAVING COUNT(*) > 1
+                        ) b
+                        WHERE a.license_key_id = b.license_key_id 
+                        AND a.sender_contact = b.sender_contact 
+                        AND a.ctid <> b.ctid
+                    """)
+                    
+                    # 2. Add PK
+                    await execute_sql(db, """
+                        ALTER TABLE inbox_conversations 
+                        ADD PRIMARY KEY (license_key_id, sender_contact)
+                    """)
+                    await commit_db(db)
+                    logger.info("Successfully added Primary Key to inbox_conversations")
+            except Exception as e:
+                logger.error(f"Error ensuring inbox_conversations PK: {e}")
+        else:
+            # SQLite handles PK in CREATE TABLE IF NOT EXISTS in the migration script.
+            # But we can verify it if we really wanted to. Usually not needed for SQLite as it was correct from start.
+            pass
+
+logger.info("User preferences columns verified")
