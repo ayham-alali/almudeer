@@ -1605,8 +1605,13 @@ async def soft_delete_conversation(license_id: int, sender_contact: str) -> dict
         
         await commit_db(db)
         
-    # Update state - this will see 0 messages and delete the conversation row
-    await upsert_conversation_state(license_id, sender_contact)
+        # Explicitly delete the conversation entry so it's removed from Inbox
+        await execute_sql(
+            db,
+            "DELETE FROM inbox_conversations WHERE license_key_id = ? AND sender_contact = ?",
+            [license_id, sender_contact]
+        )
+        await commit_db(db)
     
     return {"success": True, "message": "تم حذف المحادثة بنجاح"}
 
@@ -1975,14 +1980,18 @@ async def upsert_conversation_state(
         
         if not last_message:
             # No valid messages? (Maybe all pending or deleted).
-            # Clean up empty conversation entry to prevent ghost chats.
-            # NOTE: We only delete if there are truly no messages left.
-            if message_count == 0:
-                await execute_sql(
-                    db, 
-                    "DELETE FROM inbox_conversations WHERE license_key_id = ? AND sender_contact = ?", 
-                    [license_id, sender_contact]
-                )
+            # We keep the conversation entry with 0 counts so it stays in Inbox
+            # unless explicitly deleted via soft_delete_conversation.
+            await execute_sql(
+                db, 
+                """
+                UPDATE inbox_conversations SET 
+                    last_message_id = 0, last_message_body = '', 
+                    unread_count = 0, message_count = 0, updated_at = ?
+                WHERE license_key_id = ? AND sender_contact = ?
+                """, 
+                [ts_value, license_id, sender_contact]
+            )
             return
 
         status = last_message["status"]
