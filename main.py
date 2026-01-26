@@ -458,9 +458,9 @@ async def list_all_routes(x_admin_key: str = Header(None, alias="X-Admin-Key")):
     if is_production:
         # In production, require admin key
         if not x_admin_key or x_admin_key != ADMIN_KEY:
-            raise HTTPException(
-                status_code=403, 
-                detail="Debug endpoint not available in production without admin key"
+            raise AuthorizationError(
+                message="Debug endpoint not available in production without admin key",
+                message_ar="عذراً، هذا الإجراء غير متاح في بيئة الإنتاج"
             )
     
     logger = logging.getLogger("debug")
@@ -501,131 +501,45 @@ v1_router.include_router(subscription_router, prefix="")
 
 # ============ License Key Middleware ============
 
+from errors import (
+    AuthenticationError, 
+    NotFoundError, 
+    AuthorizationError, 
+    ValidationError
+)
+
+# ... (omitted imports)
+
 async def verify_license(x_license_key: str = Header(None, alias="X-License-Key")) -> dict:
     """Dependency to verify license key from header"""
     if not x_license_key:
         logger.warning("License key missing in request header")
-        raise HTTPException(
-            status_code=401,
-            detail={"error": "مفتاح الاشتراك مطلوب", "code": "LICENSE_REQUIRED"}
+        raise AuthenticationError(
+            message="License key required",
+            message_ar="مفتاح الاشتراك مطلوب للمتابعة"
         )
     
     result = await validate_license_key(x_license_key)
     
     if not result["valid"]:
         logger.warning(f"Invalid license key attempt: {x_license_key[:10]}...")
-        raise HTTPException(
-            status_code=401,
-            detail={"error": result["error"], "code": "LICENSE_INVALID"}
+        raise AuthenticationError(
+            message=result["error"],
+            message_ar="مفتاح الاشتراك غير صالح أو منتهي الصلاحية"
         )
     
     logger.debug(f"License validated for company: {result.get('company_name')}")
     return result
 
-
-# ============ Public Routes ============
-
-@app.get("/robots.txt", response_class=PlainTextResponse)
-async def robots_txt():
-    """Robots.txt for crawlers"""
-    return "User-agent: *\nDisallow: /"
-
-
-@app.get("/favicon.ico", include_in_schema=False)
-async def favicon():
-    """Return empty response for favicon requests to prevent 404 log spam."""
-    return Response(status_code=204)
-
-
-@app.get("/", response_model=HealthCheck)
-async def root():
-    """Health check endpoint"""
-    return HealthCheck()
-
-
-@app.get("/health", response_model=HealthCheck, tags=["System"])
-async def health_check():
-    """
-    Health check endpoint with system status.
-    
-    Returns:
-        - status: Service health status
-        - database: Database connection status
-        - cache: Cache availability
-        - timestamp: Unix timestamp
-    """
-    import time
-    from cache import cache
-    
-    health_data = {
-        "status": "healthy",
-        "timestamp": time.time(),
-        "database": "connected",
-        "cache": "available" if cache.use_redis or cache.memory_cache else "unavailable",
-        "version": "1.0.0",
-        "service": "Al-Mudeer API"
-    }
-    
-    # Test database connection
-    try:
-        from database import DATABASE_PATH
-        import os
-        if os.path.exists(DATABASE_PATH):
-            health_data["database"] = "connected"
-        else:
-            health_data["database"] = "not_found"
-            health_data["status"] = "degraded"
-    except Exception as e:
-        health_data["database"] = f"error: {str(e)}"
-        health_data["status"] = "unhealthy"
-        logger.error(f"Health check database error: {e}")
-    
-    return HealthCheck(**health_data)
-
-
-@app.post("/api/auth/validate", response_model=LicenseKeyResponse, tags=["Authentication"])
-@limiter.limit("10/minute")  # Rate limit: 10 validations per minute per IP
-async def validate_license(request: Request, data: LicenseKeyValidation):
-    """
-    Validate a license key and return details.
-    
-    Args:
-        data: License key validation request
-        
-    Returns:
-        License key validation result with company info and remaining requests
-    """
-    try:
-        result = await validate_license_key(data.key)
-        logger.info(f"License validation: {'valid' if result['valid'] else 'invalid'}")
-    except Exception as e:
-        logger.error(f"License validation error: {e}", exc_info=True)
-        result = {"valid": False, "error": "حدث خطأ في التحقق من المفتاح"}
-    
-    return LicenseKeyResponse(
-        valid=result["valid"],
-        company_name=result.get("company_name"),
-        created_at=result.get("created_at"),
-        expires_at=result.get("expires_at"),
-        requests_remaining=result.get("requests_remaining"),
-        error=result.get("error")
-    )
-
-
-# ============ Admin Routes (Protected by Admin Key) ============
-
-ADMIN_KEY = os.getenv("ADMIN_KEY")
-if not ADMIN_KEY:
-    raise ValueError(
-        "ADMIN_KEY environment variable is required. "
-        "Please set it in your environment or .env file for security."
-    )
-
+# ...
 
 async def verify_admin(x_admin_key: str = Header(None, alias="X-Admin-Key")):
     """Verify admin key"""
     if not x_admin_key or x_admin_key != ADMIN_KEY:
-        raise HTTPException(status_code=403, detail="غير مصرح")
+        raise AuthorizationError(
+            message="Admin access denied",
+            message_ar="عذراً، هذا الإجراء مخصص للمسؤولين فقط"
+        )
 
 
 @app.post("/api/admin/license/create", tags=["Admin"])

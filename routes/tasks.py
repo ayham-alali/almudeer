@@ -48,5 +48,32 @@ async def delete_existing_task(
     """Delete a task"""
     success = await delete_task(license["license_id"], task_id)
     if not success:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise NotFoundError(resource="Task", resource_id=task_id)
     return {"success": True}
+
+
+# ============ Smart AI Features ============
+
+from pydantic import BaseModel
+
+class TaskSuggestionRequest(BaseModel):
+    title: str
+
+@router.post("/suggest", tags=["Tasks"])
+async def suggest_task_details(
+    data: TaskSuggestionRequest,
+    license: dict = Depends(get_license_from_header)
+):
+    """
+    Analyze task title and suggest details (Priority, Color, Subtasks).
+    Uses Gemini AI.
+    """
+    from services.task_ai import analyze_task_intent
+    
+    # Analyze
+    suggestions = await analyze_task_intent(data.title)
+    
+    return {
+        "success": True,
+        "data": suggestions
+    }

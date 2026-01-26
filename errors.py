@@ -134,14 +134,29 @@ async def api_error_handler(request: Request, exc: APIError) -> JSONResponse:
 
 
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
-    """Handle FastAPI HTTPException"""
+    """Handle FastAPI HTTPException with Arabic Fallback"""
+    
+    # Default Arabic messages for common status codes
+    message_ar = exc.detail
+    if isinstance(exc.detail, str):
+        if exc.status_code == 404:
+            message_ar = "لم يتم العثور على المورد المطلوب"
+        elif exc.status_code == 401:
+            message_ar = "يرجى تسجيل الدخول للمتابعة"
+        elif exc.status_code == 403:
+            message_ar = "عذرًا، ليس لديك صلاحية للوصول لهذا الإجراء"
+        elif exc.status_code == 429:
+            message_ar = "تم تجاوز الحد المسموح للطلبات، يرجى المحاولة لاحقًا"
+        elif exc.status_code == 500:
+            message_ar = "حدث خطأ داخلي في الخادم"
+            
     return JSONResponse(
         status_code=exc.status_code,
         content={
             "error": True,
             "error_code": "HTTP_ERROR",
             "message": exc.detail,
-            "message_ar": exc.detail,
+            "message_ar": message_ar,
             "details": {},
         },
     )

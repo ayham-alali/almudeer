@@ -8,6 +8,8 @@ class TaskBase(BaseModel):
     is_completed: bool = False
     due_date: Optional[datetime] = None
     priority: str = Field("medium", pattern="^(low|medium|high)$")
+    color: Optional[int] = None
+    sub_tasks: Optional[list[str]] = []
 
 class TaskCreate(TaskBase):
     id: str = Field(..., description="UUID from client")
@@ -18,6 +20,8 @@ class TaskUpdate(BaseModel):
     is_completed: Optional[bool] = None
     due_date: Optional[datetime] = None
     priority: Optional[str] = None
+    color: Optional[int] = None
+    sub_tasks: Optional[list[str]] = None
 
 class TaskResponse(TaskBase):
     id: str
