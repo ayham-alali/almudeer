@@ -110,8 +110,13 @@ async def update_task(license_id: int, task_id: str, task_data: dict) -> Optiona
     values = []
     
     # helper to add field if present
+    import json
     for key, val in task_data.items():
         if val is not None:
+            # Handle special field types for database
+            if key == 'sub_tasks' and isinstance(val, list):
+                val = json.dumps(val)
+                
             fields.append(f"{key} = ?")
             values.append(val)
             
