@@ -203,12 +203,9 @@ async def _process_operation(op: SyncOperation, license_id: int, background_task
                 return SyncResult(operation_id=op.id, success=False, error="Empty body")
 
             # Need to fetch conversation to get recipient_id and channel
-            # This logic mimics send_chat_message in chat_routes
+            from models import get_full_chat_history
             history = await get_full_chat_history(license_id, sender_contact, limit=1)
             if not history:
-                 # Fallback if no history - might need to guess or fail
-                 # For now, let's fail if we can't find the conversation context
-                 # In future, we could look up by contact directly
                  return SyncResult(operation_id=op.id, success=False, error="Conversation not found")
 
             channel = history[0].get("channel", "whatsapp")
@@ -243,6 +240,48 @@ async def _process_operation(op: SyncOperation, license_id: int, background_task
             sender_contact = op.payload.get("senderContact")
             await soft_delete_conversation(license_id, sender_contact)
             return SyncResult(operation_id=op.id, success=True)
+            
+        elif op.type == "add_customer":
+            name = op.payload.get("name")
+            phone = op.payload.get("phone")
+            email = op.payload.get("email")
+            
+            from models.customers import get_or_create_customer
+            customer = await get_or_create_customer(
+                license_id=license_id,
+                phone=phone,
+                email=email,
+                name=name
+            )
+            return SyncResult(
+                operation_id=op.id, 
+                success=True, 
+                server_state={"customer_id": customer.get("id")}
+            )
+            
+        elif op.type == "add_purchase":
+            customer_id = op.payload.get("customer_id")
+            product_name = op.payload.get("product_name")
+            amount = op.payload.get("amount")
+            currency = op.payload.get("currency", "SYP")
+            notes = op.payload.get("notes")
+            payment_type = op.payload.get("payment_type", "spot")
+            
+            from models.purchases import create_purchase
+            purchase = await create_purchase(
+                license_id=license_id,
+                customer_id=customer_id,
+                product_name=product_name,
+                amount=amount,
+                currency=currency,
+                notes=notes,
+                payment_type=payment_type
+            )
+            return SyncResult(
+                operation_id=op.id, 
+                success=True, 
+                server_state={"purchase_id": purchase.get("id")}
+            )
             
         else:
             return SyncResult(

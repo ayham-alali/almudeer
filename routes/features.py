@@ -49,7 +49,42 @@ class CustomerUpdate(BaseModel):
     is_vip: Optional[bool] = None
 
 
+class CustomerCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    company: Optional[str] = None
+    notes: Optional[str] = None
+
+
 # ============ Customers Routes ============
+
+@router.post("/customers")
+async def add_customer(
+    data: CustomerCreate,
+    license: dict = Depends(get_license_from_header)
+):
+    """Add a new customer or get existing one"""
+    customer = await get_or_create_customer(
+        license["license_id"],
+        phone=sanitize_phone(data.phone) if data.phone else None,
+        email=sanitize_email(data.email) if data.email else None,
+        name=sanitize_string(data.name, max_length=200)
+    )
+    
+    # If customer was created or found, update notes/company if provided
+    if customer.get("id") and (data.notes or data.company):
+        await update_customer(
+            license["license_id"],
+            customer["id"],
+            notes=sanitize_string(data.notes, max_length=1000) if data.notes else customer.get("notes"),
+            company=sanitize_string(data.company, max_length=200) if data.company else customer.get("company")
+        )
+        # Fetch updated customer
+        customer = await get_customer(license["license_id"], customer["id"])
+        
+    return {"success": True, "customer": customer}
+
 
 @router.get("/customers")
 async def list_customers(
