@@ -632,39 +632,8 @@ class MessagePoller:
                     logger.info(f"Message filtered: {filter_reason}")
                     continue
                 
-                # Process attachments
+                # Attachments are already handled by GmailAPIService (downloaded & stored)
                 attachments = email_data.get("attachments", [])
-                for att in attachments:
-                    try:
-                        # Download attachment data (if not already present)
-                        if att.get("file_id") and not att.get("base64"):
-                            data = await gmail_service.get_attachment_data(
-                                email_data.get("channel_message_id"), 
-                                att["file_id"]
-                            )
-                            if data:
-                                # Save to file system (Premium Storage)
-                                filename = att.get("file_name") or f"em_{att['file_id']}"
-                                mime_type = att.get("mime_type", "application/octet-stream")
-                                
-                                rel_path, abs_url = get_file_storage().save_file(
-                                    content=data,
-                                    filename=filename,
-                                    mime_type=mime_type
-                                )
-                                
-                                # Add metadata
-                                att["url"] = abs_url
-                                att["path"] = rel_path
-                                att["size"] = len(data)
-                                
-                                # Hybrid storage: small files get base64 for instant loading
-                                if len(data) < 1 * 1024 * 1024:
-                                    att["base64"] = base64.b64encode(data).decode("utf-8")
-                                else:
-                                    att["base64"] = None # Clear data to keep DB lean
-                    except Exception as e:
-                        logger.warning(f"Failed to download email attachment {att.get('file_name')}: {e}")
 
                 # Save to inbox
                 msg_id = await save_inbox_message(

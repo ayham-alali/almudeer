@@ -190,23 +190,9 @@ async def fetch_emails(
         
         processed = 0
         for email_data in emails:
-            # Download attachments content
-            attachments = email_data.get("attachments", [])
-            for att in attachments:
-                if att.get("file_id"):
-                    try:
-                        content = await gmail_service.get_attachment_data(
-                            email_data["channel_message_id"],
-                            att["file_id"]
-                        )
-                        if content and len(content) < 5 * 1024 * 1024:
-                            # Add both keys for compatibility
-                            b64_data = base64.b64encode(content).decode('utf-8')
-                            att["base64"] = b64_data
-                            att["data"] = b64_data
-                    except Exception as e:
-                        print(f"Failed to download attachment {att.get('file_name')}: {e}")
-
+            # Attachments are already handled by GmailAPIService (downloaded & stored)
+            # email_data["attachments"] contains URLs and paths.
+            
             msg_id = await save_inbox_message(
                 license_id=license["license_id"],
                 channel="email",
