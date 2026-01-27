@@ -603,7 +603,7 @@ async def get_inbox_conversations(
             message_count
         FROM inbox_conversations ic
         WHERE {where_sql}
-        ORDER BY ic.updated_at DESC
+        ORDER BY ic.last_message_at DESC
         LIMIT ? OFFSET ?
     """
     params.extend([limit, offset])
