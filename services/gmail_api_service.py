@@ -6,6 +6,7 @@ Uses Gmail API with OAuth 2.0 tokens for fetching and sending emails
 import base64
 import json
 import httpx
+import asyncio
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
@@ -43,27 +44,19 @@ class GmailAPIService:
                 self._headers["Authorization"] = f"Bearer {self.access_token}"
                 return new_tokens
             except Exception as e:
-                print(f"Failed to refresh token: {e}")
+                from logging_config import get_logger
+                logger = get_logger(__name__)
+                logger.error(f"Failed to refresh token: {e}")
                 raise
     
     async def _request(self, method: str, endpoint: str, **kwargs) -> Dict:
-        """Make authenticated request to Gmail API"""
+        """Make authenticated request to Gmail API with retry logic and rate limit handling"""
         url = f"{self.GMAIL_API_BASE}/{endpoint}"
+        max_retries = 3
         
         async with httpx.AsyncClient() as client:
-            try:
-                response = await client.request(
-                    method,
-                    url,
-                    headers=self._headers,
-                    timeout=30.0,
-                    **kwargs
-                )
-                
-                # If unauthorized, try refreshing token
-                if response.status_code == 401 and self.refresh_token:
-                    await self._refresh_token_if_needed()
-                    # Retry request with new token
+            for attempt in range(max_retries + 1):
+                try:
                     response = await client.request(
                         method,
                         url,
@@ -71,18 +64,71 @@ class GmailAPIService:
                         timeout=30.0,
                         **kwargs
                     )
-                
-                if response.status_code != 200:
-                    error_data = response.json() if response.content else {}
-                    error_msg = error_data.get("error", {}).get("message", response.text)
-                    raise Exception(f"Gmail API error: {error_msg}")
-                
-                return response.json() if response.content else {}
-                
-            except httpx.HTTPStatusError as e:
-                error_data = e.response.json() if e.response.content else {}
-                error_msg = error_data.get("error", {}).get("message", str(e))
-                raise Exception(f"Gmail API error: {error_msg}")
+                    
+                    # If unauthorized, try refreshing token (only on first attempt)
+                    if response.status_code == 401 and self.refresh_token and attempt == 0:
+                        await self._refresh_token_if_needed()
+                        # Headers updated, continue loop to retry immediately
+                        continue
+                    
+                    # Handle Rate Limiting (429 or 403 with rate limit message)
+                    if response.status_code == 429 or (response.status_code == 403 and "rate limit" in response.text.lower()):
+                        if attempt < max_retries:
+                            wait_time = 0
+                            # Try to parse "Retry after" from error message or header
+                            error_data = response.json() if response.content else {}
+                            error_msg = error_data.get("error", {}).get("message", response.text)
+                            
+                            import re
+                            # Check for ISO timestamp: Retry after 2026-01-29T16:56:36.348Z
+                            ts_match = re.search(r'Retry after ([\d\-\:T\.Z]+)', error_msg)
+                            if ts_match:
+                                try:
+                                    ts_str = ts_match.group(1).replace("Z", "+00:00")
+                                    retry_at = datetime.fromisoformat(ts_str)
+                                    now = datetime.now(timezone.utc)
+                                    wait_time = (retry_at - now).total_seconds()
+                                except:
+                                    pass
+                            
+                            # If no timestamp found, use exponential backoff: 5s, 10s, 20s
+                            if wait_time <= 0:
+                                wait_time = 5 * (2 ** attempt)
+                            
+                            # Cap wait time at 60 seconds to avoid blocking too long
+                            wait_time = min(wait_time, 60)
+                            
+                            from logging_config import get_logger
+                            logger = get_logger(__name__)
+                            logger.warning(
+                                f"Gmail API rate limit reached (Attempt {attempt+1}/{max_retries}). "
+                                f"Waiting {wait_time:.1f}s before retry. Endpoint: {endpoint}"
+                            )
+                            
+                            await asyncio.sleep(wait_time)
+                            continue  # Retry
+                            
+                    if response.status_code != 200:
+                        error_data = response.json() if response.content else {}
+                        error_msg = error_data.get("error", {}).get("message", response.text)
+                        raise Exception(f"Gmail API error: {error_msg}")
+                    
+                    return response.json() if response.content else {}
+                    
+                except (httpx.RequestError, httpx.TimeoutException) as e:
+                    if attempt < max_retries:
+                        wait_time = 2 * (attempt + 1)
+                        await asyncio.sleep(wait_time)
+                        continue
+                    raise Exception(f"Gmail API connection error: {str(e)}")
+                except Exception as e:
+                    # Re-raise unless it's a transient error we want to retry
+                    if "rate limit" in str(e).lower() and attempt < max_retries:
+                        await asyncio.sleep(5)
+                        continue
+                    raise e
+        
+        return {}
     
     async def get_profile(self) -> Dict:
         """Get Gmail user profile"""
@@ -134,7 +180,9 @@ class GmailAPIService:
             if data and "data" in data:
                 return base64.urlsafe_b64decode(data["data"])
         except Exception as e:
-            print(f"Error downloading attachment {attachment_id}: {e}")
+            from logging_config import get_logger
+            logger = get_logger(__name__)
+            logger.error(f"Error downloading attachment {attachment_id}: {e}")
         return None
     
     async def send_message(
@@ -224,7 +272,9 @@ class GmailAPIService:
                     )
                     msg.attach(part)
                 except Exception as e:
-                    print(f"Error attaching file {att['filename']}: {e}")
+                    from logging_config import get_logger
+                    logger = get_logger(__name__)
+                    logger.error(f"Error attaching file {att['filename']}: {e}")
 
         
         # Encode message as base64url
@@ -296,7 +346,12 @@ class GmailAPIService:
                         emails.append(parsed_email)
                         
             except Exception as e:
-                print(f"Error fetching thread {thread_meta['id']}: {e}")
+                from logging_config import get_logger
+                logger = get_logger(__name__)
+                if "rate limit" in str(e).lower():
+                    logger.info(f"Rate limit hit during thread fetch {thread_meta['id']}: {e}")
+                else:
+                    logger.error(f"Error fetching thread {thread_meta['id']}: {e}")
                 continue
                 
         return emails
@@ -332,7 +387,12 @@ class GmailAPIService:
                 message = await self.get_message(msg_id, format="full")
                 emails.append(await self._parse_message(message))
             except Exception as e:
-                print(f"Error parsing message {msg_id}: {e}")
+                from logging_config import get_logger
+                logger = get_logger(__name__)
+                if "rate limit" in str(e).lower():
+                    logger.info(f"Rate limit hit during message parse {msg_id}: {e}")
+                else:
+                    logger.error(f"Error parsing message {msg_id}: {e}")
                 continue
         
         return emails
@@ -502,7 +562,9 @@ class GmailAPIService:
                                 if size < 200 * 1024 and type_ == "image":
                                     att_data["base64"] = base64.b64encode(content).decode('utf-8')
                         except Exception as e:
-                            print(f"Error saving attachment {filename}: {e}")
+                            from logging_config import get_logger
+                            logger = get_logger(__name__)
+                            logger.error(f"Error saving attachment {filename}: {e}")
 
                     attachments.append(att_data)
                 

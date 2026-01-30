@@ -661,6 +661,9 @@ class MessagePoller:
                     channel_message_id=email_data.get("channel_message_id"),
                     attachments=attachments
                 )
+                
+                # Small stagger to avoid hitting rate limits
+                await asyncio.sleep(1.0)
             
             # Update last_checked_at
             await self._update_email_last_checked(license_id)

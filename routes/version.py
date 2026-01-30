@@ -210,21 +210,60 @@ async def _get_update_config() -> dict:
     }
 
 
+# APK Cache for performance (avoid calculating hash on every request)
+_APK_CACHE = {
+    "sha256": None,
+    "size_mb": None,
+    "mtime": 0
+}
+_APK_CACHE_LOCK = threading.Lock()
+
+def _refresh_apk_cache():
+    """Refresh the APK metadata cache if the file has changed."""
+    if not os.path.exists(_APK_FILE):
+        with _APK_CACHE_LOCK:
+            _APK_CACHE["sha256"] = None
+            _APK_CACHE["size_mb"] = None
+            _APK_CACHE["mtime"] = 0
+        return
+
+    try:
+        current_mtime = os.path.getmtime(_APK_FILE)
+        
+        # Only recalculate if file mtime changed
+        if current_mtime > _APK_CACHE["mtime"]:
+            with _APK_CACHE_LOCK:
+                # Double check inside lock
+                if current_mtime > _APK_CACHE["mtime"]:
+                    # Get size
+                    size_bytes = os.path.getsize(_APK_FILE)
+                    _APK_CACHE["size_mb"] = round(size_bytes / (1024 * 1024), 1)
+                    
+                    # Calculate hash
+                    sha256_hash = hashlib.sha256()
+                    with open(_APK_FILE, "rb") as f:
+                        for chunk in iter(lambda: f.read(4096), b""):
+                            sha256_hash.update(chunk)
+                    
+                    _APK_CACHE["sha256"] = sha256_hash.hexdigest()
+                    _APK_CACHE["mtime"] = current_mtime
+    except (OSError, IOError):
+        pass
+
 def _get_apk_sha256() -> Optional[str]:
     """
-    Calculate SHA256 hash of APK file for integrity verification.
-    Returns None if file doesn't exist.
+    Get cached SHA256 hash of APK file.
     """
-    try:
-        if os.path.exists(_APK_FILE):
-            sha256_hash = hashlib.sha256()
-            with open(_APK_FILE, "rb") as f:
-                for chunk in iter(lambda: f.read(4096), b""):
-                    sha256_hash.update(chunk)
-            return sha256_hash.hexdigest()
-    except IOError:
-        pass
-    return None
+    _refresh_apk_cache()
+    return _APK_CACHE["sha256"]
+
+
+def _get_apk_size_mb() -> Optional[float]:
+    """
+    Get cached APK file size in megabytes.
+    """
+    _refresh_apk_cache()
+    return _APK_CACHE["size_mb"]
 
 
 def _is_update_active(config: dict) -> tuple[bool, str]:
@@ -279,18 +318,6 @@ def _is_update_active(config: dict) -> tuple[bool, str]:
     return True, "Active"
 
 
-def _get_apk_size_mb() -> Optional[float]:
-    """
-    Get APK file size in megabytes.
-    Returns None if file doesn't exist.
-    """
-    try:
-        if os.path.exists(_APK_FILE):
-            size_bytes = os.path.getsize(_APK_FILE)
-            return round(size_bytes / (1024 * 1024), 1)
-    except OSError:
-        pass
-    return None
 
 
 def _is_in_rollout(identifier: str, rollout_percentage: int) -> bool:
