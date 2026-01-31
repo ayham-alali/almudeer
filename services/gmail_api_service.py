@@ -13,6 +13,11 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 
+class GmailRateLimitError(Exception):
+    """Raised when Gmail API rate limit is exceeded"""
+    pass
+
+
 class GmailAPIService:
     """Service for Gmail API operations using OAuth 2.0"""
     
@@ -65,20 +70,39 @@ class GmailAPIService:
                         **kwargs
                     )
                     
-                    # If unauthorized, try refreshing token (only on first attempt)
-                    if response.status_code == 401 and self.refresh_token and attempt == 0:
-                        await self._refresh_token_if_needed()
-                        # Headers updated, continue loop to retry immediately
-                        continue
+                    error_data = {}
+                    error_msg = ""
+                    if response.content:
+                        try:
+                            error_data = response.json()
+                            error_msg = error_data.get("error", {}).get("message", response.text)
+                        except:
+                            error_msg = response.text
+                            
+                    # Handle Authentication Issues
+                    # 401: Standard Unauthorized
+                    # 400/403 with "invalid authentication credentials": Google sometimes returns this
+                    is_auth_error = (
+                        response.status_code == 401 or 
+                        (response.status_code in [400, 403] and "invalid authentication credentials" in error_msg.lower())
+                    )
+                    
+                    if is_auth_error and self.refresh_token and attempt == 0:
+                        refreshed = await self._refresh_token_if_needed()
+                        if refreshed:
+                            # Headers updated, continue loop to retry immediately
+                            continue
                     
                     # Handle Rate Limiting (429 or 403 with rate limit message)
-                    if response.status_code == 429 or (response.status_code == 403 and "rate limit" in response.text.lower()):
+                    is_rate_limit = (
+                        response.status_code == 429 or 
+                        (response.status_code == 403 and ("rate limit" in error_msg.lower() or "user-rate limit" in error_msg.lower()))
+                    )
+
+                    if is_rate_limit:
                         if attempt < max_retries:
                             wait_time = 0
                             # Try to parse "Retry after" from error message or header
-                            error_data = response.json() if response.content else {}
-                            error_msg = error_data.get("error", {}).get("message", response.text)
-                            
                             import re
                             # Check for ISO timestamp: Retry after 2026-01-29T16:56:36.348Z
                             ts_match = re.search(r'Retry after ([\d\-\:T\.Z]+)', error_msg)
@@ -92,11 +116,12 @@ class GmailAPIService:
                                     pass
                             
                             # If no timestamp found, use exponential backoff: 5s, 10s, 20s
+                            # Increased base to 10s for better recovery
                             if wait_time <= 0:
-                                wait_time = 5 * (2 ** attempt)
+                                wait_time = 10 * (2 ** attempt)
                             
-                            # Cap wait time at 60 seconds to avoid blocking too long
-                            wait_time = min(wait_time, 60)
+                            # Cap wait time at 120 seconds to avoid blocking too long
+                            wait_time = min(wait_time, 120)
                             
                             from logging_config import get_logger
                             logger = get_logger(__name__)
@@ -107,10 +132,11 @@ class GmailAPIService:
                             
                             await asyncio.sleep(wait_time)
                             continue  # Retry
+                        else:
+                             # If we exhausted retries, raise specific exception
+                            raise GmailRateLimitError(f"Gmail API rate limit exceeded after {max_retries} retries: {error_msg}")
                             
                     if response.status_code != 200:
-                        error_data = response.json() if response.content else {}
-                        error_msg = error_data.get("error", {}).get("message", response.text)
                         raise Exception(f"Gmail API error: {error_msg}")
                     
                     return response.json() if response.content else {}
@@ -121,10 +147,12 @@ class GmailAPIService:
                         await asyncio.sleep(wait_time)
                         continue
                     raise Exception(f"Gmail API connection error: {str(e)}")
+                except GmailRateLimitError:
+                    raise
                 except Exception as e:
                     # Re-raise unless it's a transient error we want to retry
                     if "rate limit" in str(e).lower() and attempt < max_retries:
-                        await asyncio.sleep(5)
+                        await asyncio.sleep(10)
                         continue
                     raise e
         

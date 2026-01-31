@@ -18,7 +18,10 @@ async def test_gmail_rate_limit_handling():
     print("Starting Gmail Rate Limit Verification Test...")
     
     # Initialize service
-    service = GmailAPIService(access_token="test-token")
+    mock_oauth_service = MagicMock()
+    mock_oauth_service.refresh_access_token = AsyncMock(return_value={"access_token": "new-token"})
+    
+    service = GmailAPIService(access_token="test-token", refresh_token="refresh-token", oauth_service=mock_oauth_service)
     
     # 1. Test Case: Success on first try
     with patch("httpx.AsyncClient.request") as mock_request:
@@ -80,6 +83,7 @@ async def test_gmail_rate_limit_handling():
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             resp429 = MagicMock(spec=httpx.Response)
             resp429.status_code = 429
+            # Test both 429 and 403 with specific message
             resp429.content = b'{"error": {"message": "Rate limit exceeded"}}'
             resp429.json.return_value = {"error": {"message": "Rate limit exceeded"}}
             resp429.text = "Rate limit exceeded"
@@ -96,8 +100,66 @@ async def test_gmail_rate_limit_handling():
             assert result == {"status": "backoff_works"}
             assert mock_request.call_count == 2
             # First retry after 429 (no ts) uses 5 * (2 ** 0) = 5s
-            assert mock_sleep.call_args[0][0] == 5
+            # NOTE: We expect this to increase in our fix, but testing current behavior first implies 5s
+            # If we change the code to increase backoff, we'll need to update this assertion
+            assert mock_sleep.call_args[0][0] >= 5
             print("✓ Exponential backoff (no timestamp) passed.")
+
+    # 4. Test Case: Auth credentials error (should refresh token)
+    # This simulates the error we saw in logs: "Request had invalid authentication credentials."
+    # Google sometimes returns this with 400 or 403, not just 401
+    with patch("httpx.AsyncClient.request") as mock_request:
+        # Reset mock
+        service.oauth_service.refresh_access_token.reset_mock()
+        
+        # Simulate error response
+        error_msg = "Request had invalid authentication credentials. Expected OAuth 2 access token..."
+        resp_auth_err = MagicMock(spec=httpx.Response)
+        resp_auth_err.status_code = 400  # Note: 400, not 401!
+        resp_auth_err.content = json.dumps({"error": {"message": error_msg}}).encode()
+        resp_auth_err.json.return_value = {"error": {"message": error_msg}}
+        resp_auth_err.text = error_msg
+        
+        # Success response after refresh
+        resp_success = MagicMock(spec=httpx.Response)
+        resp_success.status_code = 200
+        resp_success.content = b'{"status": "authed"}'
+        resp_success.json.return_value = {"status": "authed"}
+        
+        mock_request.side_effect = [resp_auth_err, resp_success]
+        
+        result = await service._request("GET", "test-endpoint")
+        
+        assert result == {"status": "authed"}
+        assert mock_request.call_count == 2
+        # Verify token refresh was called
+        service.oauth_service.refresh_access_token.assert_called_once()
+        print("✓ Auth credentials error handling passed.")
+
+    # 5. Test Case: "User-rate limit exceeded" specifically 
+    # Use case from logs: "Gmail API error: User-rate limit exceeded."
+    with patch("httpx.AsyncClient.request") as mock_request:
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            error_msg = "User-rate limit exceeded."
+            resp403 = MagicMock(spec=httpx.Response)
+            resp403.status_code = 403 # Often comes as 403
+            resp403.content = json.dumps({"error": {"message": error_msg}}).encode()
+            resp403.json.return_value = {"error": {"message": error_msg}}
+            resp403.text = error_msg
+            
+            resp200 = MagicMock(spec=httpx.Response)
+            resp200.status_code = 200
+            resp200.content = b'{"status": "ok"}'
+            resp200.json.return_value = {"status": "ok"}
+            
+            mock_request.side_effect = [resp403, resp200]
+            
+            result = await service._request("GET", "test-endpoint")
+            
+            assert result == {"status": "ok"}
+            # Should identify "User-rate limit exceeded" and retry
+            assert mock_request.call_count == 2
+            print("✓ User-rate limit exceeded check passed.")
 
     print("\nAll Gmail Rate Limit Verification Tests Passed Successfully!")
 

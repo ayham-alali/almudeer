@@ -50,7 +50,7 @@ else:
 from services.telegram_service import TelegramService
 from services.whatsapp_service import WhatsAppService
 from services.gmail_oauth_service import GmailOAuthService
-from services.gmail_api_service import GmailAPIService
+from services.gmail_api_service import GmailAPIService, GmailRateLimitError
 from services.telegram_phone_service import TelegramPhoneService
 from services.backfill_service import get_backfill_service
 from cache import cache
@@ -533,14 +533,19 @@ class MessagePoller:
             # If backfill, fetch more (e.g. 500), otherwise standard limit
             limit = 500 if is_backfill else 200
             # Fetch messages
-            if is_backfill:
-                # Smart Backfill: Fetch threads that are UNREPLIED (last message not from us)
-                # This ensures we don't import old conversations we already finished
-                backfill_days = int(os.getenv("BACKFILL_DAYS", "30"))
-                emails = await gmail_service.fetch_unreplied_threads(days=backfill_days, limit=100)
-                logger.info(f"Backfill: Fetched {len(emails)} unreplied emails")
-            else:
-                emails = await gmail_service.fetch_new_emails(since_hours=since_hours, limit=limit)
+            # Fetch messages
+            try:
+                if is_backfill:
+                    # Smart Backfill: Fetch threads that are UNREPLIED (last message not from us)
+                    # This ensures we don't import old conversations we already finished
+                    backfill_days = int(os.getenv("BACKFILL_DAYS", "30"))
+                    emails = await gmail_service.fetch_unreplied_threads(days=backfill_days, limit=100)
+                    logger.info(f"Backfill: Fetched {len(emails)} unreplied emails")
+                else:
+                    emails = await gmail_service.fetch_new_emails(since_hours=since_hours, limit=limit)
+            except GmailRateLimitError as e:
+                logger.warning(f"Rate limit hit for license {license_id}, skipping email poll cycle: {e}")
+                return
 
             
             if not emails:
