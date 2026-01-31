@@ -259,6 +259,32 @@ async def init_enhanced_tables():
             except Exception as e:
                 print(f"Postgres Migration (drop not null) skipped: {e}")
 
+        # Library Items (Notes, Images, Files, Audio, Video)
+        await execute_sql(db, f"""
+            CREATE TABLE IF NOT EXISTS library_items (
+                id {ID_PK},
+                license_key_id INTEGER NOT NULL,
+                customer_id INTEGER,
+                type TEXT NOT NULL, -- 'note', 'image', 'file', 'audio', 'video'
+                title TEXT,
+                content TEXT, -- For notes
+                file_path TEXT, -- For media/files
+                file_size INTEGER, -- In bytes
+                mime_type TEXT,
+                created_at {TIMESTAMP_NOW},
+                updated_at {TIMESTAMP_NOW},
+                deleted_at TIMESTAMP,
+                FOREIGN KEY (license_key_id) REFERENCES license_keys(id),
+                FOREIGN KEY (customer_id) REFERENCES customers(id)
+            )
+        """)
+
+        # Performance index for searching library items
+        await execute_sql(db, """
+            CREATE INDEX IF NOT EXISTS idx_library_license_customer
+            ON library_items(license_key_id, customer_id)
+        """)
+
         await commit_db(db)
         print("Enhanced tables initialized")
 

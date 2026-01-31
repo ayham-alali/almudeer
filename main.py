@@ -87,6 +87,7 @@ try:
         notifications_router, 
         purchases_router, 
         knowledge_router,
+        library_router,
         tasks
     )
     from routes.tasks import router as tasks_router
@@ -419,6 +420,7 @@ app.include_router(export_router)          # Export & Reports
 app.include_router(notifications_router)   # Smart Notifications & Integrations
 app.include_router(purchases_router)       # Customer Purchases
 app.include_router(knowledge_router)       # Knowledge Base (RAG)
+app.include_router(library_router)         # Library of Everything
 app.include_router(tasks_router)           # Task Management
 app.include_router(subscription_router)    # Subscription Key Management
 
@@ -501,6 +503,7 @@ v1_router.include_router(telegram_router)
 v1_router.include_router(chat_router)
 v1_router.include_router(features_router)
 v1_router.include_router(whatsapp_router)
+v1_router.include_router(library_router)
 
 v1_router.include_router(export_router.router if hasattr(export_router, 'router') else export_router, prefix="")
 v1_router.include_router(notifications_router.router if hasattr(notifications_router, 'router') else notifications_router, prefix="")
