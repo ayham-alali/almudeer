@@ -156,7 +156,15 @@ async def update_customer_detail(
     if not success:
         raise HTTPException(status_code=400, detail="فشل التحديث")
     
-    return {"success": True, "message": "تم تحديث بيانات العميل"}
+    # Fetch and return the updated customer object for frontend sync
+    from models.customers import get_customer
+    updated_customer = await get_customer(license["license_id"], customer_id)
+    
+    return {
+        "success": True, 
+        "message": "تم تحديث بيانات العميل",
+        "customer": updated_customer
+    }
 
 
 @router.delete("/customers/{customer_id}")

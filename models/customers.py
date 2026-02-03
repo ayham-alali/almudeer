@@ -35,43 +35,21 @@ async def get_or_create_customer(
         "newsletter", "bulletin", 
         "calendly", "submagic", "iconscout"
     ]
+    # Anti-Bot & Spam Guard
+    blocked_keywords = ["bot", "api", "no-reply", "noreply", "newsletter", "calendly"]
+    if name and any(k in name.lower() for k in blocked_keywords):
+        return {"id": None}
     
-    def is_blocked(text: str) -> bool:
-        if not text: return False
-        text_lower = text.lower()
-        return any(keyword in text_lower for keyword in blocked_keywords)
-
-    if is_blocked(name) or is_blocked(email) or is_blocked(phone):
-        from logging_config import get_logger
-        logger = get_logger("models.customers")
-        logger.warning(f"Prevented creation of blocked customer: name={name}, email={email}")
-        return {"id": None, "name": name, "is_blocked": True}
-
     async with get_db() as db:
-        # Check if profile_pic_url column exists (simplified migration)
-        try:
-             await execute_sql(db, "ALTER TABLE customers ADD COLUMN profile_pic_url TEXT")
-        except:
-             pass 
-
-        # Try to find by phone or email
+        # Check existing by phone/email
+        row = None
         if phone:
-            row = await fetch_one(
-                db,
-                "SELECT * FROM customers WHERE license_key_id = ? AND phone = ?",
-                [license_id, phone]
-            )
-            if row:
-                return dict(row)
+            row = await fetch_one(db, "SELECT * FROM customers WHERE license_key_id = ? AND phone = ?", [license_id, phone])
+        if not row and email:
+            row = await fetch_one(db, "SELECT * FROM customers WHERE license_key_id = ? AND email = ?", [license_id, email])
         
-        if email:
-            row = await fetch_one(
-                db,
-                "SELECT * FROM customers WHERE license_key_id = ? AND email = ?",
-                [license_id, email]
-            )
-            if row:
-                return dict(row)
+        if row:
+            return dict(row)
         
         # Create new customer
         contact_val = phone or email
@@ -80,78 +58,52 @@ async def get_or_create_customer(
             contact_val = f"unknown_{license_id}_{int(datetime.now().timestamp())}"
 
         if DB_TYPE == "postgresql":
-            # PostgreSQL: insert then fetch the last inserted row
+            # PostgreSQL: use RETURNING to get ID atomicly
             try:
-                await execute_sql(
-                    db,
-                    """
-                    INSERT INTO customers (license_key_id, contact, name, phone, email, lead_score, segment, profile_pic_url, has_whatsapp, has_telegram)
-                    VALUES (?, ?, ?, ?, ?, 0, 'New', ?, ?, ?)
-                    """,
-                    [license_id, contact_val, name, phone, email, None, has_whatsapp, has_telegram]
-                )
+                sql = """
+                    INSERT INTO customers (license_key_id, contact, name, phone, email, lead_score, segment, has_whatsapp, has_telegram)
+                    VALUES (?, ?, ?, ?, ?, 0, 'New', ?, ?)
+                    RETURNING id
+                """
+                # adapt_sql_for_db might need to be careful with RETURNING, but execute_sql handles it
+                res = await fetch_one(db, sql, [license_id, contact_val, name, phone, email, has_whatsapp, has_telegram])
+                inserted_id = res["id"] if res else None
             except Exception as e:
-                # Fallback check for missing auto-increment
-                if "null value in column \"id\"" in str(e):
-                    # Manual ID generation fallback
-                    max_row = await fetch_one(db, "SELECT MAX(id) as max_id FROM customers")
-                    next_id = (max_row["max_id"] or 0) + 1
-                    
-                    await execute_sql(
-                        db,
-                        """
-                        INSERT INTO customers (id, license_key_id, contact, name, phone, email, lead_score, segment, profile_pic_url, has_whatsapp, has_telegram)
-                        VALUES (?, ?, ?, ?, ?, ?, 0, 'New', ?, ?, ?)
-                        """,
-                        [next_id, license_id, contact_val, name, phone, email, None, has_whatsapp, has_telegram]
-                    )
-                else:
-                    raise e
-                    
-            await commit_db(db)
-            
-            # Fetch the created customer
-            row = await fetch_one(
-                db,
-                """
-                SELECT * FROM customers 
-                WHERE license_key_id = ? 
-                AND (phone = ? OR email = ? OR (phone IS NULL AND email IS NULL))
-                ORDER BY id DESC LIMIT 1
-                """,
-                [license_id, phone or '', email or '']
-            )
-            return dict(row) if row else {"id": None}
+                # Handle potential conflicts or errors
+                print(f"Postgres Insert Error: {e}")
+                inserted_id = None
         else:
-            # SQLite: insert then fetch
-            await execute_sql(
+            # SQLite: use lastrowid
+            res = await execute_sql(
                 db,
                 """
-                INSERT INTO customers (license_key_id, contact, name, phone, email, lead_score, segment, profile_pic_url, has_whatsapp, has_telegram)
-                VALUES (?, ?, ?, ?, ?, 0, 'New', ?, ?, ?)
+                INSERT INTO customers (license_key_id, contact, name, phone, email, lead_score, segment, has_whatsapp, has_telegram)
+                VALUES (?, ?, ?, ?, ?, 0, 'New', ?, ?)
                 """,
-                [license_id, contact_val, name, phone, email, None, has_whatsapp, has_telegram]
+                [license_id, contact_val, name, phone, email, has_whatsapp, has_telegram]
             )
             await commit_db(db)
+            inserted_id = res.lastrowid
+
+        if inserted_id:
+            row = await fetch_one(db, "SELECT * FROM customers WHERE id = ?", [inserted_id])
+            if row:
+                return dict(row)
             
-            # Get the inserted row
-            row = await fetch_one(
-                db,
-                "SELECT * FROM customers WHERE license_key_id = ? AND (phone = ? OR email = ?) ORDER BY id DESC LIMIT 1",
-                [license_id, phone or "", email or ""]
-            )
-            return dict(row) if row else {
-                "id": None,
-                "license_key_id": license_id,
-                "name": name,
-                "phone": phone,
-                "email": email,
-                "total_messages": 0,
-                "is_vip": False,
-                "lead_score": 0,
-                "segment": "New",
-                "profile_pic_url": None
-            }
+        return {
+            "id": inserted_id,
+            "license_key_id": license_id,
+            "name": name,
+            "phone": phone,
+            "email": email,
+            "contact": contact_val,
+            "total_messages": 0,
+            "is_vip": False,
+            "lead_score": 0,
+            "segment": "New",
+            "has_whatsapp": has_whatsapp,
+            "has_telegram": has_telegram
+        }
 
 
 async def get_customers(license_id: int, limit: int = 100) -> List[dict]:
@@ -217,7 +169,7 @@ async def update_customer(
     values = list(updates.values()) + [customer_id, license_id]
 
     async with get_db() as db:
-        await execute_sql(
+        res = await execute_sql(
             db,
             f"""
             UPDATE customers SET {set_clause}
@@ -226,7 +178,11 @@ async def update_customer(
             values
         )
         await commit_db(db)
-        return True
+        
+        if DB_TYPE == "postgresql":
+            return "UPDATE 1" in str(res)
+        else:
+            return getattr(res, "rowcount", 0) > 0
 
 
 async def get_customer_sentiment_history(
