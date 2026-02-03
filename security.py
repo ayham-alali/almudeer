@@ -159,7 +159,7 @@ def sanitize_string(text: str, max_length: Optional[int] = None, allow_html: boo
     sql_patterns = [
         r'(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC|EXECUTE)\b)',
         r'(\b(UNION|OR|AND)\s+\d+\s*=\s*\d+)',
-        r'(\'|\"|;|--|\/\*|\*\/)',
+        r'(\'|"|--|\/\*|\*\/)',  # Removed ; to preserve HTML entities
     ]
     for pattern in sql_patterns:
         text = re.sub(pattern, '', text, flags=re.IGNORECASE)

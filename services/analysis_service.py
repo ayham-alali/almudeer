@@ -104,70 +104,9 @@ async def process_inbox_message_logic(
                 summary=data["summary"], draft_response=data["draft_response"]
             )
             
-            # CRM & Analytics
-            try:
-                from models.customers import get_or_create_customer, increment_customer_messages, update_customer_lead_score
-                msg = await get_inbox_message_by_id(message_id, license_id)
-                if msg and msg.get("sender_contact"):
-                    contact = msg["sender_contact"]
-                    email = contact if "@" in contact else None
-                    phone = contact if contact.replace("+", "").isdigit() else None
-                    customer = await get_or_create_customer(license_id, phone, email, msg.get("sender_name", ""))
-                    if customer:
-                        customer_id = customer["id"]
-                        await increment_customer_messages(customer_id)
-                        await update_customer_lead_score(license_id, customer_id, data.get("intent"), data.get("sentiment"), 0.0)
-
-                        # === Auto-Purchase Detection ===
-                        # If intent is order-related and we find money amounts, auto-create a pending purchase
-                        intent = data.get("intent", "").lower()
-                        order_intents = ["طلب", "طلب خدمة", "order", "شراء", "اشتراك"]
-                        
-                        if any(oi in intent for oi in order_intents):
-                            # Extract entities to find money and product info
-                            from analysis_advanced import extract_entities
-                            entities = extract_entities(body)
-                            
-                            money = entities.get("money", [])
-                            
-                            if money:
-                                # Create auto-purchase for detected amounts
-                                from models.purchases import create_purchase
-                                for m in money[:1]:  # Only first amount detected
-                                    try:
-                                        amount_str = m.get("amount", "0").replace(",", "")
-                                        amount = float(amount_str)
-                                        
-                                        # Try to extract product name from message
-                                        product_name = "طلب من المحادثة"
-                                        product_patterns = [
-                                            r'(?:اشتراك|خدمة|منتج|طلب)\s+([^\d\n,،]{3,30})',
-                                            r'(?:أريد|أبغى|بدي)\s+([^\d\n,،]{3,30})',
-                                        ]
-                                        import re
-                                        for pattern in product_patterns:
-                                            match = re.search(pattern, body)
-                                            if match:
-                                                product_name = match.group(1).strip()[:50]
-                                                break
-                                        
-                                        # Auto-create pending purchase
-                                        await create_purchase(
-                                            license_id=license_id,
-                                            customer_id=customer_id,
-                                            product_name=product_name,
-                                            amount=amount,
-                                            currency="SYP",  # Default to SYP
-                                            status="pending",  # Pending for human review
-                                            notes=f"تم إنشاؤها تلقائياً من الرسالة - {body[:100]}..."
-                                        )
-                                        logger.info(f"Auto-created pending purchase for customer {customer_id}: {amount} SYP")
-                                    except Exception as pe:
-                                        logger.warning(f"Error auto-creating purchase: {pe}")
-                        # === End Auto-Purchase Detection ===
-
-            except Exception as e:
-                logger.warning(f"CRM update failed for msg {message_id}: {e}")
+            # NOTE: CRM auto-customer creation removed.
+            # Customers are now added manually only (via customers screen or device import).
+            # AI message analysis (intent/urgency/sentiment/drafts) is preserved above.
             
             # Notifications
             try:
