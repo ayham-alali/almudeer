@@ -15,6 +15,7 @@ MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", 20 * 1024 * 1024))  # 20MB
 
 async def get_library_items(
     license_id: int, 
+    user_id: Optional[str] = None,
     customer_id: Optional[int] = None,
     item_type: Optional[str] = None,
     category: Optional[str] = None,
@@ -29,6 +30,10 @@ async def get_library_items(
     if customer_id is not None:
         query += " AND customer_id = ?"
         params.append(customer_id)
+        
+    if user_id:
+        query += " AND user_id = ?"
+        params.append(user_id)
         
     if category:
         if category == 'notes':
@@ -53,19 +58,23 @@ async def get_library_items(
         rows = await fetch_all(db, query, params)
         return [dict(row) for row in rows]
 
-async def get_library_item(license_id: int, item_id: int) -> Optional[dict]:
+async def get_library_item(license_id: int, item_id: int, user_id: Optional[str] = None) -> Optional[dict]:
     """Get a specific library item."""
+    query = "SELECT * FROM library_items WHERE id = ? AND license_key_id = ? AND deleted_at IS NULL"
+    params = [item_id, license_id]
+    
+    if user_id:
+        query += " AND user_id = ?"
+        params.append(user_id)
+        
     async with get_db() as db:
-        row = await fetch_one(
-            db,
-            "SELECT * FROM library_items WHERE id = ? AND license_key_id = ? AND deleted_at IS NULL",
-            [item_id, license_id]
-        )
+        row = await fetch_one(db, query, params)
         return dict(row) if row else None
 
 async def add_library_item(
     license_id: int,
     item_type: str,
+    user_id: Optional[str] = None,
     customer_id: Optional[int] = None,
     title: Optional[str] = None,
     content: Optional[str] = None,
@@ -91,10 +100,10 @@ async def add_library_item(
             db,
             """
             INSERT INTO library_items 
-            (license_key_id, customer_id, type, title, content, file_path, file_size, mime_type, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (license_key_id, user_id, customer_id, type, title, content, file_path, file_size, mime_type, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [license_id, customer_id, item_type, title, content, file_path, file_size, mime_type, ts_value, ts_value]
+            [license_id, user_id, customer_id, item_type, title, content, file_path, file_size, mime_type, ts_value, ts_value]
         )
         await commit_db(db)
         
@@ -109,6 +118,7 @@ async def add_library_item(
 async def update_library_item(
     license_id: int,
     item_id: int,
+    user_id: Optional[str] = None,
     **kwargs
 ) -> bool:
     """Update library item metadata or content."""
@@ -123,36 +133,45 @@ async def update_library_item(
     updates['updated_at'] = ts_value
     
     set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
+    query = f"UPDATE library_items SET {set_clause} WHERE id = ? AND license_key_id = ?"
     values = list(updates.values()) + [item_id, license_id]
+    
+    if user_id:
+        query += " AND user_id = ?"
+        values.append(user_id)
 
     async with get_db() as db:
-        await execute_sql(
-            db,
-            f"UPDATE library_items SET {set_clause} WHERE id = ? AND license_key_id = ?",
-            values
-        )
+        await execute_sql(db, query, values)
         await commit_db(db)
         return True
 
-async def delete_library_item(license_id: int, item_id: int) -> bool:
+async def delete_library_item(license_id: int, item_id: int, user_id: Optional[str] = None) -> bool:
     """Soft delete a library item."""
     now = datetime.utcnow()
     ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
     
     async with get_db() as db:
-        item = await fetch_one(db, "SELECT file_path FROM library_items WHERE id = ? AND license_key_id = ?", [item_id, license_id])
+        check_query = "SELECT file_path FROM library_items WHERE id = ? AND license_key_id = ?"
+        check_params = [item_id, license_id]
+        if user_id:
+            check_query += " AND user_id = ?"
+            check_params.append(user_id)
+            
+        item = await fetch_one(db, check_query, check_params)
         if not item:
             return False
             
-        await execute_sql(
-            db,
-            "UPDATE library_items SET deleted_at = ? WHERE id = ? AND license_key_id = ?",
-            [ts_value, item_id, license_id]
-        )
+        update_query = "UPDATE library_items SET deleted_at = ? WHERE id = ? AND license_key_id = ?"
+        update_params = [ts_value, item_id, license_id]
+        if user_id:
+            update_query += " AND user_id = ?"
+            update_params.append(user_id)
+
+        await execute_sql(db, update_query, update_params)
         await commit_db(db)
         return True
 
-async def bulk_delete_items(license_id: int, item_ids: List[int]) -> int:
+async def bulk_delete_items(license_id: int, item_ids: List[int], user_id: Optional[str] = None) -> int:
     """Bulk soft delete library items."""
     if not item_ids:
         return 0
@@ -163,12 +182,15 @@ async def bulk_delete_items(license_id: int, item_ids: List[int]) -> int:
     # SQLite doesn't support multiple ? in IN clause easily, so we build it manually
     id_placeholders = ",".join(["?"] * len(item_ids))
     
+    query = f"UPDATE library_items SET deleted_at = ? WHERE license_key_id = ? AND id IN ({id_placeholders})"
+    params = [ts_value, license_id] + item_ids
+    
+    if user_id:
+        query += " AND user_id = ?"
+        params.append(user_id)
+        
     async with get_db() as db:
-        await execute_sql(
-            db,
-            f"UPDATE library_items SET deleted_at = ? WHERE license_key_id = ? AND id IN ({id_placeholders})",
-            [ts_value, license_id] + item_ids
-        )
+        await execute_sql(db, query, params)
         await commit_db(db)
         return len(item_ids)
 

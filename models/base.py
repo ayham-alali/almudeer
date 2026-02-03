@@ -264,6 +264,7 @@ async def init_enhanced_tables():
             CREATE TABLE IF NOT EXISTS library_items (
                 id {ID_PK},
                 license_key_id INTEGER NOT NULL,
+                user_id TEXT, -- The ID/email of the user who created this item
                 customer_id INTEGER,
                 type TEXT NOT NULL, -- 'note', 'image', 'file', 'audio', 'video'
                 title TEXT,
@@ -284,6 +285,17 @@ async def init_enhanced_tables():
             CREATE INDEX IF NOT EXISTS idx_library_license_customer
             ON library_items(license_key_id, customer_id)
         """)
+        
+        await execute_sql(db, """
+            CREATE INDEX IF NOT EXISTS idx_library_user
+            ON library_items(license_key_id, user_id)
+        """)
+
+        # Migration for user_id column
+        try:
+            await execute_sql(db, "ALTER TABLE library_items ADD COLUMN user_id TEXT")
+        except:
+            pass
 
         await commit_db(db)
         print("Enhanced tables initialized")
