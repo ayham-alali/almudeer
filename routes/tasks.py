@@ -3,6 +3,7 @@ from typing import List
 from schemas.tasks import TaskCreate, TaskResponse, TaskUpdate
 from models.tasks import get_tasks, create_task, update_task, delete_task, get_task
 from dependencies import get_license_from_header
+from errors import NotFoundError
 
 router = APIRouter(prefix="/api/tasks", tags=["Tasks"])
 
@@ -17,35 +18,27 @@ async def create_new_task(
     task: TaskCreate,
     license: dict = Depends(get_license_from_header)
 ):
-    """Create or sync a task"""
+    """Create or sync a task (atomic upsert)"""
     license_id = license["license_id"]
     
-    # Check if exists for THIS license (normal sync/upsert)
-    existing = await get_task(license_id, task.id)
-    if existing:
-        return await update_task(license_id, task.id, task.model_dump(exclude_unset=True))
-    
-    # Check if the ID exists GLOBALLY to prevent unique constraint violation
-    # If it exists for a DIFFERENT license, we should either return an error
-    # or generate a new ID. Since the client sends UUIDs, collisions are rare
-    # but the logs show it happened. We will return 409 Conflict if hijacked.
-    from db_helper import get_db, fetch_one
-    async with get_db() as db:
-        global_check = await fetch_one(db, "SELECT license_key_id FROM tasks WHERE id = ?", (task.id,))
-        if global_check:
-            # Task ID exists for another license!
-            if global_check["license_key_id"] != license_id:
-                raise HTTPException(
-                    status_code=409, 
-                    detail=f"Task ID already exists for a different account. Please use a unique ID."
-                )
-            # If it's the same license but get_task missed it (unlikely), update it
-            return await update_task(license_id, task.id, task.model_dump(exclude_unset=True))
-        
-    result = await create_task(license_id, task.model_dump())
-    if not result:
-        raise HTTPException(status_code=500, detail="Failed to create task")
-    return result
+    try:
+        result = await create_task(license_id, task.model_dump())
+        if not result:
+            raise HTTPException(status_code=500, detail="Failed to create/sync task")
+        return result
+    except Exception as e:
+        # If we get a unique constraint error, it might be a collision across licenses
+        if "unique constraint" in str(e).lower() or "already exists" in str(e).lower():
+            # Verify if it exists for another license
+            from db_helper import get_db, fetch_one
+            async with get_db() as db:
+                global_check = await fetch_one(db, "SELECT license_key_id FROM tasks WHERE id = ?", (task.id,))
+                if global_check and global_check["license_key_id"] != license_id:
+                    raise HTTPException(
+                        status_code=409, 
+                        detail="Task ID already exists for a different account."
+                    )
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @router.put("/{task_id}", response_model=TaskResponse)
 async def update_existing_task(

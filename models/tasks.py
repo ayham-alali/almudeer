@@ -78,7 +78,7 @@ def _parse_task_row(row: dict) -> dict:
     return row
 
 async def create_task(license_id: int, task_data: dict) -> dict:
-    """Create a new task"""
+    """Create or update a task atomically (Upsert)"""
     async with get_db() as db:
         # Convert list to JSON string if needed
         import json
@@ -90,6 +90,16 @@ async def create_task(license_id: int, task_data: dict) -> dict:
             INSERT INTO tasks (
                 id, license_key_id, title, description, is_completed, due_date, priority, color, sub_tasks, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                description = excluded.description,
+                is_completed = excluded.is_completed,
+                due_date = excluded.due_date,
+                priority = excluded.priority,
+                color = excluded.color,
+                sub_tasks = excluded.sub_tasks,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE tasks.license_key_id = ?
         """, (
             task_data['id'],
             license_id,
@@ -99,7 +109,8 @@ async def create_task(license_id: int, task_data: dict) -> dict:
             task_data.get('due_date'),
             task_data.get('priority', 'medium'),
             task_data.get('color'),
-            sub_tasks_val
+            sub_tasks_val,
+            license_id  # For the WHERE clause in ON CONFLICT
         ))
         await commit_db(db)
         return await get_task(license_id, task_data['id'])
@@ -112,7 +123,7 @@ async def update_task(license_id: int, task_id: str, task_data: dict) -> Optiona
     # helper to add field if present
     import json
     for key, val in task_data.items():
-        if val is not None:
+        if val is not None and key not in ['id', 'license_key_id']:
             # Handle special field types for database
             if key == 'sub_tasks' and isinstance(val, list):
                 val = json.dumps(val)
