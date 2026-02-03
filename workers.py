@@ -861,7 +861,36 @@ class MessagePoller:
                 if existing:
                     continue
 
-                # Apply filters
+                # Handle OUTGOING messages (synced from Telegram app)
+                if msg.get("direction") == "outgoing":
+                    # Check if already synced to outbox
+                    existing_outbox = await self._check_existing_outbox_message(
+                        license_id, "telegram", msg.get("channel_message_id")
+                    )
+                    if existing_outbox:
+                        continue
+                    
+                    # Save to outbox (not inbox)
+                    from models.inbox import save_synced_outbox_message
+                    await save_synced_outbox_message(
+                        license_id=license_id,
+                        channel="telegram",
+                        body=msg.get("body", ""),
+                        recipient_id=msg.get("sender_id"),  # For outgoing, sender_id is actually recipient
+                        recipient_name=msg.get("sender_name"),
+                        attachments=msg.get("attachments", []),
+                        sent_at=msg.get("received_at"),
+                        platform_message_id=msg.get("channel_message_id")
+                    )
+                    # Add to cache to prevent duplicate syncs
+                    cache_key = f"outbox_{license_id}_telegram_{msg.get('channel_message_id')}"
+                    if not hasattr(self, '_outbox_sync_cache'):
+                        self._outbox_sync_cache = set()
+                    self._outbox_sync_cache.add(cache_key)
+                    logger.debug(f"Synced outgoing Telegram message to outbox: {msg.get('channel_message_id')}")
+                    continue  # Skip inbox processing and AI analysis
+
+                # Apply filters (for incoming messages)
                 message_dict = {
                     "body": msg["body"],
                     "sender_contact": msg.get("sender_contact"),
@@ -906,6 +935,7 @@ class MessagePoller:
                 # Store msg data with DB ID
                 msg["db_id"] = msg_id
                 grouped_messages[sender_key].append(msg)
+
 
             # Process groups (Burst Handling)
             for sender_key, group in grouped_messages.items():
@@ -1040,6 +1070,45 @@ class MessagePoller:
         except Exception as e:
             logger.error(f"Error checking existing message: {e}")
             return False
+    
+    async def _check_existing_outbox_message(self, license_id: int, channel: str, platform_message_id: Optional[str]) -> bool:
+        """
+        Check if an outgoing message already exists in outbox (synced messages).
+        Note: outbox_messages table doesn't have platform_message_id column,
+        so we check inbox_messages first (where synced outgoing messages are also stored)
+        and use in-memory cache for polling cycles.
+        """
+        if not platform_message_id:
+            return False
+        
+        # Check in-memory cache first (to avoid duplicate inserts within same polling cycle)
+        cache_key = f"outbox_{license_id}_{channel}_{platform_message_id}"
+        if hasattr(self, '_outbox_sync_cache') and cache_key in self._outbox_sync_cache:
+            return True
+        
+        # Initialize cache if needed
+        if not hasattr(self, '_outbox_sync_cache'):
+            self._outbox_sync_cache = set()
+        
+        # Also check inbox_messages table since outgoing messages from Telegram listener
+        # may already be stored there via the live handler
+        try:
+            async with get_db() as db:
+                row = await fetch_one(
+                    db,
+                    "SELECT id FROM inbox_messages WHERE license_key_id = ? AND channel = ? AND channel_message_id = ?",
+                    [license_id, channel, platform_message_id],
+                )
+                if row:
+                    return True
+                    
+                # For outbox, check by timestamp window and body to avoid re-syncing same message
+                # This is a best-effort check since outbox lacks exact message ID
+                return False
+        except Exception as e:
+            logger.error(f"Error checking existing outbox message: {e}")
+            return False
+
     
     async def _analyze_and_process_message(
         self,

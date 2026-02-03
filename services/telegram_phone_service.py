@@ -567,15 +567,54 @@ class TelegramPhoneService:
                             logger.debug(f"Skipping group/channel message: {message.id}")
                             continue
 
-                        # CRITICAL: Skip outgoing messages (our own sent messages)
-                        # message.out = True means WE sent this message
+                        # Handle OUTGOING messages (syncing messages sent from Telegram app)
                         if message.out:
-                            logger.debug(f"Skipping outgoing message (message.out=True): {message.id}")
-                            continue
+                            # EXCLUDE Saved Messages (self-chat)
+                            # If the dialog is with ourselves, skip it
+                            if my_user_id and dialog.id == my_user_id:
+                                logger.debug(f"Skipping outgoing 'Saved Messages' (self-chat): {message.id}")
+                                continue
+                            
+                            # Skip messages older than since_time
+                            if message.date and message.date < since_time:
+                                break  # Messages are in reverse chronological order
+                            
+                            # For outgoing messages, the "contact" is the recipient (the dialog entity)
+                            recipient = dialog.entity
+                            recipient_name = ""
+                            recipient_contact = ""
+                            
+                            if recipient:
+                                fn = getattr(recipient, 'first_name', None) or ""
+                                ln = getattr(recipient, 'last_name', None) or ""
+                                recipient_name = getattr(recipient, 'title', None) or f"{fn} {ln}".strip()
+                                
+                                # Normalize phone
+                                phone = getattr(recipient, 'phone', None)
+                                if phone and phone.isdigit():
+                                    phone = "+" + phone
+                                recipient_contact = phone or (f"@{recipient.username}" if getattr(recipient, 'username', None) else str(dialog.id))
+                            
+                            messages_data.append({
+                                "channel_message_id": str(message.id),
+                                "sender_id": str(dialog.id),  # For outgoing, this is the recipient ID
+                                "sender_name": recipient_name or "Unknown",
+                                "sender_contact": recipient_contact or str(dialog.id),
+                                "body": message.text or "",
+                                "subject": None,
+                                "received_at": message.date,
+                                "chat_id": str(dialog.id),
+                                "is_channel": dialog.is_channel,
+                                "is_group": dialog.is_group,
+                                "attachments": [],
+                                "direction": "outgoing"  # Mark as outgoing for sync logic
+                            })
+                            continue  # Skip to next message, don't process as incoming
                         
-                        # SAFETY NET: Also check sender_id matches our user ID
-                        # This catches edge cases where message.out might be incorrect
+                        # INCOMING messages processing
                         sender = await message.get_sender()
+                        
+                        # SAFETY NET: Skip if sender_id matches our user ID (edge case)
                         if sender and my_user_id and sender.id == my_user_id:
                             logger.debug(f"Skipping self-message (sender_id matches our ID): {message.id}")
                             continue
@@ -598,7 +637,7 @@ class TelegramPhoneService:
                         if message.date and message.date < since_time:
                             break  # Messages are in reverse chronological order
                         
-                        # sender was already fetched above for the self-message check
+                        # Extract sender info for incoming messages
                         sender_name = ""
                         sender_contact = ""
                         
@@ -621,7 +660,8 @@ class TelegramPhoneService:
                             "chat_id": str(dialog.id),
                             "is_channel": dialog.is_channel,
                             "is_group": dialog.is_group,
-                            "attachments": []
+                            "attachments": [],
+                            "direction": "incoming"  # Mark as incoming
                         })
                         
                         # Handle Media (Photo/Voice/Video/Document)
