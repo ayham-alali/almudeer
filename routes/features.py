@@ -12,6 +12,7 @@ from models import (
     get_customers,
     get_customer,
     update_customer,
+    delete_customer,
     get_or_create_customer,
     get_analytics_summary,
     update_daily_analytics,
@@ -156,6 +157,19 @@ async def update_customer_detail(
         raise HTTPException(status_code=400, detail="فشل التحديث")
     
     return {"success": True, "message": "تم تحديث بيانات العميل"}
+
+
+@router.delete("/customers/{customer_id}")
+async def delete_customer_endpoint(
+    customer_id: int,
+    license: dict = Depends(get_license_from_header)
+):
+    """Delete a customer and related records"""
+    success = await delete_customer(license["license_id"], customer_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="العميل غير موجود")
+    
+    return {"success": True, "message": "تم حذف العميل بنجاح"}
 
 
 # ============ Analytics Routes ============

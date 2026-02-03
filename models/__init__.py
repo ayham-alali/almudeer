@@ -74,6 +74,7 @@ from .customers import (
     get_customers,
     get_customer,
     update_customer,
+    delete_customer,
     get_recent_conversation,
     get_customer_for_message,
     increment_customer_messages,
@@ -99,6 +100,17 @@ from .preferences import (
     get_preferences,
     update_preferences,
     delete_preferences,
+)
+
+# Library
+from .library import (
+    get_library_items,
+    get_library_item,
+    add_library_item,
+    update_library_item,
+    delete_library_item,
+    bulk_delete_items,
+    get_storage_usage,
 )
 
 # Re-export aiosqlite for backward compatibility
@@ -166,6 +178,7 @@ __all__ = [
     "get_customers",
     "get_customer",
     "update_customer",
+    "delete_customer",
     "get_recent_conversation",
     "get_customer_for_message",
     "increment_customer_messages",
@@ -180,6 +193,14 @@ __all__ = [
     "get_preferences",
     "update_preferences",
     "delete_preferences",
+    # Library
+    "get_library_items",
+    "get_library_item",
+    "add_library_item",
+    "update_library_item",
+    "delete_library_item",
+    "bulk_delete_items",
+    "get_storage_usage",
     # Notifications
     "create_notification",
     "get_notifications",

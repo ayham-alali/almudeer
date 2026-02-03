@@ -35,6 +35,7 @@ async def get_db():
             await conn.close()
     else:
         async with aiosqlite.connect(DATABASE_PATH) as db:
+            await db.execute("PRAGMA foreign_keys = ON")
             yield db
 
 

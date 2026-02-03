@@ -74,16 +74,21 @@ async def get_or_create_customer(
                 return dict(row)
         
         # Create new customer
+        contact_val = phone or email
+        if not contact_val:
+            from datetime import datetime
+            contact_val = f"unknown_{license_id}_{int(datetime.now().timestamp())}"
+
         if DB_TYPE == "postgresql":
             # PostgreSQL: insert then fetch the last inserted row
             try:
                 await execute_sql(
                     db,
                     """
-                    INSERT INTO customers (license_key_id, name, phone, email, lead_score, segment, profile_pic_url, has_whatsapp, has_telegram)
-                    VALUES (?, ?, ?, ?, 0, 'New', ?, ?, ?)
+                    INSERT INTO customers (license_key_id, contact, name, phone, email, lead_score, segment, profile_pic_url, has_whatsapp, has_telegram)
+                    VALUES (?, ?, ?, ?, ?, 0, 'New', ?, ?, ?)
                     """,
-                    [license_id, name, phone, email, None, has_whatsapp, has_telegram]
+                    [license_id, contact_val, name, phone, email, None, has_whatsapp, has_telegram]
                 )
             except Exception as e:
                 # Fallback check for missing auto-increment
@@ -95,10 +100,10 @@ async def get_or_create_customer(
                     await execute_sql(
                         db,
                         """
-                        INSERT INTO customers (id, license_key_id, name, phone, email, lead_score, segment, profile_pic_url, has_whatsapp, has_telegram)
-                        VALUES (?, ?, ?, ?, ?, 0, 'New', ?, ?, ?)
+                        INSERT INTO customers (id, license_key_id, contact, name, phone, email, lead_score, segment, profile_pic_url, has_whatsapp, has_telegram)
+                        VALUES (?, ?, ?, ?, ?, ?, 0, 'New', ?, ?, ?)
                         """,
-                        [next_id, license_id, name, phone, email, None, has_whatsapp, has_telegram]
+                        [next_id, license_id, contact_val, name, phone, email, None, has_whatsapp, has_telegram]
                     )
                 else:
                     raise e
@@ -122,10 +127,10 @@ async def get_or_create_customer(
             await execute_sql(
                 db,
                 """
-                INSERT INTO customers (license_key_id, name, phone, email, lead_score, segment, profile_pic_url, has_whatsapp, has_telegram)
-                VALUES (?, ?, ?, ?, 0, 'New', ?, ?, ?)
+                INSERT INTO customers (license_key_id, contact, name, phone, email, lead_score, segment, profile_pic_url, has_whatsapp, has_telegram)
+                VALUES (?, ?, ?, ?, ?, 0, 'New', ?, ?, ?)
                 """,
-                [license_id, name, phone, email, None, has_whatsapp, has_telegram]
+                [license_id, contact_val, name, phone, email, None, has_whatsapp, has_telegram]
             )
             await commit_db(db)
             
@@ -1234,4 +1239,59 @@ async def create_smart_notification(
         priority=notif["priority"],
         link=notif.get("link")
     )
+
+
+async def delete_customer(license_id: int, customer_id: int) -> bool:
+    """
+    Delete a customer and clean up related data:
+    1. Associated Purchases: Deleted (DB Cascade)
+    2. Inbox Messages: Links in customer_messages deleted
+    3. Library Items: Soft deleted
+    4. Orders: Unlinked (customer_contact set to NULL)
+    """
+    async with get_db() as db:
+        # 0. Get customer contact before deletion
+        row = await fetch_one(
+            db,
+            "SELECT contact FROM customers WHERE id = ? AND license_key_id = ?",
+            [customer_id, license_id]
+        )
+        if not row:
+            return False
+        
+        contact = row["contact"]
+        from datetime import datetime
+        now = datetime.utcnow()
+        ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
+
+        # 1. Unlink orders
+        await execute_sql(
+            db,
+            "UPDATE orders SET customer_contact = NULL WHERE customer_contact = ?",
+            [contact]
+        )
+
+        # 2. Detach library items ONLY (keep visible in general lists)
+        await execute_sql(
+            db,
+            "UPDATE library_items SET customer_id = NULL WHERE customer_id = ? AND license_key_id = ?",
+            [customer_id, license_id]
+        )
+
+        # 3. Delete from customer_messages links (for integrity, original messages remain)
+        await execute_sql(
+            db,
+            "DELETE FROM customer_messages WHERE customer_id = ?",
+            [customer_id]
+        )
+
+        # 4. Finally delete the customer (this will cascade to purchases if configured)
+        await execute_sql(
+            db,
+            "DELETE FROM customers WHERE id = ? AND license_key_id = ?",
+            [customer_id, license_id]
+        )
+        
+        await commit_db(db)
+        return True
 
