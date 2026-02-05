@@ -8,7 +8,7 @@ Usage:
 
 Arguments:
   --build       New build number (integer)
-  --force       Enable force update (critical)
+  --force       Enable force update (critical). If set, users CANNOT dismiss the update.
   --notes-ar    Changelog in Arabic
   --notes-en    Changelog in English (optional)
   --ios-url     Custom iOS Store URL (optional)
