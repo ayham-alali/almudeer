@@ -13,6 +13,11 @@ from pydantic import BaseModel
 from dependencies import get_license_from_header
 from services.jwt_auth import get_current_user_optional
 from models.library import (
+    get_library_items,
+    add_library_item,
+    update_library_item,
+    delete_library_item,
+    bulk_delete_items,
     get_storage_usage
 )
 from services.file_storage_service import get_file_storage
