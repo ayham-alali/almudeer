@@ -41,24 +41,21 @@ def _adapt_sql_for_db(sql: str) -> str:
 async def init_database():
     """Initialize the database with required tables (supports both SQLite and PostgreSQL)"""
     if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        if not DATABASE_URL:
-            raise ValueError("DATABASE_URL is required for PostgreSQL")
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            await _init_postgresql_tables(conn)
-            # Add new columns if they don't exist (for existing databases)
-            await conn.execute("""
-                ALTER TABLE license_keys 
-                ADD COLUMN IF NOT EXISTS referral_code VARCHAR(50) UNIQUE,
-                ADD COLUMN IF NOT EXISTS referred_by_id INTEGER REFERENCES license_keys(id),
-                ADD COLUMN IF NOT EXISTS is_trial BOOLEAN DEFAULT FALSE,
-                ADD COLUMN IF NOT EXISTS referral_count INTEGER DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS username VARCHAR(255) UNIQUE
-            """)
-        except Exception:
-            pass
-        finally:
-            await conn.close()
+        from db_helper import get_db
+        async with get_db() as conn:
+            try:
+                await _init_postgresql_tables(conn)
+                # Add new columns if they don't exist (for existing databases)
+                await conn.execute("""
+                    ALTER TABLE license_keys 
+                    ADD COLUMN IF NOT EXISTS referral_code VARCHAR(50) UNIQUE,
+                    ADD COLUMN IF NOT EXISTS referred_by_id INTEGER REFERENCES license_keys(id),
+                    ADD COLUMN IF NOT EXISTS is_trial BOOLEAN DEFAULT FALSE,
+                    ADD COLUMN IF NOT EXISTS referral_count INTEGER DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS username VARCHAR(255) UNIQUE
+                """)
+            except Exception:
+                pass
     else:
         async with aiosqlite.connect(DATABASE_PATH) as db:
             await _init_sqlite_tables(db)
@@ -80,12 +77,7 @@ async def init_database():
             except Exception: pass
             await db.commit()
     
-    # Initialize Service Tables
-    try:
-        from services.notification_service import init_notification_tables
-        await init_notification_tables()
-    except Exception as e:
-        print(f"Warning: Failed to init notification tables: {e}")
+    return
 
 
 async def _init_sqlite_tables(db):

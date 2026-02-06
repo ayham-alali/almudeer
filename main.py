@@ -140,79 +140,47 @@ async def lifespan(app: FastAPI):
             logger.warning(f"FTS setup warning: {e}")
         
         await init_database()
-        try:
-            await init_enhanced_tables()  # Email & Telegram tables
-            from models.purchases import init_ifc_ledger
-            await init_ifc_ledger()  # Sharia-compliant ledger fields
-        except Exception as e:
-            logger.warning(f"Enhanced tables or IFC ledger initialization warning: {e}")
-        try:
-            from services.notification_service import init_notification_tables
-            await init_notification_tables()  # Notification tables
-        except Exception as e:
-            logger.warning(f"Notification tables initialization warning (may already exist): {e}")
-        try:
-            await init_customers_and_analytics()  # Customers, Analytics
-        except Exception as e:
-            logger.warning(f"Customers/analytics initialization warning (may already exist): {e}")
         
-        try:
-            await init_tasks_table()
-        except Exception as e:
-            logger.warning(f"Tasks table initialization warning: {e}")
+        # Import necessary functions for parallelization
+        from models.purchases import init_ifc_ledger
+        from services.notification_service import init_notification_tables
+        from services.push_service import log_vapid_status, ensure_push_subscription_table
+        from migrations.users_table import create_users_table
+        from migrations.fix_customers_serial import fix_customers_serial
+        from migrations.backfill_queue_table import create_backfill_queue_table
+        from migrations.task_queue_table import create_task_queue_table
+        from migrations.purchases_table import create_purchases_table
+
+        # Parallelize independent table initializations to speed up startup
+        init_tasks = [
+            init_enhanced_tables(),
+            init_ifc_ledger(),
+            init_notification_tables(),
+            init_customers_and_analytics(),
+            init_tasks_table(),
+            create_indexes(),
+            ensure_push_subscription_table(),
+            create_users_table(),
+            fix_customers_serial(),
+            create_backfill_queue_table(),
+            create_task_queue_table(),
+            create_purchases_table()
+        ]
         
-        # Create database indexes for query optimization
-        try:
-            await create_indexes()
-            logger.info("Database indexes created/verified")
-        except Exception as e:
-            logger.warning(f"Index creation warning: {e}")
+        results = await asyncio.gather(*init_tasks, return_exceptions=True)
         
-        # Push Notification Services
+        # Log any migration/init warnings
+        for i, res in enumerate(results):
+            if isinstance(res, Exception):
+                logger.warning(f"Startup task {i} warning: {res}")
+        
+        logger.info("Database tables and indexes verified/created")
+
+        # Log VAPID status after ensure_push_subscription_table might have run
         try:
-            from services.push_service import log_vapid_status, ensure_push_subscription_table
             log_vapid_status()
-            await ensure_push_subscription_table()
         except Exception as e:
-            logger.warning(f"Push service initialization warning: {e}")
-        
-        # Create users table for JWT auth
-        try:
-            from migrations.users_table import create_users_table
-            await create_users_table()
-        except Exception as e:
-            logger.warning(f"Users table creation note: {e}")
-        
-        # Fix customers table serial (PostgreSQL auto-increment)
-        try:
-            from migrations.fix_customers_serial import fix_customers_serial
-            await fix_customers_serial()
-        except Exception as e:
-            logger.warning(f"Customers serial fix note: {e}")
-
-
-        # Create backfill queue table for historical chat processing
-        try:
-            from migrations.backfill_queue_table import create_backfill_queue_table
-            await create_backfill_queue_table()
-        except Exception as e:
-            logger.warning(f"Backfill queue table creation note: {e}")
-
-        # Create task queue table for async jobs
-        try:
-            from migrations.task_queue_table import create_task_queue_table
-            await create_task_queue_table()
-        except Exception as e:
-            logger.warning(f"Task queue table creation note: {e}")
-
-        
-        # Create purchases table and analytics columns
-        try:
-            from migrations.purchases_table import create_purchases_table
-            await create_purchases_table()
-        except Exception as e:
-            logger.warning(f"Purchases table creation note: {e}")
-
+            logger.warning(f"VAPID status logging warning: {e}")
         
         # Ensure language/dialect columns exist in inbox_messages
         try:

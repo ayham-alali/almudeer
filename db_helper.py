@@ -24,19 +24,17 @@ else:
 
 @asynccontextmanager
 async def get_db():
-    """Get database connection context manager"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        if not DATABASE_URL:
-            raise ValueError("DATABASE_URL is required for PostgreSQL")
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            yield conn
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            await db.execute("PRAGMA foreign_keys = ON")
-            yield db
+    """Get database connection context manager using global pool"""
+    from db_pool import db_pool
+    
+    conn = await db_pool.acquire()
+    try:
+        # SQLite specific: ensure foreign keys are enabled if it's a new connection
+        if DB_TYPE == "sqlite":
+            await conn.execute("PRAGMA foreign_keys = ON")
+        yield conn
+    finally:
+        await db_pool.release(conn)
 
 
 def adapt_sql_for_db(sql: str) -> str:

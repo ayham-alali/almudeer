@@ -100,7 +100,7 @@ class SubscriptionUpdate(BaseModel):
 @router.get("/check-username/{username}")
 async def check_username_availability(username: str):
     """Check if a username exists and return user info"""
-    from database import get_db, fetch_one
+    from db_helper import get_db, fetch_one
     async with get_db() as db:
         row = await fetch_one(db, "SELECT company_name FROM license_keys WHERE username = ?", [username])
         if row:
@@ -123,7 +123,7 @@ async def create_subscription(
     logger = get_logger(__name__)
     
     try:
-        from database import get_db, fetch_one
+        from db_helper import get_db, fetch_one
         # Check if username is already taken
         async with get_db() as db:
             existing = await fetch_one(db, "SELECT id FROM license_keys WHERE username = ?", [subscription.username])
