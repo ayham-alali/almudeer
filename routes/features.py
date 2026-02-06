@@ -50,6 +50,7 @@ class CustomerUpdate(BaseModel):
     is_vip: Optional[bool] = None
     has_whatsapp: Optional[bool] = None
     has_telegram: Optional[bool] = None
+    username: Optional[str] = None
 
 
 class CustomerCreate(BaseModel):
@@ -60,6 +61,7 @@ class CustomerCreate(BaseModel):
     notes: Optional[str] = None
     has_whatsapp: bool = False
     has_telegram: bool = False
+    username: Optional[str] = None
 
 
 # ============ Customers Routes ============
@@ -75,6 +77,7 @@ async def add_customer(
         phone=sanitize_phone(data.phone) if data.phone else None,
         email=sanitize_email(data.email) if data.email else None,
         name=sanitize_string(data.name, max_length=200),
+        username=sanitize_string(data.username, max_length=100) if data.username else None,
         has_whatsapp=data.has_whatsapp,
         has_telegram=data.has_telegram
     )

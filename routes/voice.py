@@ -15,20 +15,15 @@ from pydantic import BaseModel
 
 from dependencies import get_license_from_header
 from services.voice_service import transcribe_voice_message
+from services.file_storage_service import get_file_storage
 from logging_config import get_logger
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/voice", tags=["Voice Messages"])
 
-# Storage configuration
-USE_S3 = os.getenv("USE_S3_STORAGE", "false").lower() == "true"
-S3_BUCKET = os.getenv("S3_BUCKET", "almudeer-voice")
-S3_REGION = os.getenv("AWS_REGION", "me-south-1")  # Bahrain region
-LOCAL_UPLOAD_DIR = os.getenv("UPLOAD_DIR", "static/uploads/voice")
-
-# Ensure local upload directory exists
-os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
+# File storage service instance
+file_storage = get_file_storage()
 
 
 class VoiceUploadResponse(BaseModel):
@@ -39,60 +34,8 @@ class VoiceUploadResponse(BaseModel):
     error: Optional[str] = None
 
 
-async def save_to_s3(file_data: bytes, filename: str, content_type: str) -> str:
-    """
-    Save file to S3 bucket.
-    Returns the public URL of the uploaded file.
-    """
-    try:
-        import boto3
-        from botocore.exceptions import ClientError
-        
-        s3_client = boto3.client(
-            's3',
-            region_name=S3_REGION,
-            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY")
-        )
-        
-        # Upload to S3
-        key = f"voice/{datetime.utcnow().strftime('%Y/%m/%d')}/{filename}"
-        
-        s3_client.put_object(
-            Bucket=S3_BUCKET,
-            Key=key,
-            Body=file_data,
-            ContentType=content_type,
-            ACL='public-read'
-        )
-        
-        # Return public URL
-        url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{key}"
-        logger.info(f"Uploaded voice to S3: {url}")
-        return url
-        
-    except ImportError:
-        logger.warning("boto3 not installed, falling back to local storage")
-        raise
-    except ClientError as e:
-        logger.error(f"S3 upload failed: {e}")
-        raise
-
-
-async def save_locally(file_data: bytes, filename: str) -> str:
-    """
-    Save file to local filesystem.
-    Returns the relative URL path.
-    """
-    filepath = os.path.join(LOCAL_UPLOAD_DIR, filename)
-    
-    with open(filepath, 'wb') as f:
-        f.write(file_data)
-    
-    # Return URL path (assumes static files are served)
-    url = f"/static/uploads/voice/{filename}"
-    logger.info(f"Saved voice locally: {url}")
-    return url
+# S3 and local save functions are now handled by FileStorageService
+# (Keeping internal logic if needed, but the service provides a better abstraction)
 
 
 async def get_audio_duration(file_data: bytes, filename: str) -> int:
@@ -167,16 +110,12 @@ async def upload_voice_message(
         ext = os.path.splitext(file.filename)[1] or '.ogg'
         unique_filename = f"{uuid.uuid4().hex}{ext}"
         
-        # Save file
-        try:
-            if USE_S3:
-                audio_url = await save_to_s3(file_data, unique_filename, file.content_type)
-            else:
-                audio_url = await save_locally(file_data, unique_filename)
-        except Exception as e:
-            logger.error(f"Storage error: {e}")
-            # Fallback to local if S3 fails
-            audio_url = await save_locally(file_data, unique_filename)
+        # Save file using storage service
+        _, audio_url = file_storage.save_file(
+            content=file_data,
+            filename=file.filename,
+            mime_type=file.content_type
+        )
         
         # Get duration
         duration = await get_audio_duration(file_data, unique_filename)

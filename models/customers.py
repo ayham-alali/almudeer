@@ -22,6 +22,7 @@ async def get_or_create_customer(
     phone: str = None,
     email: str = None,
     name: str = None,
+    username: str = None,
     has_whatsapp: bool = False,
     has_telegram: bool = False
 ) -> dict:
@@ -61,12 +62,12 @@ async def get_or_create_customer(
             # PostgreSQL: use RETURNING to get ID atomicly
             try:
                 sql = """
-                    INSERT INTO customers (license_key_id, contact, name, phone, email, lead_score, segment, has_whatsapp, has_telegram)
-                    VALUES (?, ?, ?, ?, ?, 0, 'New', ?, ?)
+                    INSERT INTO customers (license_key_id, contact, name, username, phone, email, lead_score, segment, has_whatsapp, has_telegram)
+                    VALUES (?, ?, ?, ?, ?, ?, 0, 'New', ?, ?)
                     RETURNING id
                 """
                 # adapt_sql_for_db might need to be careful with RETURNING, but execute_sql handles it
-                res = await fetch_one(db, sql, [license_id, contact_val, name, phone, email, has_whatsapp, has_telegram])
+                res = await fetch_one(db, sql, [license_id, contact_val, name, username, phone, email, has_whatsapp, has_telegram])
                 inserted_id = res["id"] if res else None
             except Exception as e:
                 # Handle potential conflicts or errors
@@ -77,10 +78,10 @@ async def get_or_create_customer(
             res = await execute_sql(
                 db,
                 """
-                INSERT INTO customers (license_key_id, contact, name, phone, email, lead_score, segment, has_whatsapp, has_telegram)
-                VALUES (?, ?, ?, ?, ?, 0, 'New', ?, ?)
+                INSERT INTO customers (license_key_id, contact, name, username, phone, email, lead_score, segment, has_whatsapp, has_telegram)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 'New', ?, ?)
                 """,
-                [license_id, contact_val, name, phone, email, has_whatsapp, has_telegram]
+                [license_id, contact_val, name, username, phone, email, has_whatsapp, has_telegram]
             )
             await commit_db(db)
             inserted_id = res.lastrowid
@@ -159,7 +160,7 @@ async def update_customer(
     **kwargs
 ) -> bool:
     """Update customer details"""
-    allowed_fields = ['name', 'phone', 'email', 'company', 'notes', 'tags', 'is_vip', 'profile_pic_url', 'has_whatsapp', 'has_telegram']
+    allowed_fields = ['name', 'username', 'phone', 'email', 'company', 'notes', 'tags', 'is_vip', 'profile_pic_url', 'has_whatsapp', 'has_telegram']
     updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
     
     if not updates:

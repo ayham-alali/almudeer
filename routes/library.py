@@ -13,21 +13,15 @@ from pydantic import BaseModel
 from dependencies import get_license_from_header
 from services.jwt_auth import get_current_user_optional
 from models.library import (
-    get_library_items, 
-    get_library_item, 
-    add_library_item, 
-    update_library_item, 
-    delete_library_item, 
-    bulk_delete_items,
     get_storage_usage
 )
+from services.file_storage_service import get_file_storage
 from security import sanitize_string
 
 router = APIRouter(prefix="/api/library", tags=["Library"])
 
-# Ensure upload directory exists
-UPLOAD_DIR = os.path.join("static", "uploads", "library")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+# File storage service instance
+file_storage = get_file_storage()
 
 class NoteCreate(BaseModel):
     customer_id: Optional[int] = None
@@ -118,17 +112,16 @@ async def upload_file(
     elif content_type.startswith("video/"):
         item_type = "video"
         
-    # Generate unique filename
-    ext = os.path.splitext(file.filename or "")[1]
-    filename = f"{uuid.uuid4()}{ext}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
-    
-    # Save file
+    # Save file using storage service
     try:
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-            
-        file_size = os.path.getsize(file_path)
+        content = await file.read()
+        relative_path, public_url = file_storage.save_file(
+            content=content,
+            filename=file.filename,
+            mime_type=content_type
+        )
+        
+        file_size = len(content)
         
         # Add to DB
         item = await add_library_item(
@@ -137,20 +130,16 @@ async def upload_file(
             item_type=item_type,
             customer_id=customer_id,
             title=sanitize_string(title or file.filename),
-            file_path=f"/static/uploads/library/{filename}",
+            file_path=public_url,
             file_size=file_size,
             mime_type=content_type
         )
         
         return {"success": True, "item": item}
     except ValueError as e:
-        # Cleanup file if DB insert fails (e.g. limit reached)
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        # DB level errors (e.g. limit reached)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        if os.path.exists(file_path):
-            os.remove(file_path)
         raise HTTPException(status_code=500, detail=f"حدث خطأ أثناء الرفع: {str(e)}")
 
 @router.patch("/{item_id}")
