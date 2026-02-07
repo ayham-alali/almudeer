@@ -114,9 +114,11 @@ async def get_customers(license_id: int, limit: int = 100) -> List[dict]:
         rows = await fetch_all(
             db,
             """
-            SELECT * FROM customers 
-            WHERE license_key_id = ? 
-            ORDER BY last_contact_at DESC
+            SELECT c.*, 
+                   (EXISTS (SELECT 1 FROM license_keys l WHERE l.username = c.username AND c.username IS NOT NULL)) as is_almudeer_user
+            FROM customers c
+            WHERE c.license_key_id = ? 
+            ORDER BY c.last_contact_at DESC
             LIMIT ?
             """,
             [license_id, limit],
@@ -133,10 +135,12 @@ async def get_customers_delta(license_id: int, since: datetime, limit: int = 100
         rows = await fetch_all(
             db,
             """
-            SELECT * FROM customers 
-            WHERE license_key_id = ? 
-            AND (last_contact_at > ? OR created_at > ?)
-            ORDER BY last_contact_at DESC
+            SELECT c.*, 
+                   (EXISTS (SELECT 1 FROM license_keys l WHERE l.username = c.username AND c.username IS NOT NULL)) as is_almudeer_user
+            FROM customers c
+            WHERE c.license_key_id = ? 
+            AND (c.last_contact_at > ? OR c.created_at > ?)
+            ORDER BY c.last_contact_at DESC
             LIMIT ?
             """,
             [license_id, ts_value, ts_value, limit],
@@ -149,7 +153,12 @@ async def get_customer(license_id: int, customer_id: int) -> Optional[dict]:
     async with get_db() as db:
         row = await fetch_one(
             db,
-            "SELECT * FROM customers WHERE id = ? AND license_key_id = ?",
+            """
+            SELECT c.*, 
+                   (EXISTS (SELECT 1 FROM license_keys l WHERE l.username = c.username AND c.username IS NOT NULL)) as is_almudeer_user
+            FROM customers c
+            WHERE c.id = ? AND c.license_key_id = ?
+            """,
             [customer_id, license_id]
         )
         return dict(row) if row else None

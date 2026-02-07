@@ -387,6 +387,34 @@ async def send_approved_message(outbox_id: int, license_id: int):
             sent_anything = True
             last_platform_id = f"saved_{message['id']}"
         
+        # ALMUDEER Internal Channel: Deliver to another license holder
+        elif channel == "almudeer":
+            recipient_username = message.get("recipient_email")
+            if recipient_username:
+                from db_helper import get_db, fetch_one
+                async with get_db() as db:
+                    # Find target license holder by username
+                    target_license = await fetch_one(db, "SELECT id, company_name FROM license_keys WHERE username = ?", [recipient_username])
+                    if target_license:
+                        # Find sender username & company name
+                        sender_license = await fetch_one(db, "SELECT username, company_name FROM license_keys WHERE id = ?", [license_id])
+                        sender_username = (sender_license["username"] if sender_license else None) or "mudeer_user"
+                        sender_company = (sender_license["company_name"] if sender_license else "Al-Mudeer User")
+                        
+                        # Deliver as INCOMING message to recipient's license
+                        from models.inbox import save_inbox_message
+                        await save_inbox_message(
+                            license_id=target_license["id"],
+                            channel="almudeer",
+                            body=body,
+                            sender_contact=sender_username,
+                            sender_name=sender_company,
+                            sender_id=sender_username,
+                            received_at=datetime.utcnow()
+                        )
+                        sent_anything = True
+                        last_platform_id = f"alm_{message['id']}"
+        
         # 1. SEND TEXT
         if body and not audio_path:
             try:
