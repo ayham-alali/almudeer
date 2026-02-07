@@ -225,12 +225,18 @@ async def ensure_outbox_columns():
         if DB_TYPE == "postgresql":
             try:
                 await execute_sql(db, "ALTER TABLE outbox_messages ADD COLUMN IF NOT EXISTS attachments TEXT")
+                await execute_sql(db, "ALTER TABLE outbox_messages ADD COLUMN IF NOT EXISTS failed_at TIMESTAMP")
                 await commit_db(db)
             except:
                 pass
         else:
             try:
                 await execute_sql(db, "ALTER TABLE outbox_messages ADD COLUMN attachments TEXT")
+                await commit_db(db)
+            except:
+                pass
+            try:
+                await execute_sql(db, "ALTER TABLE outbox_messages ADD COLUMN failed_at TIMESTAMP")
                 await commit_db(db)
             except:
                 pass
