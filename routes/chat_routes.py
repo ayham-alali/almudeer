@@ -143,7 +143,8 @@ async def get_conversation_detail(
             "sender_contact": sender_contact,
             "messages": [],
             "total": 0,
-            "lead_score": None
+            "lead_score": None,
+            "channel": "almudeer"
         }
     
     incoming_msgs = [m for m in messages if m.get("direction") == "incoming"]

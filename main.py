@@ -798,6 +798,7 @@ async def get_crm_paginated(
 
 
 @app.get("/api/customers/paginated", tags=["CRM"])
+@app.get("/api/customers", tags=["CRM"])
 async def get_customers_paginated(
     page: int = 1,
     page_size: int = 20,
@@ -806,6 +807,7 @@ async def get_customers_paginated(
 ):
     """
     Get customers with pagination and optional search.
+    Supports both /api/customers/paginated and legacy /api/customers
     """
     return await paginate_customers(
         license_id=license["license_id"],
