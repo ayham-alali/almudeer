@@ -45,9 +45,15 @@ async def get_or_create_customer(
         # Check existing by phone/email
         row = None
         if phone:
-            row = await fetch_one(db, "SELECT * FROM customers WHERE license_key_id = ? AND phone = ?", [license_id, phone])
+            row = await fetch_one(db, """
+                SELECT *, (EXISTS (SELECT 1 FROM license_keys l WHERE l.username = customers.username AND customers.username IS NOT NULL)) as is_almudeer_user
+                FROM customers WHERE license_key_id = ? AND phone = ?
+            """, [license_id, phone])
         if not row and email:
-            row = await fetch_one(db, "SELECT * FROM customers WHERE license_key_id = ? AND email = ?", [license_id, email])
+            row = await fetch_one(db, """
+                SELECT *, (EXISTS (SELECT 1 FROM license_keys l WHERE l.username = customers.username AND customers.username IS NOT NULL)) as is_almudeer_user
+                FROM customers WHERE license_key_id = ? AND email = ?
+            """, [license_id, email])
         
         if row:
             return dict(row)
@@ -87,7 +93,10 @@ async def get_or_create_customer(
             inserted_id = res.lastrowid
 
         if inserted_id:
-            row = await fetch_one(db, "SELECT * FROM customers WHERE id = ?", [inserted_id])
+            row = await fetch_one(db, """
+                SELECT *, (EXISTS (SELECT 1 FROM license_keys l WHERE l.username = customers.username AND customers.username IS NOT NULL)) as is_almudeer_user
+                FROM customers WHERE id = ?
+            """, [inserted_id])
             if row:
                 return dict(row)
             

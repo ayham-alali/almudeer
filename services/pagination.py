@@ -208,7 +208,9 @@ async def paginate_customers(license_id: int,
     total = await get_total_count("customers", where_clause, tuple(query_params))
     
     sql = f"""
-        SELECT * FROM customers 
+        SELECT *, 
+               (EXISTS (SELECT 1 FROM license_keys l WHERE l.username = customers.username AND customers.username IS NOT NULL)) as is_almudeer_user
+        FROM customers 
         WHERE {where_clause}
         ORDER BY created_at DESC
         {get_pagination_sql(params, db_type)}
