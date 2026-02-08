@@ -477,7 +477,6 @@ async def save_whatsapp_config(
     access_token: str,
     business_account_id: str = None,
     verify_token: str = None,
-    auto_reply_enabled: bool = False,
 ) -> int:
     """Save WhatsApp configuration in a database-agnostic way."""
     from db_helper import get_db, fetch_one, execute_sql, commit_db, DB_TYPE
@@ -502,7 +501,6 @@ async def save_whatsapp_config(
                     access_token = ?,
                     business_account_id = ?,
                     verify_token = ?,
-                    auto_reply_enabled = ?,
                     is_active = TRUE,
                     updated_at = ?
                 WHERE license_key_id = ?
@@ -512,7 +510,6 @@ async def save_whatsapp_config(
                     access_token,
                     business_account_id,
                     verify_token,
-                    auto_reply_enabled,
                     updated_at,
                     license_id,
                 ],
@@ -525,8 +522,8 @@ async def save_whatsapp_config(
             """
             INSERT INTO whatsapp_configs 
                 (license_key_id, phone_number_id, access_token, business_account_id,
-                 verify_token, auto_reply_enabled, is_active)
-            VALUES (?, ?, ?, ?, ?, ?, TRUE)
+                 verify_token, is_active)
+            VALUES (?, ?, ?, ?, ?, TRUE)
             """,
             [
                 license_id,
@@ -534,7 +531,6 @@ async def save_whatsapp_config(
                 access_token,
                 business_account_id,
                 verify_token,
-                auto_reply_enabled,
             ],
         )
 

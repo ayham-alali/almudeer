@@ -687,7 +687,6 @@ class MessagePoller:
                     message_id=msg_id,
                     body=email_data["body"],
                     license_id=license_id,
-                    auto_reply=config.get("auto_reply_enabled", False),
                     channel="email",
                     recipient=email_data.get("sender_contact"),
                     sender_name=email_data.get("sender_name"),
@@ -1115,12 +1114,11 @@ class MessagePoller:
         message_id: int,
         body: str,
         license_id: int,
-        auto_reply: bool,
         channel: str,
-        recipient: Optional[str] = None,
+        recipient: str,
         sender_name: Optional[str] = None,
         channel_message_id: Optional[str] = None,
-        attachments: Optional[List[Dict[str, Any]]] = None
+        attachments: Optional[List[dict]] = None
     ):
         """
         Analyze message with AI and optionally auto-reply.
@@ -1147,16 +1145,19 @@ class MessagePoller:
                     logger.error(f"Failed to update duplicate message status: {e}")
                 return
 
-            from services.analysis_service import process_inbox_message_logic
-            
-            # Delegate to the centralized logic
-            await process_inbox_message_logic(
-                message_id=message_id,
-                body=body,
-                license_id=license_id,
-                auto_reply=auto_reply,
-                attachments=attachments
-            )
+            async with self.ai_semaphore:
+                try:
+                    from services.analysis_service import process_inbox_message_logic
+                    
+                    # Delegate to the centralized logic
+                    await process_inbox_message_logic(
+                        message_id=message_id,
+                        body=body,
+                        license_id=license_id,
+                        attachments=attachments
+                    )
+                except Exception as e:
+                    logger.error(f"Error during analysis for message {message_id}: {e}", exc_info=True)
             
             await self._increment_user_rate_limit(license_id)
 
@@ -1718,15 +1719,16 @@ class TaskWorker:
                  try:
                      result = None
                      if task_type == "analyze_message":
-                          from services.analysis_service import process_inbox_message_logic
-                          result = await process_inbox_message_logic(
-                              message_id=payload.get("message_id"),
-                              body=payload.get("body"),
-                              license_id=payload.get("license_id"),
-                              auto_reply=payload.get("auto_reply", False),
-                              telegram_chat_id=payload.get("telegram_chat_id"),
-                              attachments=payload.get("attachments")
-                          )
+                          # Process and analyze using centralized service
+                        from services.analysis_service import process_inbox_message_logic
+                        
+                        await process_inbox_message_logic(
+                            message_id=payload.get("message_id"),
+                            body=payload.get("body"),
+                            license_id=payload.get("license_id"),
+                            telegram_chat_id=payload.get("telegram_chat_id"),
+                            attachments=payload.get("attachments")
+                        )
                      elif task_type == "analyze":
                           # Generic analyze from main.py endpoint
                           from agent import process_message

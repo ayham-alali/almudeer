@@ -498,21 +498,11 @@ class TelegramListenerService:
                         # Local import to avoid circular dependency
                         from routes.chat_routes import analyze_inbox_message
                         
-                        # Get auto-reply preference
-                        async with get_db() as db:
-                            row = await fetch_one(
-                                db,
-                                "SELECT auto_reply_enabled FROM telegram_phone_sessions WHERE license_key_id = ? AND is_active = TRUE",
-                                [license_id]
-                            )
-                            auto_reply = bool(row["auto_reply_enabled"]) if row else False
-
                         task = asyncio.create_task(
                             analyze_inbox_message(
                                 message_id=msg_id,
                                 body=body,
                                 license_id=license_id,
-                                auto_reply=auto_reply,
                                 telegram_chat_id=str(sender.id),
                                 attachments=attachments
                             )

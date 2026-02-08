@@ -23,9 +23,8 @@ async def get_preferences(license_id: int) -> dict:
         )
         if row:
             prefs = dict(row)
-            # CRITICAL: Ensure notifications_enabled defaults to True if NULL in DB
-            if prefs.get("notifications_enabled") is None:
-                prefs["notifications_enabled"] = True
+            # CRITICAL: Always enforce notifications_enabled as True
+            prefs["notifications_enabled"] = True
             
             # Smart handling of preferred_languages
             # It might be stored as "ar,en" (Legacy) or "[\"ar\", \"en\"]" (New JSON)
@@ -68,7 +67,6 @@ async def get_preferences(license_id: int) -> dict:
             "dark_mode": False,
             "notifications_enabled": True,
             "notification_sound": True,
-            "auto_reply_delay_seconds": 30,
             "language": "ar",
             "onboarding_completed": False,
             "tone": "formal",
@@ -88,7 +86,6 @@ async def update_preferences(license_id: int, **kwargs) -> bool:
         'dark_mode',
         'notifications_enabled',
         'notification_sound',
-        'auto_reply_delay_seconds',
         'onboarding_completed',
         # AI / workspace tone & business profile
         'tone',
@@ -98,6 +95,10 @@ async def update_preferences(license_id: int, **kwargs) -> bool:
         'formality_level',
     ]
     updates = {k: v for k, v in kwargs.items() if k in allowed}
+    
+    # Always enforce notifications_enabled as True
+    if 'notifications_enabled' in updates:
+        updates['notifications_enabled'] = True
     
     logger.info(f"update_preferences called: license_id={license_id}, updates={updates}")
     

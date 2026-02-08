@@ -17,7 +17,6 @@ async def process_inbox_message_logic(
     message_id: int,
     body: str,
     license_id: int,
-    auto_reply: bool = False,
     telegram_chat_id: str = None,
     attachments: Optional[List[dict]] = None
 ):
@@ -110,10 +109,7 @@ async def process_inbox_message_logic(
             
             # Notifications
             try:
-                from services.notification_service import process_message_notifications
-                # Don't notify if we auto-replied immediately, or maybe do?
-                if not (auto_reply and data.get("draft_response")):
-                    await process_message_notifications(license_id, {
+                await process_message_notifications(license_id, {
                         "sender_name": message_data.get("sender_name", "Unknown") if message_data else "Unknown",
                         "sender_contact": message_data.get("sender_contact") if message_data else None,
                         "body": body, "intent": data.get("intent"), "urgency": data.get("urgency"), "sentiment": data.get("sentiment"),
@@ -123,29 +119,6 @@ async def process_inbox_message_logic(
             except Exception as e:
                 logger.warning(f"Notification failed for msg {message_id}: {e}")
 
-            # Auto-reply Execution (Recursive task or immediate?)
-            # For robustness, we could enqueue a "send_reply" task, but doing it here is fine since we are already in background worker
-            if auto_reply and data["draft_response"]:
-                outbox_id = await create_outbox_message(
-                    inbox_message_id=message_id, 
-                    license_id=license_id, 
-                    channel=message_data["channel"],
-                    body=data["draft_response"], 
-                    recipient_id=message_data.get("sender_id"), 
-                    recipient_email=message_data.get("sender_contact")
-                )
-                await approve_outbox_message(outbox_id)
-                await update_inbox_status(message_id, "auto_replied")
-                
-                # Send immediately or enqueue?
-                # Let's import the route function sender logic or move it to service.
-                # For now, we'll re-use the function from chat_routes via import if possible,
-                # BUT circular imports are risky.
-                # ideally send_approved_message should be in a service too.
-                # We'll use a dynamic import to call the sender logic or reimplement valid parts.
-                from routes.chat_routes import send_approved_message
-                await send_approved_message(outbox_id, license_id)
-                
             return {"success": True, "analysis": data}
             
     except Exception as e:

@@ -610,15 +610,8 @@ async def send_notification(
     if channels is None:
         channels = [NotificationChannel.IN_APP]
     
-    # Check if user has notifications enabled (for mobile push)
+    # CRITICAL: Always enforce notifications_enabled as True
     notifications_enabled = True
-    if not skip_preference_check:
-        try:
-            from models.preferences import get_preferences
-            prefs = await get_preferences(license_id)
-            notifications_enabled = prefs.get("notifications_enabled", True)
-        except Exception as e:
-            logger.warning(f"Notification Service: Could not check preferences: {e}")
     
     # Throttling check (Flood Protection)
     sender_contact = payload.metadata.get("sender_contact") if payload.metadata else None

@@ -21,7 +21,6 @@ async def save_email_config(
     smtp_server: str = "smtp.gmail.com",
     imap_port: int = 993,
     smtp_port: int = 587,
-    auto_reply: bool = False,
     check_interval: int = 5
 ) -> int:
     """Save or update email configuration with OAuth 2.0 tokens (Gmail only)."""
@@ -61,7 +60,7 @@ async def save_email_config(
                     access_token_encrypted = ?, refresh_token_encrypted = ?,
                     token_expires_at = ?,
                     password_encrypted = ?,
-                    auto_reply_enabled = ?, check_interval_minutes = ?
+                    check_interval_minutes = ?
                 WHERE license_key_id = ?
                 """,
                 [
@@ -74,7 +73,6 @@ async def save_email_config(
                     encrypted_refresh_token,
                     expires_value,
                     "",  # Empty string for OAuth (legacy password field)
-                    auto_reply,
                     check_interval,
                     license_id,
                 ],
@@ -88,8 +86,8 @@ async def save_email_config(
             INSERT INTO email_configs 
                 (license_key_id, email_address, imap_server, imap_port,
                  smtp_server, smtp_port, access_token_encrypted, refresh_token_encrypted,
-                 token_expires_at, password_encrypted, auto_reply_enabled, check_interval_minutes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 token_expires_at, password_encrypted, check_interval_minutes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 license_id,
@@ -102,7 +100,6 @@ async def save_email_config(
                 encrypted_refresh_token,
                 expires_value,
                 "",  # Empty string for OAuth (legacy password field)
-                auto_reply,
                 check_interval,
             ],
         )
@@ -170,7 +167,6 @@ async def get_email_oauth_tokens(license_id: int) -> Optional[dict]:
 
 async def update_email_config_settings(
     license_id: int,
-    auto_reply: bool = None,
     check_interval: int = None,
     is_active: bool = None
 ) -> bool:
@@ -178,10 +174,6 @@ async def update_email_config_settings(
     async with get_db() as db:
         updates = []
         params = []
-        
-        if auto_reply is not None:
-            updates.append("auto_reply_enabled = ?")
-            params.append(auto_reply)
         
         if check_interval is not None:
             updates.append("check_interval_minutes = ?")

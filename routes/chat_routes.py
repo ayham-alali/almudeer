@@ -355,7 +355,6 @@ async def analyze_inbox_message(
     message_id: int,
     body: str,
     license_id: int,
-    auto_reply: bool = False,
     telegram_chat_id: str = None,
     attachments: Optional[List[dict]] = None
 ):
@@ -367,7 +366,6 @@ async def analyze_inbox_message(
         "message_id": message_id,
         "body": body,
         "license_id": license_id,
-        "auto_reply": auto_reply,
         "telegram_chat_id": telegram_chat_id,
         "attachments": attachments
     })
