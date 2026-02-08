@@ -1772,34 +1772,41 @@ async def soft_delete_conversation(license_id: int, sender_contact: str) -> dict
     """
     from datetime import datetime, timezone
     
-    # Handle tg: prefix similar to other functions
-    check_ids = [sender_contact]
-    if sender_contact and sender_contact.startswith("tg:"):
-        check_ids.append(sender_contact[3:])
-        
-    placeholders = ", ".join(["?" for _ in check_ids])
-    
-    # Params for queries
-    # For inbox: sender_contact/id
-    in_params = [license_id]
-    in_params.extend(check_ids)
-    in_params.extend(check_ids)
-    in_params.append(f"%{sender_contact}%")
-    
-    # For outbox: recipient_email/id
-    out_params = [license_id]
-    out_params.extend(check_ids)
-    out_params.extend(check_ids)
-    out_params.append(f"%{sender_contact}%")
-    
-    now = datetime.now(timezone.utc)
-    ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
-    
-    # Add timestamp to params
-    in_params.insert(0, ts_value) # UPDATE ... SET deleted_at = ? WHERE ...
-    out_params.insert(0, ts_value)
-
     async with get_db() as db:
+        # Get all aliases for this sender to ensure we clear EVERYTHING
+        all_contacts, all_ids = await _get_sender_aliases(db, license_id, sender_contact)
+        
+        # Build conditions for inbox
+        in_conditions = []
+        in_params = [ts_value, license_id]
+        
+        if all_contacts:
+            contact_placeholders = ", ".join(["?" for _ in all_contacts])
+            in_conditions.append(f"sender_contact IN ({contact_placeholders})")
+            in_params.extend(list(all_contacts))
+        
+        if all_ids:
+            id_placeholders = ", ".join(["?" for _ in all_ids])
+            in_conditions.append(f"sender_id IN ({id_placeholders})")
+            in_params.extend(list(all_ids))
+            
+        in_where = " OR ".join(in_conditions) if in_conditions else "1=0"
+
+        # Params for outbox: recipient_email/id
+        out_conditions = []
+        out_params = [ts_value, license_id]
+        
+        if all_contacts:
+            contact_placeholders = ", ".join(["?" for _ in all_contacts])
+            out_conditions.append(f"recipient_email IN ({contact_placeholders})")
+            out_params.extend(list(all_contacts))
+        
+        if all_ids:
+            id_placeholders = ", ".join(["?" for _ in all_ids])
+            out_conditions.append(f"recipient_id IN ({id_placeholders})")
+            out_params.extend(list(all_ids))
+            
+        out_where = " OR ".join(out_conditions) if out_conditions else "1=0"
         # Update Inbox
         await execute_sql(
             db,
@@ -1807,7 +1814,7 @@ async def soft_delete_conversation(license_id: int, sender_contact: str) -> dict
             UPDATE inbox_messages 
             SET deleted_at = ?
             WHERE license_key_id = ?
-            AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
+            AND ({in_where})
             AND deleted_at IS NULL
             """,
             in_params
@@ -1820,7 +1827,7 @@ async def soft_delete_conversation(license_id: int, sender_contact: str) -> dict
             UPDATE outbox_messages 
             SET deleted_at = ?
             WHERE license_key_id = ?
-            AND (recipient_email IN ({placeholders}) OR recipient_id IN ({placeholders}) OR recipient_email LIKE ?)
+            AND ({out_where})
              AND deleted_at IS NULL
             """,
             out_params
@@ -1846,28 +1853,42 @@ async def clear_conversation_messages(license_id: int, sender_contact: str) -> d
     """
     from datetime import datetime, timezone
     
-    # Handle tg: prefix similar to other functions
-    check_ids = [sender_contact]
-    if sender_contact and sender_contact.startswith("tg:"):
-        check_ids.append(sender_contact[3:])
-        
-    placeholders = ", ".join(["?" for _ in check_ids])
-    
-    now = datetime.now(timezone.utc)
-    ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
-    
-    # Params for queries
-    in_params = [ts_value, license_id]
-    in_params.extend(check_ids)
-    in_params.extend(check_ids)
-    in_params.append(f"%{sender_contact}%")
-    
-    out_params = [ts_value, license_id]
-    out_params.extend(check_ids)
-    out_params.extend(check_ids)
-    out_params.append(f"%{sender_contact}%")
-
     async with get_db() as db:
+        # Get all aliases for this sender to ensure we clear EVERYTHING
+        all_contacts, all_ids = await _get_sender_aliases(db, license_id, sender_contact)
+        
+        # Build conditions for inbox
+        in_conditions = []
+        in_params = [ts_value, license_id]
+        
+        if all_contacts:
+            contact_placeholders = ", ".join(["?" for _ in all_contacts])
+            in_conditions.append(f"sender_contact IN ({contact_placeholders})")
+            in_params.extend(list(all_contacts))
+        
+        if all_ids:
+            id_placeholders = ", ".join(["?" for _ in all_ids])
+            in_conditions.append(f"sender_id IN ({id_placeholders})")
+            in_params.extend(list(all_ids))
+            
+        in_where = " OR ".join(in_conditions) if in_conditions else "1=0"
+
+        # Params for outbox: recipient_email/id
+        out_conditions = []
+        out_params = [ts_value, license_id]
+        
+        if all_contacts:
+            contact_placeholders = ", ".join(["?" for _ in all_contacts])
+            out_conditions.append(f"recipient_email IN ({contact_placeholders})")
+            out_params.extend(list(all_contacts))
+        
+        if all_ids:
+            id_placeholders = ", ".join(["?" for _ in all_ids])
+            out_conditions.append(f"recipient_id IN ({id_placeholders})")
+            out_params.extend(list(all_ids))
+            
+        out_where = " OR ".join(out_conditions) if out_conditions else "1=0"
+
         # 1. Soft delete Inbox Messages
         await execute_sql(
             db,
@@ -1875,7 +1896,7 @@ async def clear_conversation_messages(license_id: int, sender_contact: str) -> d
             UPDATE inbox_messages 
             SET deleted_at = ?
             WHERE license_key_id = ?
-            AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
+            AND ({in_where})
             AND deleted_at IS NULL
             """,
             in_params
@@ -1888,7 +1909,7 @@ async def clear_conversation_messages(license_id: int, sender_contact: str) -> d
             UPDATE outbox_messages 
             SET deleted_at = ?
             WHERE license_key_id = ?
-            AND (recipient_email IN ({placeholders}) OR recipient_id IN ({placeholders}) OR recipient_email LIKE ?)
+            AND ({out_where})
             AND deleted_at IS NULL
             """,
             out_params
@@ -2153,92 +2174,95 @@ async def upsert_conversation_state(
         # Unread count: incoming messages that are analyzed but not read
         # Message count: all non-pending messages
         
-        # Handle tg: prefix for accurate counts
-        check_ids = [sender_contact]
-        if sender_contact and sender_contact.startswith("tg:"):
-            check_ids.append(sender_contact[3:])
-            
-        placeholders = ", ".join(["?" for _ in check_ids])
-    
-        # Calculate Unread Count
-        unread_conditions = "is_read = 0 OR is_read IS NULL"
-        if DB_TYPE == "postgresql":
-            unread_conditions = "is_read IS FALSE OR is_read IS NULL"
-            
-        # Params for unread
-        unread_params = [license_id]
-        unread_params.extend(check_ids) # sender_contact IN
-        unread_params.extend(check_ids) # sender_id IN
-        unread_params.append(f"%{sender_contact}%") # LIKE
+        # Get all aliases for this sender to ensure we count EVERYTHING
+        all_contacts, all_ids = await _get_sender_aliases(db, license_id, sender_contact)
         
+        # Build conditions for inbox
+        in_v_conditions = []
+        in_v_params = [license_id]
+        
+        if all_contacts:
+            contact_placeholders = ", ".join(["?" for _ in all_contacts])
+            in_v_conditions.append(f"sender_contact IN ({contact_placeholders})")
+            in_v_params.extend(list(all_contacts))
+        
+        if all_ids:
+            id_placeholders = ", ".join(["?" for _ in all_ids])
+            in_v_conditions.append(f"sender_id IN ({id_placeholders})")
+            in_v_params.extend(list(all_ids))
+            
+        in_v_where = " OR ".join(in_v_conditions) if in_v_conditions else "1=0"
+
+        # Calculate Unread Count
+        unread_conditions_sql = "is_read = 0 OR is_read IS NULL"
+        if DB_TYPE == "postgresql":
+            unread_conditions_sql = "is_read IS FALSE OR is_read IS NULL"
+            
         row_unread = await fetch_one(db, f"""
             SELECT COUNT(*) as count FROM inbox_messages 
             WHERE license_key_id = ? 
-            AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
+            AND ({in_v_where})
             AND status = 'analyzed' 
             AND deleted_at IS NULL
-            AND ({unread_conditions})
-        """, unread_params)
+            AND ({unread_conditions_sql})
+        """, in_v_params)
         unread_count = row_unread["count"] if row_unread else 0
         
         # Calculate Total Message Count (excluding pending)
-        # Params for total
-        total_params = [license_id]
-        total_params.extend(check_ids)
-        total_params.extend(check_ids)
-        total_params.append(f"%{sender_contact}%")
-        
         row_count_in = await fetch_one(db, f"""
             SELECT COUNT(*) as count FROM inbox_messages 
             WHERE license_key_id = ? 
-            AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
+            AND ({in_v_where})
             AND status != 'pending'
             AND deleted_at IS NULL
-        """, total_params)
+        """, in_v_params)
 
         # Get Total Message Count from Outbox
-        out_params_count = [license_id]
-        out_params_count.extend(check_ids)
-        out_params_count.extend(check_ids)
-        out_params_count.append(f"%{sender_contact}%")
+        out_v_conditions = []
+        out_v_params = [license_id]
+        
+        if all_contacts:
+            contact_placeholders = ", ".join(["?" for _ in all_contacts])
+            out_v_conditions.append(f"recipient_email IN ({contact_placeholders})")
+            out_v_params.extend(list(all_contacts))
+        
+        if all_ids:
+            id_placeholders = ", ".join(["?" for _ in all_ids])
+            out_v_conditions.append(f"recipient_id IN ({id_placeholders})")
+            out_v_params.extend(list(all_ids))
+            
+        out_v_where = " OR ".join(out_v_conditions) if out_v_conditions else "1=0"
 
         row_count_out = await fetch_one(db, f"""
             SELECT COUNT(*) as count FROM outbox_messages 
             WHERE license_key_id = ? 
-            AND (recipient_email IN ({placeholders}) OR recipient_id IN ({placeholders}) OR recipient_email LIKE ?)
+            AND ({out_v_where})
             AND deleted_at IS NULL
-        """, out_params_count)
+        """, out_v_params)
         
         message_count = (row_count_in["count"] if row_count_in else 0) + (row_count_out["count"] if row_count_out else 0)
         
         # 2. Get Last Message (Source of Truth)
-        # Could be Inbox OR Outbox. We need the absolute latest.
-        # Efficient querying: Get latest from each, compare.
-        
+        # Latest from Inbox
         latest_inbox = await fetch_one(db, f"""
             SELECT id, body, attachments, NULL as ai_summary, received_at as created_at, status, channel
             FROM inbox_messages
             WHERE license_key_id = ?
-            AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
+            AND ({in_v_where})
             AND status != 'pending'
             AND deleted_at IS NULL
             ORDER BY created_at DESC LIMIT 1
-        """, total_params)
+        """, in_v_params)
         
-        # Outbox params
-        out_params = [license_id]
-        out_params.extend(check_ids) # recipient_email IN
-        out_params.extend(check_ids) # recipient_id IN
-        out_params.append(f"%{sender_contact}%") # LIKE
-
+        # Latest from Outbox
         latest_outbox = await fetch_one(db, f"""
             SELECT id, body, attachments, NULL as ai_summary, created_at, status, channel 
             FROM outbox_messages 
             WHERE license_key_id = ? 
-            AND (recipient_email IN ({placeholders}) OR recipient_id IN ({placeholders}) OR recipient_email LIKE ?) 
+            AND ({out_v_where}) 
             AND deleted_at IS NULL
             ORDER BY created_at DESC LIMIT 1
-        """, out_params)
+        """, out_v_params)
         
         # Determine winner
         last_message = None
