@@ -14,8 +14,6 @@ from models import (
     update_customer,
     delete_customer,
     get_or_create_customer,
-    get_analytics_summary,
-    update_daily_analytics,
     get_preferences,
     update_preferences,
     get_notifications,
@@ -101,12 +99,11 @@ async def list_customers(
     page: int = 1,
     page_size: int = 20,
     search: Optional[str] = None,
-    segment: Optional[str] = None,
     license: dict = Depends(get_license_from_header)
 ):
     """Get all customers (paginated)"""
     from services.pagination import paginate_customers
-    return await paginate_customers(license["license_id"], page, page_size, search, segment)
+    return await paginate_customers(license["license_id"], page, page_size, search)
 
 
 @router.get("/customers/{customer_id}")
@@ -114,10 +111,8 @@ async def get_customer_detail(
     customer_id: int,
     license: dict = Depends(get_license_from_header)
 ):
-    """Get customer details with analytics (sentiment history, purchases, etc.)"""
-    from models.customers import get_customer_with_analytics
-    
-    customer = await get_customer_with_analytics(license["license_id"], customer_id)
+    """Get customer details"""
+    customer = await get_customer(license["license_id"], customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="العميل غير موجود")
     
@@ -183,158 +178,6 @@ async def delete_customer_endpoint(
     return {"success": True, "message": "تم حذف العميل بنجاح"}
 
 
-# ============ Analytics Routes ============
-
-@router.get("/analytics/summary")
-async def get_dashboard_analytics(
-    days: int = 30,
-    license: dict = Depends(get_license_from_header)
-):
-    """Get analytics summary for dashboard"""
-    summary = await get_analytics_summary(license["license_id"], days)
-    return {"analytics": summary, "period_days": days}
-
-
-@router.get("/analytics/chart")
-async def get_chart_data(
-    days: int = 7,
-    license: dict = Depends(get_license_from_header)
-):
-    """Get daily data for charts (works with SQLite and PostgreSQL)."""
-    # Use a real date object for cross-database compatibility.
-    cutoff_date = datetime.utcnow().date() - timedelta(days=days)
-
-    async with get_db() as db:
-        rows = await fetch_all(
-            db,
-            """
-            SELECT date, messages_received, messages_replied, auto_replies
-            FROM analytics 
-            WHERE license_key_id = ? 
-              AND date >= ?
-            ORDER BY date ASC
-            """,
-            [license["license_id"], cutoff_date],
-        )
-
-    return {"data": rows}
-
-
-@router.get("/analytics/by-channel")
-async def get_channel_analytics(
-    days: int = 30,
-    license: dict = Depends(get_license_from_header)
-):
-    """Get message counts per channel for the given period."""
-    cutoff_ts = datetime.utcnow() - timedelta(days=days)
-
-    async with get_db() as db:
-        rows = await fetch_all(
-            db,
-            """
-            SELECT channel, COUNT(*) as messages
-            FROM inbox_messages
-            WHERE license_key_id = ?
-              AND created_at >= ?
-            GROUP BY channel
-            ORDER BY messages DESC
-            """,
-            [license["license_id"], cutoff_ts],
-        )
-
-    return {"data": rows}
-
-
-@router.get("/analytics/by-intent")
-async def get_intent_analytics(
-    days: int = 30,
-    license: dict = Depends(get_license_from_header)
-):
-    """Get message counts per intent for the given period."""
-    cutoff_ts = datetime.utcnow() - timedelta(days=days)
-
-    async with get_db() as db:
-        rows = await fetch_all(
-            db,
-            """
-            SELECT intent, COUNT(*) as messages
-            FROM inbox_messages
-            WHERE license_key_id = ?
-              AND created_at >= ?
-              AND intent IS NOT NULL
-              AND intent != ''
-            GROUP BY intent
-            ORDER BY messages DESC
-            """,
-            [license["license_id"], cutoff_ts],
-        )
-
-    return {"data": rows}
-
-
-
-@router.get("/analytics/by-language")
-async def get_language_analytics(
-    days: int = 30,
-    license: dict = Depends(get_license_from_header)
-):
-    """Get message counts per language for the given period."""
-    cutoff_ts = datetime.utcnow() - timedelta(days=days)
-
-    try:
-        async with get_db() as db:
-            rows = await fetch_all(
-                db,
-                """
-                SELECT language, COUNT(*) as messages
-                FROM inbox_messages
-                WHERE license_key_id = ?
-                  AND created_at >= ?
-                  AND language IS NOT NULL
-                  AND language != ''
-                GROUP BY language
-                ORDER BY messages DESC
-                """,
-                [license["license_id"], cutoff_ts],
-            )
-        return {"data": rows}
-    except Exception as e:
-        # Column may not exist in older schemas
-        if "language" in str(e).lower() and "does not exist" in str(e).lower():
-            return {"data": [], "note": "Language analytics not available - database schema update required"}
-        raise
-
-
-@router.get("/analytics/by-sentiment")
-async def get_sentiment_analytics(
-    days: int = 30,
-    license: dict = Depends(get_license_from_header)
-):
-    """Get message counts per sentiment for the given period."""
-    cutoff_ts = datetime.utcnow() - timedelta(days=days)
-
-    try:
-        async with get_db() as db:
-            rows = await fetch_all(
-                db,
-                """
-                SELECT sentiment, COUNT(*) as messages
-                FROM inbox_messages
-                WHERE license_key_id = ?
-                  AND created_at >= ?
-                  AND sentiment IS NOT NULL
-                  AND sentiment != ''
-                GROUP BY sentiment
-                ORDER BY messages DESC
-                """,
-                [license["license_id"], cutoff_ts],
-            )
-        return {"data": rows}
-    except Exception as e:
-        if "sentiment" in str(e).lower() and "does not exist" in str(e).lower():
-            return {"data": [], "note": "Sentiment analytics not available - database schema update required"}
-        raise
-
 
 # ============ Preferences Schemas ============
 
@@ -342,7 +185,6 @@ class PreferencesUpdate(BaseModel):
     dark_mode: Optional[bool] = None
     notifications_enabled: Optional[bool] = None
     notification_sound: Optional[bool] = None
-    auto_reply_delay_seconds: Optional[int] = None
     onboarding_completed: Optional[bool] = None
     
     # AI / Tone Settings
@@ -422,11 +264,6 @@ async def transcribe_voice_upload(
     duration = result.get("duration", 60)  # Default 60 seconds if unknown
     time_saved = estimate_time_saved(duration)
     
-    await update_daily_analytics(
-        license["license_id"],
-        time_saved_seconds=time_saved
-    )
-    
     return {
         "success": True,
         "transcription": result["text"],
@@ -452,10 +289,7 @@ async def transcribe_voice_base64(
     duration = result.get("duration", 60)
     time_saved = estimate_time_saved(duration)
     
-    await update_daily_analytics(
-        license["license_id"],
-        time_saved_seconds=time_saved
-    )
+    # Analytics removed
     
     return {
         "success": True,
@@ -481,10 +315,7 @@ async def transcribe_voice_url(
     duration = result.get("duration", 60)
     time_saved = estimate_time_saved(duration)
     
-    await update_daily_analytics(
-        license["license_id"],
-        time_saved_seconds=time_saved
-    )
+    # Analytics removed (time saved tracking deprecated)
     
     return {
         "success": True,

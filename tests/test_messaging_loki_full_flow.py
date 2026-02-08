@@ -67,8 +67,7 @@ async def test_whatsapp_incoming_msg_triggers_ai(mock_db, mock_inbox_save, mock_
     # Mock finding the config for the phone number
     mock_db["fetch_one"].return_value = {
         "license_key_id": MOCK_LICENSE_ID,
-        "access_token": "fake_token",
-        "auto_reply_enabled": 1
+        "access_token": "fake_token"
     }
     
     service = WhatsAppService(phone_number_id="123456", access_token="fake_token")
@@ -117,8 +116,7 @@ async def test_whatsapp_incoming_msg_triggers_ai(mock_db, mock_inbox_save, mock_
     await analyze_inbox_message(
         message_id=inbox_id,
         body=msg.get("body"),
-        license_id=MOCK_LICENSE_ID,
-        auto_reply=True, 
+        license_id=MOCK_LICENSE_ID, 
         telegram_chat_id=None,
         attachments=[]
     )
@@ -184,7 +182,6 @@ async def test_telegram_bot_incoming_msg_triggers_ai(mock_db, mock_inbox_save, m
         message_id=inbox_id,
         body=parsed["text"],
         license_id=MOCK_LICENSE_ID,
-        auto_reply=True,
         telegram_chat_id=str(parsed["chat_id"]),
         attachments=[]
     )
@@ -303,7 +300,6 @@ async def test_telegram_phone_incoming_flow(mock_db, mock_inbox_save, mock_task_
         message_id=inbox_id,
         body=mock_event.raw_text,
         license_id=MOCK_LICENSE_ID,
-        auto_reply=True,
         telegram_chat_id=str(mock_event.chat_id),
         attachments=[]
     )

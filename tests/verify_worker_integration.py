@@ -27,7 +27,6 @@ async def test_worker_notification_trigger():
              patch("workers.commit_db", new_callable=AsyncMock) as mock_commit_db, \
              patch("workers.update_inbox_analysis", new_callable=AsyncMock) as mock_update_inbox, \
              patch("workers.get_or_create_customer", new_callable=AsyncMock) as mock_get_customer, \
-             patch("workers.update_customer_lead_score", new_callable=AsyncMock) as mock_update_lead, \
              patch("workers.increment_customer_messages", new_callable=AsyncMock) as mock_inc_msg, \
              patch("workers.process_message", new_callable=AsyncMock) as mock_process_message, \
              patch("workers.MessagePoller._increment_user_rate_limit", new_callable=MagicMock) as mock_rate_limit, \
@@ -66,8 +65,8 @@ async def test_worker_notification_trigger():
                 message_id=1, 
                 body="Test message", 
                 license_id=1, 
-                auto_reply=False, 
                 channel="whatsapp", 
+                recipient="123456",
                 sender_name="Test Sender"
             )
             
@@ -99,8 +98,8 @@ async def test_worker_notification_trigger():
                 message_id=2, 
                 body="Test message 2", 
                 license_id=1, 
-                auto_reply=True, 
                 channel="whatsapp", 
+                recipient="123456",
                 sender_name="Test Sender"
             )
             

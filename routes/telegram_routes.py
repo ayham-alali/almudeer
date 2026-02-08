@@ -35,7 +35,6 @@ TELEGRAM_SETUP_GUIDE = """
 
 class TelegramConfigRequest(BaseModel):
     bot_token: str
-    auto_reply_enabled: bool = False
 
 class TelegramPhoneStartRequest(BaseModel):
     phone_number: str
@@ -70,8 +69,7 @@ async def configure_telegram(
     await save_telegram_config(
         license_id=license["license_id"],
         bot_token=bot_token,
-        bot_username=bot_info.get("username"),
-        auto_reply=config.auto_reply_enabled
+        bot_username=bot_info.get("username")
     )
     
     # Set webhook
@@ -186,7 +184,6 @@ async def telegram_webhook(
         msg_id,
         parsed["text"],
         license_id,
-        config.get("auto_reply_enabled", False),
         parsed["chat_id"],
         attachments
     )

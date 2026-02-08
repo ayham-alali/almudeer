@@ -265,7 +265,7 @@ async def lifespan(app: FastAPI):
         
         logger.info("Al-Mudeer backend initialized successfully")
         print("Al-Mudeer Premium Backend Ready!")
-        print("Customers & Analytics - All Ready!")
+        print("Customers & Notifications tables initialized")
         print("Background workers active for automatic message processing")
     except Exception as e:
         logger.error(f"Failed to initialize backend: {e}", exc_info=True)
@@ -411,10 +411,8 @@ app.include_router(health_router)
 # Version check endpoint (public, for force-update system)
 # Also includes /download/almudeer.apk endpoint for APK downloads
 from routes.version import router as version_router
-from routes.version_analytics import router as version_analytics_router
 
 app.include_router(version_router)
-app.include_router(version_analytics_router)
 
 # Sync routes for offline operation support
 from routes.sync import router as sync_router

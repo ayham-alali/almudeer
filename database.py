@@ -105,18 +105,6 @@ async def _init_sqlite_tables(db):
         )
     """)
     
-    # Usage logs table for analytics
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS usage_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            license_key_id INTEGER,
-            action_type TEXT NOT NULL,
-            input_preview TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
-        )
-    """)
-    
     # CRM entries table
     await db.execute("""
         CREATE TABLE IF NOT EXISTS crm_entries (
@@ -167,20 +155,6 @@ async def _init_sqlite_tables(db):
         )
     """)
 
-    # Update Events table (Analytics)
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS update_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            event TEXT NOT NULL,
-            from_build INTEGER,
-            to_build INTEGER,
-            device_id TEXT,
-            device_type TEXT,
-            license_key TEXT
-        )
-    """)
-
     # App Config table (Source of Truth for Versioning)
     await db.execute("""
         CREATE TABLE IF NOT EXISTS app_config (
@@ -221,11 +195,6 @@ async def _init_sqlite_tables(db):
     """)
     
     await db.execute("""
-        CREATE INDEX IF NOT EXISTS idx_usage_logs_license_id 
-        ON usage_logs(license_key_id)
-    """)
-    
-    await db.execute("""
         CREATE INDEX IF NOT EXISTS idx_license_expires_at 
         ON license_keys(expires_at)
     """)
@@ -254,18 +223,6 @@ async def _init_postgresql_tables(conn):
             referred_by_id INTEGER REFERENCES license_keys(id),
             is_trial BOOLEAN DEFAULT FALSE,
             referral_count INTEGER DEFAULT 0
-        )
-    """))
-    
-    # Usage logs table for analytics
-    await conn.execute(_adapt_sql_for_db("""
-        CREATE TABLE IF NOT EXISTS usage_logs (
-            id SERIAL PRIMARY KEY,
-            license_key_id INTEGER,
-            action_type VARCHAR(255) NOT NULL,
-            input_preview TEXT,
-            created_at TIMESTAMP DEFAULT NOW(),
-            FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
         )
     """))
     
@@ -327,20 +284,6 @@ async def _init_postgresql_tables(conn):
         )
     """))
 
-    # Update Events table (Analytics)
-    await conn.execute(_adapt_sql_for_db("""
-        CREATE TABLE IF NOT EXISTS update_events (
-            id SERIAL PRIMARY KEY,
-            timestamp TIMESTAMP DEFAULT NOW(),
-            event VARCHAR(255) NOT NULL,
-            from_build INTEGER,
-            to_build INTEGER,
-            device_id VARCHAR(255),
-            device_type VARCHAR(50),
-            license_key VARCHAR(255)
-        )
-    """))
-
     # App Config table (Source of Truth for Versioning)
     await conn.execute(_adapt_sql_for_db("""
         CREATE TABLE IF NOT EXISTS app_config (
@@ -378,11 +321,6 @@ async def _init_postgresql_tables(conn):
     await conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_crm_created_at 
         ON crm_entries(created_at)
-    """)
-    
-    await conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_usage_logs_license_id 
-        ON usage_logs(license_key_id)
     """)
     
     await conn.execute("""
@@ -617,7 +555,7 @@ async def validate_license_key(key: str) -> dict:
 
 
 async def increment_usage(license_id: int, action_type: str, input_preview: str = None):
-    """Increment usage counter and log the action"""
+    """Increment usage counter (Analytics logging REMOVED)"""
     today = datetime.now().date().isoformat()
     
     if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
@@ -633,12 +571,6 @@ async def increment_usage(license_id: int, action_type: str, input_preview: str 
                 last_request_date = $1
                 WHERE id = $2
             """, today, license_id)
-            
-            # Log the usage
-            await conn.execute("""
-                INSERT INTO usage_logs (license_key_id, action_type, input_preview)
-                VALUES ($1, $2, $3)
-            """, license_id, action_type, input_preview[:200] if input_preview else None)
         finally:
             await conn.close()
     else:
@@ -653,13 +585,6 @@ async def increment_usage(license_id: int, action_type: str, input_preview: str 
                 last_request_date = ?
                 WHERE id = ?
             """, (today, today, license_id))
-            
-            # Log the usage
-            await db.execute("""
-                INSERT INTO usage_logs (license_key_id, action_type, input_preview)
-                VALUES (?, ?, ?)
-            """, (license_id, action_type, input_preview[:200] if input_preview else None))
-            
             await db.commit()
 
 

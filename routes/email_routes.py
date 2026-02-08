@@ -25,7 +25,6 @@ router = APIRouter(prefix="/api/integrations/email", tags=["Email"])
 class EmailConfigRequest(BaseModel):
     provider: str = Field(..., description="gmail (OAuth 2.0 only)")
     email_address: str  # Will be set from OAuth token
-    auto_reply_enabled: bool = False
     check_interval_minutes: int = 5
 
 @router.get("/providers")
@@ -85,7 +84,6 @@ async def gmail_oauth_callback(
             access_token=access_token,
             refresh_token=refresh_token,
             token_expires_at=token_expires_at,
-            auto_reply=False,
             check_interval=5
         )
         
@@ -137,7 +135,6 @@ async def configure_email(
     
     await update_email_config_settings(
         license_id=license["license_id"],
-        auto_reply=config.auto_reply_enabled,
         check_interval=config.check_interval_minutes
     )
     
@@ -209,8 +206,7 @@ async def fetch_emails(
                 analyze_inbox_message,
                 msg_id,
                 email_data["body"],
-                license["license_id"],
-                config.get("auto_reply_enabled", False)
+                license["license_id"]
             )
             processed += 1
         

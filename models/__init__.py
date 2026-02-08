@@ -78,14 +78,6 @@ from .customers import (
     get_recent_conversation,
     get_customer_for_message,
     increment_customer_messages,
-    # Lead scoring
-    calculate_lead_score,
-    determine_segment,
-    update_customer_lead_score,
-    # Analytics
-    update_daily_analytics,
-    get_ai_usage_today,
-    get_analytics_summary,
     # Notifications
     create_notification,
     get_notifications,
@@ -182,13 +174,6 @@ __all__ = [
     "get_recent_conversation",
     "get_customer_for_message",
     "increment_customer_messages",
-    "calculate_lead_score",
-    "determine_segment",
-    "update_customer_lead_score",
-    # Analytics
-    "update_daily_analytics",
-    "get_ai_usage_today",
-    "get_analytics_summary",
     # Preferences
     "get_preferences",
     "update_preferences",

@@ -72,7 +72,6 @@ from models import (
     get_telegram_phone_session_data,
     get_telegram_phone_session,
     get_or_create_customer,
-    update_customer_lead_score,
     increment_customer_messages,
     update_telegram_phone_session_sync_time,
     deactivate_telegram_phone_session,
@@ -951,7 +950,6 @@ class MessagePoller:
                         msg["db_id"],
                         msg["body"],
                         license_id,
-                        session_info.get("auto_reply_enabled", False) if session_info else False, 
                         "telegram",
                         msg.get("sender_contact"),
                         msg.get("sender_name"),
@@ -1001,7 +999,6 @@ class MessagePoller:
                         latest_msg["db_id"],
                         combined_body, # Use combined body for AI understanding
                         license_id,
-                        session_info.get("auto_reply_enabled", False) if session_info else False,
                         "telegram",
                         latest_msg.get("sender_contact"),
                         latest_msg.get("sender_name"),
@@ -1165,48 +1162,7 @@ class MessagePoller:
             logger.error(f"Error analyzing message {message_id}: {e}", exc_info=True)
 
     
-    async def _auto_reply(
-        self,
-        message_id: int,
-        license_id: int,
-        channel: str,
-        response_body: str,
-        recipient: Optional[str] = None
-    ):
-        """Automatically send a reply"""
-        try:
-            # Get message details
-            messages = await get_inbox_messages(license_id, limit=1000)
-            message = next((m for m in messages if m["id"] == message_id), None)
-            
-            if not message:
-                return
-            
-            # Create outbox entry
-            outbox_id = await create_outbox_message(
-                inbox_message_id=message_id,
-                license_id=license_id,
-                channel=channel,
-                body=response_body,
-                recipient_id=message.get("sender_id"),
-                recipient_email=message.get("sender_contact") or recipient,
-                subject=f"Re: {message.get('subject', '')}" if message.get("subject") else None
-            )
-            
-            # Approve and send
-            await approve_outbox_message(outbox_id)
-            await self._send_message(outbox_id, license_id, channel)
-            
-            # Track auto-reply in analytics
-            from models import update_daily_analytics
-            await update_daily_analytics(
-                license_id=license_id,
-                auto_replies=1
-            )
-            logger.info(f"Auto-reply sent for message {message_id}")
-        
-        except Exception as e:
-            logger.error(f"Error in auto-reply for message {message_id}: {e}", exc_info=True)
+
     
     async def _send_message(self, outbox_id: int, license_id: int, channel: str):
         """Send an approved message (Text, Attachments, Audio)"""

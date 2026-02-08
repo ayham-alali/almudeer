@@ -26,7 +26,6 @@ from humanize import (
     check_response_quality,
     ROBOTIC_PHRASES,
 )
-from models import update_daily_analytics
 import asyncio
 from services.knowledge_base import get_knowledge_base
 from message_filters import apply_filters
@@ -122,16 +121,6 @@ async def call_llm_enhanced(
 async def enhanced_classify_node(state: EnhancedAgentState) -> EnhancedAgentState:
     """Classify with advanced analysis and dialect awareness"""
     state["processing_step"] = "تصنيف"
-    
-    # Update analytics (received)
-    if state.get("preferences") and state["preferences"].get("license_key_id"):
-        try:
-            asyncio.create_task(update_daily_analytics(
-                license_id=state["preferences"]["license_key_id"],
-                messages_received=1
-            ))
-        except Exception as e:
-            print(f"Analytics update failed: {e}")
     
     # Run advanced rule-based analysis (fast, reliable)
     advanced_signals = {}
@@ -489,18 +478,6 @@ Write only the response in {lang_name} (3-6 lines), no explanation:"""
     }
     state["suggested_actions"] = actions_map.get(intent, ["مراجعة"])
     
-    # Update analytics (replied)
-    if state.get("preferences") and state["preferences"].get("license_key_id"):
-        try:
-            asyncio.create_task(update_daily_analytics(
-                license_id=state["preferences"]["license_key_id"],
-                messages_replied=1,
-                sentiment=state.get("sentiment", "محايد"),
-                time_saved_seconds=180 # 3 minutes per AI response
-            ))
-        except Exception as e:
-            print(f"Analytics reply update failed: {e}")
-
     return state
 
 

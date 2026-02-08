@@ -50,7 +50,6 @@ async def test_text_in_text_out():
          patch("services.notification_service.process_message_notifications", AsyncMock()), \
          patch("models.customers.get_or_create_customer", AsyncMock(return_value={"id": 99})), \
          patch("models.customers.increment_customer_messages", AsyncMock()), \
-         patch("models.customers.update_customer_lead_score", AsyncMock()), \
          patch("models.purchases.create_purchase", AsyncMock()), \
          patch("services.analysis_service.process_message", new_callable=AsyncMock) as mock_agent:
 
@@ -70,8 +69,7 @@ async def test_text_in_text_out():
         await process_inbox_message_logic(
             message_id=123,
             body="Hello",
-            license_id=1,
-            auto_reply=True
+            license_id=1
         )
 
         # Verification
@@ -137,7 +135,6 @@ async def test_voice_in_voice_out():
          patch("services.notification_service.process_message_notifications", AsyncMock()), \
          patch("models.customers.get_or_create_customer", AsyncMock(return_value={"id": 99})), \
          patch("models.customers.increment_customer_messages", AsyncMock()), \
-         patch("models.customers.update_customer_lead_score", AsyncMock()), \
          patch("models.purchases.create_purchase", AsyncMock()), \
          patch("services.voice_service.transcribe_voice_message", mock_transcribe), \
          patch("services.tts_service.generate_speech_to_file", mock_tts), \
@@ -159,7 +156,6 @@ async def test_voice_in_voice_out():
             message_id=456,
             body="", 
             license_id=1,
-            auto_reply=True,
             attachments=attachments
         )
 

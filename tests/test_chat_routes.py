@@ -136,7 +136,7 @@ class TestChatHistoryRoutes:
                 {"id": 1, "direction": "incoming", "sender_name": "Alice", "body": "Hi"},
                 {"id": 2, "direction": "outgoing", "body": "Hello"}
             ]
-            mock_customer.return_value = {"lead_score": 85}
+            mock_customer.return_value = {}
             
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -146,7 +146,6 @@ class TestChatHistoryRoutes:
                 assert response.status_code == 200
                 data = response.json()
                 assert data["sender_name"] == "Alice"
-                assert data["lead_score"] == 85
                 assert len(data["messages"]) == 2
 
     @pytest.mark.asyncio
@@ -160,7 +159,8 @@ class TestChatHistoryRoutes:
             async with AsyncClient(transport=transport, base_url="http://test") as client:
                 response = await client.get("/api/integrations/conversations/Nobody")
                 
-                assert response.status_code == 404
+                assert response.status_code == 200
+                assert response.json()["messages"] == []
 
 # ============ Actions Config ============
 

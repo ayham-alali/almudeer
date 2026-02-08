@@ -61,7 +61,6 @@ async def init_enhanced_tables():
                 -- Legacy password field (deprecated, kept for migration)
                 password_encrypted TEXT,
                 is_active BOOLEAN DEFAULT TRUE,
-                auto_reply_enabled BOOLEAN DEFAULT FALSE,
                 check_interval_minutes INTEGER DEFAULT 5,
                 last_checked_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -100,7 +99,6 @@ async def init_enhanced_tables():
                 bot_username TEXT,
                 webhook_secret TEXT,
                 is_active BOOLEAN DEFAULT TRUE,
-                auto_reply_enabled BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
@@ -169,7 +167,6 @@ async def init_enhanced_tables():
                 user_last_name TEXT,
                 user_username TEXT,
                 is_active BOOLEAN DEFAULT TRUE,
-                auto_reply_enabled BOOLEAN DEFAULT FALSE,
                 last_synced_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -229,13 +226,7 @@ async def init_enhanced_tables():
             ON inbox_messages(language, dialect)
         """)
 
-        # Migration for telegram_phone_sessions auto_reply_enabled
-        try:
-            await execute_sql(db, """
-                ALTER TABLE telegram_phone_sessions ADD COLUMN auto_reply_enabled BOOLEAN DEFAULT FALSE
-            """)
-        except:
-            pass
+
             
         # Migration for outbox_messages deleted_at
         try:
@@ -319,7 +310,6 @@ async def init_customers_and_analytics():
                 verify_token TEXT NOT NULL,
                 webhook_secret TEXT,
                 is_active BOOLEAN DEFAULT TRUE,
-                auto_reply_enabled BOOLEAN DEFAULT FALSE,
                 created_at {TIMESTAMP_NOW},
                 updated_at TIMESTAMP,
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
@@ -408,8 +398,6 @@ async def init_customers_and_analytics():
                 last_contact_at TIMESTAMP,
                 sentiment_score REAL DEFAULT 0,
                 is_vip BOOLEAN DEFAULT FALSE,
-                segment TEXT,
-                lead_score INTEGER DEFAULT 0,
                 has_whatsapp BOOLEAN DEFAULT FALSE,
                 has_telegram BOOLEAN DEFAULT FALSE,
                 created_at {TIMESTAMP_NOW},
@@ -417,13 +405,6 @@ async def init_customers_and_analytics():
             )
         """)
         
-        # Add segment and lead_score columns if they don't exist (for existing databases)
-        try:
-            await execute_sql(db, "ALTER TABLE customers ADD COLUMN IF NOT EXISTS segment TEXT")
-        except: pass
-        try:
-            await execute_sql(db, "ALTER TABLE customers ADD COLUMN IF NOT EXISTS lead_score INTEGER DEFAULT 0")
-        except: pass
         try:
             await execute_sql(db, "ALTER TABLE customers ADD COLUMN IF NOT EXISTS has_whatsapp BOOLEAN DEFAULT FALSE")
         except: pass
@@ -463,25 +444,6 @@ async def init_customers_and_analytics():
             )
         """)
 
-        # Analytics/Metrics tracking
-        await execute_sql(db, f"""
-            CREATE TABLE IF NOT EXISTS analytics (
-                id {ID_PK},
-                license_key_id INTEGER NOT NULL,
-                date DATE NOT NULL,
-                messages_received INTEGER DEFAULT 0,
-                messages_replied INTEGER DEFAULT 0,
-                auto_replies INTEGER DEFAULT 0,
-                avg_response_time_seconds INTEGER,
-                positive_sentiment INTEGER DEFAULT 0,
-                negative_sentiment INTEGER DEFAULT 0,
-                neutral_sentiment INTEGER DEFAULT 0,
-                time_saved_seconds INTEGER DEFAULT 0,
-                FOREIGN KEY (license_key_id) REFERENCES license_keys(id),
-                UNIQUE(license_key_id, date)
-            )
-        """)
-
         # User preferences (UI + AI behavior / tone)
         await execute_sql(db, """
             CREATE TABLE IF NOT EXISTS user_preferences (
@@ -489,7 +451,6 @@ async def init_customers_and_analytics():
                 dark_mode BOOLEAN DEFAULT FALSE,
                 notifications_enabled BOOLEAN DEFAULT TRUE,
                 notification_sound BOOLEAN DEFAULT TRUE,
-                auto_reply_delay_seconds INTEGER DEFAULT 30,
                 language TEXT DEFAULT 'ar',
                 onboarding_completed BOOLEAN DEFAULT FALSE,
                 tone TEXT DEFAULT 'formal',
@@ -504,11 +465,6 @@ async def init_customers_and_analytics():
             )
         """)
 
-        # Performance indexes for analytics & customers
-        await execute_sql(db, """
-            CREATE INDEX IF NOT EXISTS idx_analytics_license_date
-            ON analytics(license_key_id, date)
-        """)
         await execute_sql(db, """
             CREATE INDEX IF NOT EXISTS idx_customers_license_last_contact
             ON customers(license_key_id, last_contact_at)
@@ -519,7 +475,7 @@ async def init_customers_and_analytics():
         """)
 
         await commit_db(db)
-        print("Customers, Analytics & Notifications tables initialized")
+        print("Customers & Notifications tables initialized")
 
 
 # ============ Utility Functions ============

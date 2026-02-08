@@ -8,7 +8,6 @@ import json
 import json_repair
 import re
 from typing import TypedDict, Literal, Optional, Dict, Any, List, Callable, Awaitable
-from models import update_daily_analytics
 from dataclasses import dataclass
 import httpx
 import os
@@ -679,21 +678,6 @@ async def draft_node(state: AgentState) -> AgentState:
         state["draft_response"] = "⏳ جاري تحليل الرسالة تلقائياً..."
         state["error"] = "LLM unavailable - pending retry"
         
-    # Update analytics for reply generation
-    if state.get("preferences") and state["preferences"].get("license_key_id"):
-        try:
-            from models import update_daily_analytics
-            # Note: We use asyncio.create_task to not block the agent flow
-            import asyncio
-            asyncio.create_task(update_daily_analytics(
-                license_id=state["preferences"]["license_key_id"],
-                messages_replied=1,
-                sentiment=state.get("sentiment", "محايد"),
-                time_saved_seconds=180 # 3 minutes per AI response
-            ))
-        except Exception as e:
-            print(f"Analytics reply update failed: {e}")
-    
     # Generate a cleaner summary (avoid showing "None")
     sender_display = sender if sender else "عميل"
     state["summary"] = f"رسالة {intent} من {sender_display}. المشاعر: {state.get('sentiment', 'محايد')}. الأهمية: {state.get('urgency', 'عادي')}."
@@ -873,17 +857,6 @@ async def process_message(
         except Exception as e:
             print(f"Voice transcription step failed: {e}")
 
-    # Analytics: Update received count
-    if preferences and preferences.get("license_key_id"):
-        try:
-            # Fire-and-forget analytics update
-            asyncio.create_task(update_daily_analytics(
-                license_id=preferences["license_key_id"],
-                messages_received=1
-            ))
-        except Exception as e:
-            print(f"Analytics update failed: {e}")
-    
     # --- Step 1.5: Local Blocking (Smart Filtering) ---
     # Filter out OTPs, Ads, and Automated messages locally before paying for LLM
     should_process, reason = await apply_filters(
@@ -1071,18 +1044,6 @@ async def process_message(
     # Use json_repair to handle truncated/malformed JSON from LLM
     data = json_repair.loads(response_json)
         
-    # --- Step 4: Post-Processing & Normalization ---
-    # Analytics: Update replied count if draft generated
-    if preferences and preferences.get("license_key_id") and data.get("draft_response"):
-        try:
-            asyncio.create_task(update_daily_analytics(
-                license_id=preferences["license_key_id"],
-                messages_replied=1,
-                sentiment=data.get("sentiment", "neutral")
-            ))
-        except Exception as e:
-            print(f"Analytics reply update failed: {e}")
-
     # Ensure critical fields exist
     return {
         "success": True,

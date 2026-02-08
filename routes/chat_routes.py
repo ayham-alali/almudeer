@@ -144,24 +144,17 @@ async def get_conversation_detail(
             "sender_contact": sender_contact,
             "messages": [],
             "total": 0,
-            "lead_score": None,
             "channel": "almudeer"
         }
     
     incoming_msgs = [m for m in messages if m.get("direction") == "incoming"]
     sender_name = incoming_msgs[0].get("sender_name", "عميل") if incoming_msgs else "عميل"
     
-    lead_score = None
-    if incoming_msgs:
-        customer = await get_customer_for_message(license["license_id"], incoming_msgs[0].get("id"))
-        if customer: lead_score = customer.get("lead_score")
-    
     return {
         "sender_name": sender_name,
         "sender_contact": sender_contact,
         "messages": messages,
-        "total": len(messages),
-        "lead_score": lead_score
+        "total": len(messages)
     }
 
 @router.post("/conversations/{sender_contact:path}/typing")

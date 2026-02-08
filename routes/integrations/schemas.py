@@ -10,13 +10,11 @@ from typing import Optional
 class EmailConfigRequest(BaseModel):
     provider: str = Field(..., description="gmail (OAuth 2.0 only)")
     email_address: str  # Will be set from OAuth token
-    auto_reply_enabled: bool = False
     check_interval_minutes: int = 5
 
 
 class TelegramConfigRequest(BaseModel):
     bot_token: str
-    auto_reply_enabled: bool = False
 
 
 class TelegramPhoneStartRequest(BaseModel):

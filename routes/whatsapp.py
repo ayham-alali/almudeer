@@ -28,7 +28,6 @@ class WhatsAppConfigCreate(BaseModel):
     phone_number_id: str = Field(..., description="WhatsApp Business Phone Number ID")
     access_token: str = Field(..., description="Access Token from Meta")
     business_account_id: Optional[str] = Field(None, description="Business Account ID")
-    auto_reply_enabled: bool = False
 
 
 class WhatsAppSendMessage(BaseModel):
@@ -119,8 +118,7 @@ async def save_config(
         phone_number_id=phone_number_id,
         access_token=config.access_token,
         business_account_id=business_account_id,
-        verify_token=verify_token,
-        auto_reply_enabled=config.auto_reply_enabled
+        verify_token=verify_token
     )
     
     return {
@@ -450,17 +448,12 @@ async def receive_webhook(request: Request):
                         from routes.chat_routes import analyze_inbox_message  # local import to avoid cycles
                         import asyncio
                         
-                        # Determine auto_reply from config if available
-                        # config is already available above as 'config' variable
-                        auto_reply_enabled = bool(config and config.get("auto_reply_enabled"))
-
                         # Use asyncio.create_task for proper background execution
                         asyncio.create_task(
                             analyze_inbox_message(
                                 inbox_id,
                                 msg.get("body", ""),
                                 license_id,
-                                auto_reply_enabled,
                                 None,  # telegram_chat_id
                                 attachments  # Pass attachments
                             )
