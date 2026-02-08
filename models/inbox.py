@@ -182,7 +182,8 @@ async def update_inbox_analysis(
 
     async with get_db() as db:
         # First, get the message details to pass to upsert_conversation_state
-        message_row = await fetch_one(db, "SELECT license_key_id, sender_contact, sender_name, channel FROM inbox_messages WHERE id = ?", [message_id])
+        # Added 'body' to fetch for broadcast
+        message_row = await fetch_one(db, "SELECT license_key_id, sender_contact, sender_name, channel, body FROM inbox_messages WHERE id = ?", [message_id])
         
         try:
             # Try to update with all columns including language/dialect
@@ -231,6 +232,14 @@ async def update_inbox_analysis(
             # Broadcast via WebSocket for real-time mobile updates
             # This enables WhatsApp/Telegram-like instant message appearance
             try:
+                # Fetch authoritative unread count from conversations table
+                conv_row = await fetch_one(
+                    db, 
+                    "SELECT unread_count FROM inbox_conversations WHERE license_key_id = ? AND sender_contact = ?", 
+                    [message_row["license_key_id"], message_row["sender_contact"]]
+                )
+                unread_count = conv_row["unread_count"] if conv_row else 0
+
                 from services.websocket_manager import broadcast_new_message
                 await broadcast_new_message(
                     message_row["license_key_id"],
@@ -238,11 +247,13 @@ async def update_inbox_analysis(
                         "conversation_id": message_id,
                         "sender_contact": message_row["sender_contact"],
                         "sender_name": message_row["sender_name"],
-                        "body": summary[:150] if summary else "",  # Preview text
+                        # Use actual body for preview instead of AI summary (fixes "..." glitch)
+                        "body": message_row["body"] if message_row["body"] else (summary[:150] if summary else ""),
                         "channel": message_row["channel"],
                         "timestamp": datetime.utcnow().isoformat(),
                         "status": "analyzed",
                         "direction": "incoming",
+                        "unread_count": unread_count, # Authoritative count
                     }
                 )
             except Exception as e:
