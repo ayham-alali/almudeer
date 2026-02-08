@@ -10,6 +10,7 @@ import base64
 from logging_config import get_logger
 from models import update_inbox_analysis, create_outbox_message, approve_outbox_message, update_inbox_status
 from agent import process_message
+from services.notification_service import process_message_notifications
 
 logger = get_logger(__name__)
 
@@ -82,44 +83,45 @@ async def process_inbox_message_logic(
                 "message_id": message_id
             }
 
-        # Call AI Agent
-        result = await process_message(message=body, attachments=attachments, history=chat_history)
+        # Call AI Agent - DISABLED by user request
+        # Result is now hardcoded to bypass LLM analysis
+        # result = await process_message(message=body, attachments=attachments, history=chat_history)
+        
+        # Hardcoded result to skip AI
+        data = {
+            "intent": "neutral",
+            "urgency": "medium",
+            "sentiment": "neutral",
+            "language": "ar", # Default to Arabic
+            "dialect": None,
+            "summary": None,
+            "draft_response": None # CRITICAL: No draft response
+        }
+        
+        # Check for transcription to append to body if needed (already done above)
+        
+        # We process the result as if it came from AI, but it's just defaults
+        # The update_inbox_analysis will save these neutral values
+        await update_inbox_analysis(
+            message_id=message_id,
+            intent=data["intent"], urgency=data["urgency"], sentiment=data["sentiment"],
+            language=data.get("language"), dialect=data.get("dialect"),
+            summary=data["summary"], draft_response=data["draft_response"]
+        )
+        
+        # Notifications
+        try:
+            await process_message_notifications(license_id, {
+                    "sender_name": message_data.get("sender_name", "Unknown") if message_data else "Unknown",
+                    "sender_contact": message_data.get("sender_contact") if message_data else None,
+                    "body": body, "intent": data.get("intent"), "urgency": data.get("urgency"), "sentiment": data.get("sentiment"),
+                    "channel": message_data.get("channel", "whatsapp") if message_data else "whatsapp",
+                    "attachments": attachments
+                }, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Notification failed for msg {message_id}: {e}")
 
-        if result["success"]:
-            data = result["data"]
-            # Handle possible audio auto-response if input was audio
-            has_audio_in = any(a.get("type", "").startswith(("audio", "voice")) for a in (attachments or []))
-            if has_audio_in and data.get("draft_response"):
-                try:
-                    from services.tts_service import generate_speech_to_file
-                    audio_path = await generate_speech_to_file(data["draft_response"])
-                    data["draft_response"] += f"\n[AUDIO: {audio_path}]"
-                except: pass
-
-            await update_inbox_analysis(
-                message_id=message_id,
-                intent=data["intent"], urgency=data["urgency"], sentiment=data["sentiment"],
-                language=data.get("language"), dialect=data.get("dialect"),
-                summary=data["summary"], draft_response=data["draft_response"]
-            )
-            
-            # NOTE: CRM auto-customer creation removed.
-            # Customers are now added manually only (via customers screen or device import).
-            # AI message analysis (intent/urgency/sentiment/drafts) is preserved above.
-            
-            # Notifications
-            try:
-                await process_message_notifications(license_id, {
-                        "sender_name": message_data.get("sender_name", "Unknown") if message_data else "Unknown",
-                        "sender_contact": message_data.get("sender_contact") if message_data else None,
-                        "body": body, "intent": data.get("intent"), "urgency": data.get("urgency"), "sentiment": data.get("sentiment"),
-                        "channel": message_data.get("channel", "whatsapp") if message_data else "whatsapp",
-                        "attachments": attachments
-                    }, message_id=message_id)
-            except Exception as e:
-                logger.warning(f"Notification failed for msg {message_id}: {e}")
-
-            return {"success": True, "analysis": data}
+        return {"success": True, "analysis": data}
             
     except Exception as e:
         logger.error(f"Error in process_inbox_message_logic {message_id}: {e}", exc_info=True)
