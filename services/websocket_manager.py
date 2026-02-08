@@ -408,6 +408,20 @@ async def broadcast_conversation_deleted(license_id: int, sender_contact: str):
     ))
 
 
+async def broadcast_chat_cleared(license_id: int, sender_contact: str):
+    """
+    Broadcast when a conversation history is cleared.
+    This informs clients to empty the chat view and update the inbox list tile.
+    """
+    manager = get_websocket_manager()
+    await manager.send_to_license(license_id, WebSocketMessage(
+        event="chat_cleared",
+        data={
+            "sender_contact": sender_contact
+        }
+    ))
+
+
 async def broadcast_typing_indicator(license_id: int, sender_contact: str, is_typing: bool):
     """Broadcast typing indicator for a specific conversation"""
     manager = get_websocket_manager()

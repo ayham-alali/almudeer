@@ -1839,6 +1839,68 @@ async def soft_delete_conversation(license_id: int, sender_contact: str) -> dict
     return {"success": True, "message": "تم حذف المحادثة بنجاح"}
 
 
+async def clear_conversation_messages(license_id: int, sender_contact: str) -> dict:
+    """
+    Clear all messages in a conversation (soft delete) and reset conversation state.
+    Keep the conversation entry in the inbox list but with zero counts.
+    """
+    from datetime import datetime, timezone
+    
+    # Handle tg: prefix similar to other functions
+    check_ids = [sender_contact]
+    if sender_contact and sender_contact.startswith("tg:"):
+        check_ids.append(sender_contact[3:])
+        
+    placeholders = ", ".join(["?" for _ in check_ids])
+    
+    now = datetime.now(timezone.utc)
+    ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
+    
+    # Params for queries
+    in_params = [ts_value, license_id]
+    in_params.extend(check_ids)
+    in_params.extend(check_ids)
+    in_params.append(f"%{sender_contact}%")
+    
+    out_params = [ts_value, license_id]
+    out_params.extend(check_ids)
+    out_params.extend(check_ids)
+    out_params.append(f"%{sender_contact}%")
+
+    async with get_db() as db:
+        # 1. Soft delete Inbox Messages
+        await execute_sql(
+            db,
+            f"""
+            UPDATE inbox_messages 
+            SET deleted_at = ?
+            WHERE license_key_id = ?
+            AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
+            AND deleted_at IS NULL
+            """,
+            in_params
+        )
+        
+        # 2. Soft delete Outbox Messages
+        await execute_sql(
+            db,
+            f"""
+            UPDATE outbox_messages 
+            SET deleted_at = ?
+            WHERE license_key_id = ?
+            AND (recipient_email IN ({placeholders}) OR recipient_id IN ({placeholders}) OR recipient_email LIKE ?)
+            AND deleted_at IS NULL
+            """,
+            out_params
+        )
+        await commit_db(db)
+        
+    # 3. Reset conversation state (cached fields in inbox_conversations)
+    await upsert_conversation_state(license_id, sender_contact)
+    
+    return {"success": True, "message": "تم مسح الرسائل بنجاح"}
+
+
 async def restore_deleted_message(message_id: int, license_id: int) -> dict:
     """
     Restore a soft-deleted outbox message.

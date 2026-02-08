@@ -304,6 +304,20 @@ async def delete_conversation_route(
     await broadcast_conversation_deleted(license["license_id"], sender_contact)
     return result
 
+
+@router.delete("/conversations/{sender_contact:path}/clear")
+async def clear_conversation_route(
+    sender_contact: str,
+    license: dict = Depends(get_license_from_header)
+):
+    from models.inbox import clear_conversation_messages
+    from services.websocket_manager import broadcast_chat_cleared
+    
+    result = await clear_conversation_messages(license["license_id"], sender_contact)
+    # Broadcast event so UI updates instantly
+    await broadcast_chat_cleared(license["license_id"], sender_contact)
+    return result
+
 class BatchDeleteRequest(BaseModel):
     sender_contacts: List[str]
 
