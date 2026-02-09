@@ -1369,7 +1369,7 @@ async def get_full_chat_history(
             f"""
             SELECT 
                 id, channel, sender_name, sender_contact, sender_id, 
-                subject, body, 
+                subject, body, attachments,
                 intent, urgency, sentiment, language, dialect,
                 ai_summary, ai_draft_response, status,
                 created_at, received_at,
@@ -1408,7 +1408,7 @@ async def get_full_chat_history(
             f"""
             SELECT 
                 o.id, o.channel, o.recipient_email as sender_contact, o.recipient_id as sender_id,
-                o.subject, o.body, o.status,
+                o.subject, o.body, o.attachments, o.status,
                 o.created_at, o.sent_at,
                 o.delivery_status,
                 o.reply_to_platform_id, o.reply_to_body_preview,
