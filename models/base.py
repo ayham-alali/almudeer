@@ -131,6 +131,7 @@ async def init_enhanced_tables():
                 reply_to_body_preview TEXT,
                 reply_to_sender_name TEXT,
                 reply_to_id INTEGER,
+                attachments TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
@@ -246,6 +247,21 @@ async def init_enhanced_tables():
         try:
             await execute_sql(db, """
                 ALTER TABLE inbox_messages ADD COLUMN deleted_at TIMESTAMP
+            """)
+        except:
+            pass
+
+        # Migration for attachments column
+        try:
+            await execute_sql(db, """
+                ALTER TABLE inbox_messages ADD COLUMN attachments TEXT
+            """)
+        except:
+            pass
+
+        try:
+            await execute_sql(db, """
+                ALTER TABLE outbox_messages ADD COLUMN attachments TEXT
             """)
         except:
             pass
