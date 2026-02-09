@@ -302,7 +302,7 @@ class WhatsAppService:
             print(f"Error uploading media: {e}")
             return None
     
-    async def send_audio_message(self, to: str, media_id: str) -> Dict:
+    async def send_audio_message(self, to: str, media_id: str, reply_to_message_id: str = None) -> Dict:
         """Send an audio message via WhatsApp"""
         payload = {
             "messaging_product": "whatsapp",
@@ -311,6 +311,9 @@ class WhatsAppService:
             "type": "audio",
             "audio": {"id": media_id}
         }
+        
+        if reply_to_message_id:
+            payload["context"] = {"message_id": reply_to_message_id}
         
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -335,7 +338,7 @@ class WhatsAppService:
                 "response": data
             }
     
-    async def send_image_message(self, to: str, media_id: str, caption: str = None) -> Dict:
+    async def send_image_message(self, to: str, media_id: str, caption: str = None, reply_to_message_id: str = None) -> Dict:
         """Send an image message via WhatsApp"""
         payload = {
             "messaging_product": "whatsapp",
@@ -344,6 +347,9 @@ class WhatsAppService:
             "type": "image",
             "image": {"id": media_id}
         }
+        
+        if reply_to_message_id:
+            payload["context"] = {"message_id": reply_to_message_id}
         
         if caption:
             payload["image"]["caption"] = caption
@@ -372,7 +378,7 @@ class WhatsAppService:
                 "response": data
             }
     
-    async def send_video_message(self, to: str, media_id: str, caption: str = None) -> Dict:
+    async def send_video_message(self, to: str, media_id: str, caption: str = None, reply_to_message_id: str = None) -> Dict:
         """Send a video message via WhatsApp"""
         payload = {
             "messaging_product": "whatsapp",
@@ -381,6 +387,9 @@ class WhatsAppService:
             "type": "video",
             "video": {"id": media_id}
         }
+        
+        if reply_to_message_id:
+            payload["context"] = {"message_id": reply_to_message_id}
         if caption:
             payload["video"]["caption"] = caption
         
@@ -397,7 +406,7 @@ class WhatsAppService:
                 "response": data
             }
     
-    async def send_document_message(self, to: str, media_id: str, filename: str, caption: str = None) -> Dict:
+    async def send_document_message(self, to: str, media_id: str, filename: str, caption: str = None, reply_to_message_id: str = None) -> Dict:
         """Send a document message via WhatsApp"""
         payload = {
             "messaging_product": "whatsapp",
@@ -406,6 +415,9 @@ class WhatsAppService:
             "type": "document",
             "document": {"id": media_id, "filename": filename}
         }
+        
+        if reply_to_message_id:
+            payload["context"] = {"message_id": reply_to_message_id}
         if caption:
             payload["document"]["caption"] = caption
             

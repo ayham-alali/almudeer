@@ -54,6 +54,7 @@ class ApprovalRequest(BaseModel):
     edited_body: Optional[str] = None
     reply_to_platform_id: Optional[str] = None
     reply_to_body_preview: Optional[str] = None
+    reply_to_id: Optional[int] = None
 
 class ForwardRequest(BaseModel):
     target_channel: str
@@ -181,6 +182,7 @@ async def send_chat_message(
     attachments = data.get("attachments", [])
     reply_to_platform_id = data.get("reply_to_platform_id")
     reply_to_body_preview = data.get("reply_to_body_preview")
+    reply_to_id = data.get("reply_to_id") or data.get("reply_to_message_id")
     
     if not body and not attachments: raise HTTPException(status_code=400, detail="الرسالة فارغة")
     
@@ -210,7 +212,8 @@ async def send_chat_message(
         recipient_email=sender_contact,
         attachments=attachments or None,
         reply_to_platform_id=reply_to_platform_id,
-        reply_to_body_preview=reply_to_body_preview
+        reply_to_body_preview=reply_to_body_preview,
+        reply_to_id=reply_to_id
     )
     
     await approve_outbox_message(outbox_id, body)
@@ -245,7 +248,8 @@ async def approve_chat_message(
             recipient_id=message.get("sender_id"),
             recipient_email=message.get("sender_contact"),
             reply_to_platform_id=approval.reply_to_platform_id or message.get("channel_message_id"),
-            reply_to_body_preview=approval.reply_to_body_preview
+            reply_to_body_preview=approval.reply_to_body_preview,
+            reply_to_id=approval.reply_to_id or message_id
         )
         await approve_outbox_message(outbox_id, body)
         await update_inbox_status(message_id, "approved")
@@ -484,9 +488,12 @@ async def send_approved_message(outbox_id: int, license_id: int):
                 if channel == "whatsapp":
                     config = await get_whatsapp_config(license_id)
                     if config:
-                        from services.whatsapp_service import WhatsAppService
                         ws = WhatsAppService(config["phone_number_id"], config["access_token"])
-                        res = await ws.send_message(to=message["recipient_id"], message=body)
+                        res = await ws.send_message(
+                            to=message["recipient_id"], 
+                            message=body,
+                            reply_to_message_id=message.get("reply_to_platform_id")
+                        )
                         if res["success"]:
                             sent_anything = True
                             last_platform_id = res.get("message_id")
@@ -497,7 +504,11 @@ async def send_approved_message(outbox_id: int, license_id: int):
                         row = await fetch_one(db, "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?", [license_id])
                         if row:
                             ts = TelegramService(row["bot_token"])
-                            res = await ts.send_message(chat_id=message["recipient_id"], text=body)
+                            res = await ts.send_message(
+                                chat_id=message["recipient_id"], 
+                                text=body,
+                                reply_to_message_id=int(message["reply_to_platform_id"]) if message.get("reply_to_platform_id") and message["reply_to_platform_id"].isdigit() else None
+                            )
                             sent_anything = True
                             if res: last_platform_id = str(res.get("message_id"))
 
@@ -513,6 +524,7 @@ async def send_approved_message(outbox_id: int, license_id: int):
                             session_string=session,
                             recipient_id=str(message["recipient_id"]),
                             text=body,
+                            reply_to_message_id=int(message["reply_to_platform_id"]) if message.get("reply_to_platform_id") and message["reply_to_platform_id"].isdigit() else None,
                             client=active_client
                         )
                         sent_anything = True
@@ -578,13 +590,13 @@ async def send_approved_message(outbox_id: int, license_id: int):
                                 if mid:
                                     res = None
                                     if mime_type.startswith("image/"):
-                                        res = await ws.send_image_message(message["recipient_id"], mid)
+                                        res = await ws.send_image_message(message["recipient_id"], mid, reply_to_message_id=message.get("reply_to_platform_id"))
                                     elif mime_type.startswith("video/"):
-                                        res = await ws.send_video_message(message["recipient_id"], mid)
+                                        res = await ws.send_video_message(message["recipient_id"], mid, reply_to_message_id=message.get("reply_to_platform_id"))
                                     elif mime_type.startswith("audio/"):
-                                        res = await ws.send_audio_message(message["recipient_id"], mid)
+                                        res = await ws.send_audio_message(message["recipient_id"], mid, reply_to_message_id=message.get("reply_to_platform_id"))
                                     else:
-                                        res = await ws.send_document_message(message["recipient_id"], mid, att["filename"])
+                                        res = await ws.send_document_message(message["recipient_id"], mid, att["filename"], reply_to_message_id=message.get("reply_to_platform_id"))
                                     
                                     if res and res.get("success"):
                                         sent_anything = True
@@ -598,16 +610,16 @@ async def send_approved_message(outbox_id: int, license_id: int):
                                     ts = TelegramService(row["bot_token"])
                                     res = None
                                     if mime_type.startswith("image/"):
-                                        res = await ts.send_photo(chat_id=message["recipient_id"], photo_path=tmp_path)
+                                        res = await ts.send_photo(chat_id=message["recipient_id"], photo_path=tmp_path, reply_to_message_id=int(message["reply_to_platform_id"]) if message.get("reply_to_platform_id") and message["reply_to_platform_id"].isdigit() else None)
                                     elif mime_type.startswith("video/"):
-                                        res = await ts.send_video(chat_id=message["recipient_id"], video_path=tmp_path)
+                                        res = await ts.send_video(chat_id=message["recipient_id"], video_path=tmp_path, reply_to_message_id=int(message["reply_to_platform_id"]) if message.get("reply_to_platform_id") and message["reply_to_platform_id"].isdigit() else None)
                                     elif mime_type.startswith("audio/"):
                                         if is_voice_note:
-                                            res = await ts.send_voice(chat_id=message["recipient_id"], audio_path=tmp_path)
+                                            res = await ts.send_voice(chat_id=message["recipient_id"], audio_path=tmp_path, reply_to_message_id=int(message["reply_to_platform_id"]) if message.get("reply_to_platform_id") and message["reply_to_platform_id"].isdigit() else None)
                                         else:
-                                            res = await ts.send_audio(chat_id=message["recipient_id"], audio_path=tmp_path)
+                                            res = await ts.send_audio(chat_id=message["recipient_id"], audio_path=tmp_path, reply_to_message_id=int(message["reply_to_platform_id"]) if message.get("reply_to_platform_id") and message["reply_to_platform_id"].isdigit() else None)
                                     else:
-                                        res = await ts.send_document(chat_id=message["recipient_id"], document_path=tmp_path)
+                                        res = await ts.send_document(chat_id=message["recipient_id"], document_path=tmp_path, reply_to_message_id=int(message["reply_to_platform_id"]) if message.get("reply_to_platform_id") and message["reply_to_platform_id"].isdigit() else None)
                                     
                                     if res:
                                         sent_anything = True
@@ -621,13 +633,15 @@ async def send_approved_message(outbox_id: int, license_id: int):
                                     res = await ps.send_voice(
                                         session_string=session,
                                         recipient_id=str(message["recipient_id"]),
-                                        audio_path=tmp_path
+                                        audio_path=tmp_path,
+                                        reply_to_message_id=int(message["reply_to_platform_id"]) if message.get("reply_to_platform_id") and message["reply_to_platform_id"].isdigit() else None
                                     )
                                 else:
                                     res = await ps.send_file(
                                         session_string=session,
                                         recipient_id=str(message["recipient_id"]),
-                                        file_path=tmp_path
+                                        file_path=tmp_path,
+                                        reply_to_message_id=int(message["reply_to_platform_id"]) if message.get("reply_to_platform_id") and message["reply_to_platform_id"].isdigit() else None
                                     )
                                 sent_anything = True
                                 if res: last_platform_id = str(res.get("id"))

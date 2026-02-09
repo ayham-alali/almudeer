@@ -897,6 +897,7 @@ class TelegramPhoneService:
         session_string: str,
         recipient_id: str,
         audio_path: str,
+        reply_to_message_id: Optional[int] = None,
         client: Optional["TelegramClient"] = None
     ) -> Dict:
         """
@@ -925,6 +926,7 @@ class TelegramPhoneService:
             sent_message = await client.send_file(
                 entity,
                 audio_path,
+                reply_to=reply_to_message_id,
                 voice_note=True  # This makes it appear as a voice message
             )
             
@@ -949,6 +951,7 @@ class TelegramPhoneService:
         recipient_id: str,
         file_path: str,
         caption: str = None,
+        reply_to_message_id: Optional[int] = None,
         client: Optional["TelegramClient"] = None
     ) -> Dict:
         """
@@ -977,7 +980,8 @@ class TelegramPhoneService:
             sent_message = await client.send_file(
                 entity,
                 file_path,
-                caption=caption
+                caption=caption,
+                reply_to=reply_to_message_id
             )
             
             return {

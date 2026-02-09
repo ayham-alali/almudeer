@@ -363,7 +363,8 @@ async def create_outbox_message(
     subject: str = None,
     attachments: Optional[List[dict]] = None,
     reply_to_platform_id: Optional[str] = None,
-    reply_to_body_preview: Optional[str] = None
+    reply_to_body_preview: Optional[str] = None,
+    reply_to_id: Optional[int] = None
 ) -> int:
     """Create outbox message for approval (DB agnostic)."""
     
@@ -379,13 +380,13 @@ async def create_outbox_message(
             INSERT INTO outbox_messages 
                 (inbox_message_id, license_key_id, channel, recipient_id,
                  recipient_email, subject, body, attachments,
-                 reply_to_platform_id, reply_to_body_preview)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 reply_to_platform_id, reply_to_body_preview, reply_to_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 inbox_message_id, license_id, channel, recipient_id, 
                 recipient_email, subject, body, attachments_json,
-                reply_to_platform_id, reply_to_body_preview
+                reply_to_platform_id, reply_to_body_preview, reply_to_id
             ],
         )
 
@@ -1031,6 +1032,7 @@ async def get_conversation_messages_cursor(
                 COALESCE(received_at, created_at) as effective_ts,
                 'incoming' as direction,
                 ai_summary, ai_draft_response,
+                reply_to_id, reply_to_platform_id, reply_to_body_preview, reply_to_sender_name,
                 NULL as delivery_status,
                 NULL as sent_at
             FROM inbox_messages i
@@ -1048,6 +1050,7 @@ async def get_conversation_messages_cursor(
                 COALESCE(sent_at, created_at) as effective_ts,
                 'outgoing' as direction,
                 NULL as ai_summary, NULL as ai_draft_response,
+                NULL as reply_to_id, o.reply_to_platform_id, o.reply_to_body_preview, NULL as reply_to_sender_name,
                 delivery_status,
                 sent_at
             FROM outbox_messages o
@@ -1345,6 +1348,7 @@ async def get_full_chat_history(
                 intent, urgency, sentiment, language, dialect,
                 ai_summary, ai_draft_response, status,
                 created_at, received_at,
+                reply_to_id, reply_to_platform_id, reply_to_body_preview, reply_to_sender_name,
                 COALESCE(received_at, created_at) as effective_ts
             FROM inbox_messages
             WHERE license_key_id = ?
@@ -1382,6 +1386,7 @@ async def get_full_chat_history(
                 o.subject, o.body, o.status,
                 o.created_at, o.sent_at,
                 o.delivery_status,
+                o.reply_to_platform_id, o.reply_to_body_preview,
                 i.sender_name
             FROM outbox_messages o
             LEFT JOIN inbox_messages i ON o.inbox_message_id = i.id

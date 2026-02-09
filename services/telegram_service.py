@@ -104,7 +104,7 @@ class TelegramService:
         })
         return True
     
-    async def send_voice(self, chat_id: str, audio_path: str, caption: str = None) -> dict:
+    async def send_voice(self, chat_id: str, audio_path: str, caption: str = None, reply_to_message_id: int = None) -> dict:
         """Send voice message (OGG with OPUS codec recommended, but MP3 works)"""
         async with httpx.AsyncClient(timeout=60.0) as client:
             with open(audio_path, "rb") as f:
@@ -112,6 +112,8 @@ class TelegramService:
                 data = {"chat_id": chat_id}
                 if caption:
                     data["caption"] = caption
+                if reply_to_message_id:
+                    data["reply_to_message_id"] = reply_to_message_id
                 
                 response = await client.post(
                     f"{self.api_url}/sendVoice",
@@ -125,7 +127,7 @@ class TelegramService:
                 
                 return result.get("result", {})
     
-    async def send_audio(self, chat_id: str, audio_path: str, title: str = None) -> dict:
+    async def send_audio(self, chat_id: str, audio_path: str, title: str = None, reply_to_message_id: int = None) -> dict:
         """Send audio file (MP3, etc.)"""
         async with httpx.AsyncClient(timeout=60.0) as client:
             with open(audio_path, "rb") as f:
@@ -133,6 +135,8 @@ class TelegramService:
                 data = {"chat_id": chat_id}
                 if title:
                     data["title"] = title
+                if reply_to_message_id:
+                    data["reply_to_message_id"] = reply_to_message_id
                 
                 response = await client.post(
                     f"{self.api_url}/sendAudio",
@@ -146,7 +150,7 @@ class TelegramService:
                 
                 return result.get("result", {})
     
-    async def send_photo(self, chat_id: str, photo_path: str, caption: str = None) -> dict:
+    async def send_photo(self, chat_id: str, photo_path: str, caption: str = None, reply_to_message_id: int = None) -> dict:
         """Send photo"""
         async with httpx.AsyncClient(timeout=60.0) as client:
             with open(photo_path, "rb") as f:
@@ -154,6 +158,8 @@ class TelegramService:
                 data = {"chat_id": chat_id}
                 if caption:
                     data["caption"] = caption
+                if reply_to_message_id:
+                    data["reply_to_message_id"] = reply_to_message_id
                 
                 response = await client.post(
                     f"{self.api_url}/sendPhoto",
@@ -167,7 +173,7 @@ class TelegramService:
                 
                 return result.get("result", {})
 
-    async def send_video(self, chat_id: str, video_path: str, caption: str = None) -> dict:
+    async def send_video(self, chat_id: str, video_path: str, caption: str = None, reply_to_message_id: int = None) -> dict:
         """Send video"""
         async with httpx.AsyncClient(timeout=120.0) as client:
             with open(video_path, "rb") as f:
@@ -175,6 +181,8 @@ class TelegramService:
                 data = {"chat_id": chat_id}
                 if caption:
                     data["caption"] = caption
+                if reply_to_message_id:
+                    data["reply_to_message_id"] = reply_to_message_id
                 
                 response = await client.post(
                     f"{self.api_url}/sendVideo",
@@ -186,7 +194,7 @@ class TelegramService:
                     raise Exception(result.get("description", "Telegram API error"))
                 return result.get("result", {})
 
-    async def send_document(self, chat_id: str, document_path: str, caption: str = None) -> dict:
+    async def send_document(self, chat_id: str, document_path: str, caption: str = None, reply_to_message_id: int = None) -> dict:
         """Send document"""
         async with httpx.AsyncClient(timeout=120.0) as client:
             with open(document_path, "rb") as f:
@@ -194,6 +202,8 @@ class TelegramService:
                 data = {"chat_id": chat_id}
                 if caption:
                     data["caption"] = caption
+                if reply_to_message_id:
+                    data["reply_to_message_id"] = reply_to_message_id
                 
                 response = await client.post(
                     f"{self.api_url}/sendDocument",
