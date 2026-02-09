@@ -95,19 +95,20 @@ async def update_delivery_status(
             if not sender_contact:
                 sender_contact = row["recipient_email"] or row["recipient_id"]
 
-            # Status progression: sent -> failed
-            # We only track 'sent' (single check) and 'failed'.
+            # Status progression: sent -> delivered -> read
+            # or failed
             
-            status_order = {"sent": 1, "failed": 0}
+            status_order = {"failed": 0, "sent": 1, "delivered": 2, "read": 3}
             
             current_order = status_order.get(current_status, 0)
             new_order = status_order.get(status, 0)
             
-            # If status is not in our list (e.g. read, delivered), ignore it
+            # If status is not in our list, ignore it
             if status not in status_order:
+                 logger.debug(f"Unknown status received: {status}")
                  return True
 
-            if new_order <= current_order and status != "failed":
+            if new_order <= current_order and status != "failed" and current_status != "failed":
                 logger.debug(f"Skipping status update (not a progression): {current_status} -> {status}")
                 return True
             

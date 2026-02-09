@@ -215,7 +215,7 @@ async def send_chat_message(
     
     await approve_outbox_message(outbox_id, body)
     background_tasks.add_task(send_approved_message, outbox_id, license["license_id"])
-    return {"success": True, "outbox_id": outbox_id}
+    return {"success": True, "outbox_id": outbox_id, "id": outbox_id}
 
 # --- Actions ---
 
