@@ -108,6 +108,31 @@ async def save_inbox_message(
         if DB_TYPE != "postgresql" and isinstance(reg_received_at, datetime):
             reg_received_at = reg_received_at.isoformat()
 
+        # ---------------------------------------------------------
+        # Reply Context Resolution (Internal Resolution)
+        # ---------------------------------------------------------
+        if reply_to_platform_id and (not reply_to_body_preview or not reply_to_sender_name):
+            # 1. Look for the parent in inbox_messages (replied to a user message)
+            parent_inbox = await fetch_one(
+                db,
+                "SELECT id, body, sender_name FROM inbox_messages WHERE license_key_id = ? AND channel_message_id = ?",
+                [license_id, reply_to_platform_id]
+            )
+            if parent_inbox:
+                reply_to_id = reply_to_id or parent_inbox["id"]
+                reply_to_body_preview = reply_to_body_preview or parent_inbox["body"][:100]
+                reply_to_sender_name = reply_to_sender_name or parent_inbox["sender_name"]
+            else:
+                # 2. Look for the parent in outbox_messages (replied to an Al-Mudeer message)
+                parent_outbox = await fetch_one(
+                    db,
+                    "SELECT body FROM outbox_messages WHERE license_key_id = ? AND platform_message_id = ?",
+                    [license_id, reply_to_platform_id]
+                )
+                if parent_outbox:
+                    reply_to_body_preview = reply_to_body_preview or parent_outbox["body"][:100]
+                    reply_to_sender_name = reply_to_sender_name or "أنا" # "Me" in Arabic, or Al-Mudeer
+
         await execute_sql(
             db,
             """

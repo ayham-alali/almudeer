@@ -127,6 +127,10 @@ async def init_enhanced_tables():
                 status TEXT DEFAULT 'pending',
                 processed_at TIMESTAMP,
                 deleted_at TIMESTAMP,
+                reply_to_platform_id TEXT,
+                reply_to_body_preview TEXT,
+                reply_to_sender_name TEXT,
+                reply_to_id INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
@@ -149,6 +153,9 @@ async def init_enhanced_tables():
                 sent_at TIMESTAMP,
                 deleted_at TIMESTAMP,
                 error_message TEXT,
+                reply_to_platform_id TEXT,
+                reply_to_body_preview TEXT,
+                reply_to_id INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (inbox_message_id) REFERENCES inbox_messages(id),
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
@@ -249,6 +256,24 @@ async def init_enhanced_tables():
                 await execute_sql(db, "ALTER TABLE outbox_messages ALTER COLUMN inbox_message_id DROP NOT NULL")
             except Exception as e:
                 print(f"Postgres Migration (drop not null) skipped: {e}")
+
+        # Migration for reply_to context columns
+        for table in ["inbox_messages", "outbox_messages"]:
+            for col in ["reply_to_platform_id", "reply_to_body_preview"]:
+                try:
+                    await execute_sql(db, f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+                except:
+                    pass
+            try:
+                await execute_sql(db, f"ALTER TABLE {table} ADD COLUMN reply_to_id INTEGER")
+            except:
+                pass
+
+        # Unique to inbox_messages
+        try:
+            await execute_sql(db, "ALTER TABLE inbox_messages ADD COLUMN reply_to_sender_name TEXT")
+        except:
+            pass
 
         # Library Items (Notes, Images, Files, Audio, Video)
         await execute_sql(db, f"""

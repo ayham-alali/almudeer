@@ -399,6 +399,12 @@ async def send_approved_message(outbox_id: int, license_id: int):
         sent_anything = False
         last_platform_id = None
         channel = message["channel"]
+        reply_to_platform_id = message.get("reply_to_platform_id")
+        
+        from logging_config import get_logger
+        logger = get_logger(__name__)
+        if reply_to_platform_id:
+            logger.info(f"Sending message {outbox_id} as reply to platform ID: {reply_to_platform_id} (Channel: {channel})")
         
         # 0. SKIP EXTERNAL DELIVERY FOR SAVED MESSAGES (Self-chat)
         if channel == "saved":
@@ -500,6 +506,7 @@ async def send_approved_message(outbox_id: int, license_id: int):
                             message=body,
                             reply_to_message_id=message.get("reply_to_platform_id")
                         )
+                        logger.info(f"WhatsApp send message {outbox_id} result: {res}")
                         if res["success"]:
                             sent_anything = True
                             last_platform_id = res.get("message_id")
@@ -515,6 +522,7 @@ async def send_approved_message(outbox_id: int, license_id: int):
                                 text=body,
                                 reply_to_message_id=int(message["reply_to_platform_id"]) if message.get("reply_to_platform_id") and message["reply_to_platform_id"].isdigit() else None
                             )
+                            logger.info(f"Telegram Bot send message {outbox_id} result: {res}")
                             sent_anything = True
                             if res: last_platform_id = str(res.get("message_id"))
 
@@ -533,6 +541,7 @@ async def send_approved_message(outbox_id: int, license_id: int):
                             reply_to_message_id=int(message["reply_to_platform_id"]) if message.get("reply_to_platform_id") and message["reply_to_platform_id"].isdigit() else None,
                             client=active_client
                         )
+                        logger.info(f"Telegram Phone send message {outbox_id} result: {res}")
                         sent_anything = True
                         if res: last_platform_id = str(res.get("id"))
 
@@ -666,7 +675,11 @@ async def send_approved_message(outbox_id: int, license_id: int):
                         ws = WhatsAppService(config["phone_number_id"], config["access_token"])
                         mid = await ws.upload_media(audio_path)
                         if mid:
-                            res = await ws.send_audio_message(to=message["recipient_id"], media_id=mid)
+                            res = await ws.send_audio_message(
+                                to=message["recipient_id"], 
+                                media_id=mid,
+                                reply_to_message_id=message.get("reply_to_platform_id")
+                            )
                             if res and res.get("success"):
                                 sent_anything = True
                                 last_platform_id = res.get("message_id")
@@ -677,7 +690,11 @@ async def send_approved_message(outbox_id: int, license_id: int):
                         row = await fetch_one(db, "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?", [license_id])
                         if row:
                             ts = TelegramService(row["bot_token"])
-                            res = await ts.send_voice(chat_id=message["recipient_id"], audio_path=audio_path)
+                            res = await ts.send_voice(
+                                chat_id=message["recipient_id"], 
+                                audio_path=audio_path,
+                                reply_to_message_id=int(message["reply_to_platform_id"]) if message.get("reply_to_platform_id") and message["reply_to_platform_id"].isdigit() else None
+                            )
                             if res:
                                 sent_anything = True
                                 last_platform_id = str(res.get("message_id"))
@@ -689,7 +706,8 @@ async def send_approved_message(outbox_id: int, license_id: int):
                         res = await ps.send_voice(
                             session_string=session,
                             recipient_id=str(message["recipient_id"]),
-                            audio_path=audio_path
+                            audio_path=audio_path,
+                            reply_to_message_id=int(message["reply_to_platform_id"]) if message.get("reply_to_platform_id") and message["reply_to_platform_id"].isdigit() else None
                         )
                         if res:
                             sent_anything = True
