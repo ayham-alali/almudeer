@@ -2459,17 +2459,24 @@ async def upsert_conversation_state(
                         # Check mime_type or filename extension
                         mime = att.get("mime_type", "").lower()
                         filename = (att.get("filename") or att.get("file_name") or "").lower()
+                        att_type = att.get("type", "").lower()
                         
-                        if mime.startswith("audio/") or filename.endswith((".mp3", ".wav", ".aac", ".m4a", ".ogg", ".opus", ".amr")):
-                             body = "🎙️ تسجيل صوتي"
+                        if att_type == "note":
+                            body = "ملاحظة"
+                        elif att_type == "task":
+                            body = "مَهمَّة"
+                        elif att_type == "voice" or (mime.startswith("audio/") and att.get("is_voice_note")):
+                            body = "تسجيل صوتي"
+                        elif mime.startswith("audio/") or filename.endswith((".mp3", ".wav", ".aac", ".m4a", ".ogg", ".opus", ".amr")):
+                             body = "ملف صوتي"
                         elif mime.startswith("image/") or filename.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
-                             body = "📷 صورة"
+                             body = "صورة"
                         elif mime.startswith("video/") or filename.endswith((".mp4", ".mov", ".avi", ".webm")):
-                             body = "🎥 فيديو"
+                             body = "فيديو"
                         else:
-                             body = "📁 ملف"
+                             body = "ملف"
                 except:
-                    body = "� ملف"
+                    body = "ملف"
 
         # 3. Upsert
         now = datetime.utcnow()
