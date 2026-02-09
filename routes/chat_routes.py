@@ -435,6 +435,16 @@ async def send_approved_message(outbox_id: int, license_id: int):
                             if DB_TYPE != "postgresql":
                                 reg_received_at = reg_received_at.isoformat()
 
+                            # Parse attachments for internal delivery
+                            att_list = []
+                            if message.get("attachments"):
+                                try:
+                                    if isinstance(message["attachments"], str):
+                                        att_list = json.loads(message["attachments"])
+                                    elif isinstance(message["attachments"], list):
+                                        att_list = message["attachments"]
+                                except: pass
+
                             new_inbox_id = await save_inbox_message(
                                 license_id=target_license["id"],
                                 channel="almudeer",
@@ -443,6 +453,7 @@ async def send_approved_message(outbox_id: int, license_id: int):
                                 sender_name=sender_company,
                                 sender_id=sender_username,
                                 received_at=reg_received_at, # Fixed type consistency
+                                attachments=att_list,
                                 reply_to_platform_id=message.get("reply_to_platform_id"),
                                 reply_to_body_preview=message.get("reply_to_body_preview"),
                                 reply_to_sender_name=message.get("reply_to_sender_name"),
@@ -459,6 +470,7 @@ async def send_approved_message(outbox_id: int, license_id: int):
                                     "sender_contact": sender_username,
                                     "sender_name": sender_company,
                                     "body": body,
+                                    "attachments": att_list,
                                     "received_at": datetime.utcnow().isoformat(),
                                     "reply_to_platform_id": message.get("reply_to_platform_id"),
                                     "reply_to_body_preview": message.get("reply_to_body_preview"),
