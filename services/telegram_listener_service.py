@@ -289,6 +289,7 @@ class TelegramListenerService:
                         sender_contact = str(sender.id)
                         
                     channel_message_id = str(event.message.id)
+                    reply_to_platform_id = str(event.message.reply_to.reply_to_msg_id) if (event.message.reply_to and hasattr(event.message.reply_to, 'reply_to_msg_id')) else None
                     
                     # 3. Check for Duplicates (Basic check)
                     # Ideally we use Redis, but here we query DB via `models`
@@ -488,7 +489,8 @@ class TelegramListenerService:
                         sender_id=str(sender.id),
                         channel_message_id=channel_message_id,
                         received_at=event.message.date,
-                        attachments=attachments
+                        attachments=attachments,
+                        reply_to_platform_id=reply_to_platform_id
                     )
                     
                     if msg_id:

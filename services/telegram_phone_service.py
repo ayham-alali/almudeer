@@ -720,7 +720,8 @@ class TelegramPhoneService:
                             "is_channel": dialog.is_channel,
                             "is_group": dialog.is_group,
                             "attachments": [],
-                            "direction": "incoming"  # Mark as incoming
+                            "direction": "incoming", # Mark as incoming
+                            "reply_to_platform_id": str(message.reply_to.reply_to_msg_id) if (message.reply_to and hasattr(message.reply_to, 'reply_to_msg_id')) else None
                         })
                         
                         # Handle Media (Photo/Voice/Video/Document)

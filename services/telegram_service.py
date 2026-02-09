@@ -333,7 +333,8 @@ class TelegramService:
             "text": message.get("text", "") or message.get("caption", ""), 
             "date": datetime.fromtimestamp(message.get("date", 0)),
             "is_bot": from_user.get("is_bot", False),
-            "attachments": attachments
+            "attachments": attachments,
+            "reply_to_platform_id": str(message.get("reply_to_message", {}).get("message_id")) if message.get("reply_to_message") else None
         }
         
         # Add fallback body if empty but has attachments (for Inbox visibility)

@@ -437,6 +437,9 @@ async def send_approved_message(outbox_id: int, license_id: int):
                                 sender_name=sender_company,
                                 sender_id=sender_username,
                                 received_at=reg_received_at, # Fixed type consistency
+                                reply_to_platform_id=message.get("reply_to_platform_id"),
+                                reply_to_body_preview=message.get("reply_to_body_preview"),
+                                reply_to_sender_name=message.get("reply_to_sender_name"),
                                 status='analyzed'
                             )
                             
@@ -451,6 +454,9 @@ async def send_approved_message(outbox_id: int, license_id: int):
                                     "sender_name": sender_company,
                                     "body": body,
                                     "received_at": datetime.utcnow().isoformat(),
+                                    "reply_to_platform_id": message.get("reply_to_platform_id"),
+                                    "reply_to_body_preview": message.get("reply_to_body_preview"),
+                                    "reply_to_sender_name": message.get("reply_to_sender_name"),
                                     "status": "analyzed",
                                     "direction": "incoming"
                                 })
