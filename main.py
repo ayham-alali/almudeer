@@ -150,6 +150,7 @@ async def lifespan(app: FastAPI):
         from migrations.backfill_queue_table import create_backfill_queue_table
         from migrations.task_queue_table import create_task_queue_table
         from migrations.purchases_table import create_purchases_table
+        from migrations.edit_delete_message import ensure_message_edit_delete_schema
 
         # Parallelize independent table initializations to speed up startup
         init_tasks = [
@@ -164,7 +165,8 @@ async def lifespan(app: FastAPI):
             fix_customers_serial(),
             create_backfill_queue_table(),
             create_task_queue_table(),
-            create_purchases_table()
+            create_purchases_table(),
+            ensure_message_edit_delete_schema()
         ]
         
         results = await asyncio.gather(*init_tasks, return_exceptions=True)
