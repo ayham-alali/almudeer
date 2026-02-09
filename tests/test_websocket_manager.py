@@ -7,6 +7,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime
 import json
+from contextlib import asynccontextmanager
 
 
 # ============ WebSocket Message ============
@@ -72,6 +73,24 @@ class TestConnectionManager:
             mock_instance.publish = AsyncMock()
             yield mock
 
+    @pytest.fixture(autouse=True)
+    def mock_db(self):
+        """Mock db_helper to prevent DB access during tests"""
+        with patch('db_helper.get_db') as mock_get_db, \
+             patch('db_helper.execute', new_callable=AsyncMock) as mock_execute, \
+             patch('db_helper.fetch_one', new_callable=AsyncMock) as mock_fetch_one, \
+             patch('db_helper.fetch_all', new_callable=AsyncMock) as mock_fetch_all:
+            
+            mock_conn = MagicMock()
+            @asynccontextmanager
+            async def mock_get_db_ctx():
+                yield mock_conn
+                
+            mock_get_db.side_effect = mock_get_db_ctx
+            mock_fetch_one.return_value = {"username": "test_user"}
+            mock_fetch_all.return_value = [{"license_key_id": 101}]
+            yield
+
     def test_manager_initialization(self):
         """Test ConnectionManager initializes correctly"""
         from services.websocket_manager import ConnectionManager
@@ -127,6 +146,23 @@ class TestConnectionManager:
 
 class TestEventBroadcasting:
     """Tests for WebSocket event broadcasting"""
+    
+    @pytest.fixture(autouse=True)
+    def mock_db(self):
+        """Mock db_helper for broadcasting tests"""
+        with patch('db_helper.get_db') as mock_get_db, \
+             patch('db_helper.fetch_one', new_callable=AsyncMock) as mock_fetch_one, \
+             patch('db_helper.fetch_all', new_callable=AsyncMock) as mock_fetch_all:
+            
+            mock_conn = MagicMock()
+            @asynccontextmanager
+            async def mock_get_db_ctx():
+                yield mock_conn
+                
+            mock_get_db.side_effect = mock_get_db_ctx
+            mock_fetch_one.return_value = {"username": "test_user"}
+            mock_fetch_all.return_value = [{"license_key_id": 101}]
+            yield
     
     @pytest.mark.asyncio
     async def test_send_to_license(self):

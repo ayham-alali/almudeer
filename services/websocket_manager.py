@@ -235,6 +235,15 @@ class ConnectionManager:
                         lambda msg: self._handle_redis_message(license_id, msg)
                     )
             self._connections[license_id].add(websocket)
+        
+        # Update last_seen_at and broadcast online status
+        from db_helper import get_db, execute_sql, commit_db
+        async with get_db() as db:
+            await execute_sql(db, "UPDATE license_keys SET last_seen_at = ? WHERE id = ?", (datetime.now(), license_id))
+            await commit_db(db)
+        
+        await broadcast_presence_update(license_id, is_online=True)
+        
         logger.info(f"WebSocket connected: license {license_id} (total: {self.connection_count})")
     
     async def disconnect(self, websocket: WebSocket, license_id: int):
@@ -247,6 +256,16 @@ class ConnectionManager:
                     # Unsubscribe from Redis when no more local connections
                     if self._pubsub.is_available:
                         await self._pubsub.unsubscribe(license_id)
+                    
+                    # Update last_seen_at and broadcast offline status
+                    from db_helper import get_db, execute_sql, commit_db
+                    now = datetime.now()
+                    async with get_db() as db:
+                        await execute_sql(db, "UPDATE license_keys SET last_seen_at = ? WHERE id = ?", (now, license_id))
+                        await commit_db(db)
+                    
+                    await broadcast_presence_update(license_id, is_online=False, last_seen=now.isoformat())
+                    
         logger.info(f"WebSocket disconnected: license {license_id}")
     
     async def _handle_redis_message(self, license_id: int, message: WebSocketMessage):
@@ -430,6 +449,67 @@ async def broadcast_typing_indicator(license_id: int, sender_contact: str, is_ty
         data={
             "sender_contact": sender_contact,
             "is_typing": is_typing
+        }
+    ))
+
+
+async def broadcast_presence_update(license_id: int, is_online: bool, last_seen: Optional[str] = None):
+    """Broadcast user presence update to self and peers"""
+    manager = get_websocket_manager()
+    
+    from db_helper import get_db, fetch_one, fetch_all
+    async with get_db() as db:
+        # 1. Get this user's username
+        user_row = await fetch_one(db, "SELECT username FROM license_keys WHERE id = ?", [license_id])
+        if not user_row or not user_row.get("username"):
+            # If no username, we can only notify self (multi-device)
+            await manager.send_to_license(license_id, WebSocketMessage(
+                event="presence_update",
+                data={
+                    "is_online": is_online,
+                    "last_seen": last_seen,
+                    "is_self": True
+                }
+            ))
+            return
+
+        username = user_row["username"]
+        
+        # 2. Find all licenses who are chatting with this user in 'almudeer' channel
+        peers = await fetch_all(db, "SELECT DISTINCT license_key_id FROM inbox_conversations WHERE sender_contact = ? AND channel = 'almudeer'", [username])
+    
+    # 3. Broadcast to self (multi-device sync)
+    await manager.send_to_license(license_id, WebSocketMessage(
+        event="presence_update",
+        data={
+            "is_online": is_online,
+            "last_seen": last_seen,
+            "is_self": True
+        }
+    ))
+
+    # 4. Broadcast to peers so they see the status update in their chat view
+    for peer in peers:
+        peer_license_id = peer["license_key_id"]
+        await manager.send_to_license(peer_license_id, WebSocketMessage(
+            event="presence_update",
+            data={
+                "sender_contact": username,
+                "is_online": is_online,
+                "last_seen": last_seen,
+                "is_self": False
+            }
+        ))
+
+
+async def broadcast_recording_indicator(license_id: int, sender_contact: str, is_recording: bool):
+    """Broadcast recording indicator for a specific conversation"""
+    manager = get_websocket_manager()
+    await manager.send_to_license(license_id, WebSocketMessage(
+        event="recording_indicator",
+        data={
+            "sender_contact": sender_contact,
+            "is_recording": is_recording
         }
     ))
 

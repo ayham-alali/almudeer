@@ -675,8 +675,10 @@ async def get_inbox_conversations(
             last_message_at as created_at,
             ic.status,
             unread_count,
-            message_count
+            message_count,
+            lk.last_seen_at
         FROM inbox_conversations ic
+        LEFT JOIN license_keys lk ON ic.sender_contact = lk.username AND ic.channel = 'almudeer'
         WHERE {where_sql}
         ORDER BY ic.last_message_at DESC
         LIMIT ? OFFSET ?

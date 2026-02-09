@@ -52,7 +52,8 @@ async def init_database():
                     ADD COLUMN IF NOT EXISTS referred_by_id INTEGER REFERENCES license_keys(id),
                     ADD COLUMN IF NOT EXISTS is_trial BOOLEAN DEFAULT FALSE,
                     ADD COLUMN IF NOT EXISTS referral_count INTEGER DEFAULT 0,
-                    ADD COLUMN IF NOT EXISTS username VARCHAR(255) UNIQUE
+                    ADD COLUMN IF NOT EXISTS username VARCHAR(255) UNIQUE,
+                    ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP
                 """)
             except Exception:
                 pass
@@ -74,6 +75,9 @@ async def init_database():
             except Exception: pass
             try:
                 await db.execute("ALTER TABLE license_keys ADD COLUMN username TEXT UNIQUE")
+            except Exception: pass
+            try:
+                await db.execute("ALTER TABLE license_keys ADD COLUMN last_seen_at TIMESTAMP")
             except Exception: pass
             await db.commit()
     
@@ -97,6 +101,7 @@ async def _init_sqlite_tables(db):
             max_requests_per_day INTEGER DEFAULT 100,
             requests_today INTEGER DEFAULT 0,
             last_request_date DATE,
+            last_seen_at TIMESTAMP,
             referral_code TEXT UNIQUE,
             referred_by_id INTEGER,
             is_trial BOOLEAN DEFAULT FALSE,

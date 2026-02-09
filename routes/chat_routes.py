@@ -170,6 +170,18 @@ async def send_typing_indicator(
     await broadcast_typing_indicator(license["license_id"], sender_contact, is_typing)
     return {"success": True}
 
+@router.post("/conversations/{sender_contact:path}/recording")
+async def send_recording_indicator(
+    sender_contact: str,
+    request: Request,
+    license: dict = Depends(get_license_from_header)
+):
+    from services.websocket_manager import broadcast_recording_indicator
+    data = await request.json()
+    is_recording = data.get("is_recording", False)
+    await broadcast_recording_indicator(license["license_id"], sender_contact, is_recording)
+    return {"success": True}
+
 @router.post("/conversations/{sender_contact:path}/send")
 async def send_chat_message(
     sender_contact: str,
