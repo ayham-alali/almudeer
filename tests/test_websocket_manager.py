@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime
 import json
 from contextlib import asynccontextmanager
+import services.websocket_manager as ws_module
 
 
 # ============ WebSocket Message ============
@@ -62,24 +63,40 @@ class TestConnectionManager:
     """Tests for WebSocket ConnectionManager"""
     
     @pytest.fixture(autouse=True)
+    def reset_manager(self):
+        """Reset global manager before each test"""
+        ws_module._manager = None
+        yield
+        ws_module._manager = None
+    
+    @pytest.fixture(autouse=True)
     def mock_redis(self):
         """Mock RedisPubSubManager to prevent async task leaks"""
-        with patch('services.websocket_manager.RedisPubSubManager') as mock:
-            mock_instance = mock.return_value
-            mock_instance.is_available = True  # Pretend it's working
-            mock_instance.initialize = AsyncMock(return_value=True)
-            mock_instance.subscribe = AsyncMock()
-            mock_instance.unsubscribe = AsyncMock()
-            mock_instance.publish = AsyncMock()
-            yield mock
-
+        mock_instance = AsyncMock()
+        mock_instance.is_available = True  # Pretend it's working
+        mock_instance.initialize = AsyncMock(return_value=True)
+        mock_instance.subscribe = AsyncMock()
+        mock_instance.unsubscribe = AsyncMock()
+        mock_instance.publish = AsyncMock()
+        
+        # Mock Redis client for incr/decr
+        mock_redis_client = AsyncMock()
+        mock_redis_client.incr = AsyncMock(return_value=1)
+        mock_redis_client.decr = AsyncMock(return_value=0)
+        mock_redis_client.set = AsyncMock()
+        mock_instance._redis_client = mock_redis_client
+        
+        with patch('services.websocket_manager.RedisPubSubManager', return_value=mock_instance):
+            yield
+            
     @pytest.fixture(autouse=True)
     def mock_db(self):
         """Mock db_helper to prevent DB access during tests"""
         with patch('db_helper.get_db') as mock_get_db, \
-             patch('db_helper.execute', new_callable=AsyncMock) as mock_execute, \
+             patch('db_helper.execute_sql', new_callable=AsyncMock) as mock_execute, \
              patch('db_helper.fetch_one', new_callable=AsyncMock) as mock_fetch_one, \
-             patch('db_helper.fetch_all', new_callable=AsyncMock) as mock_fetch_all:
+             patch('db_helper.fetch_all', new_callable=AsyncMock) as mock_fetch_all, \
+             patch('db_helper.commit_db', new_callable=AsyncMock):
             
             mock_conn = MagicMock()
             @asynccontextmanager
@@ -98,7 +115,7 @@ class TestConnectionManager:
         manager = ConnectionManager()
         
         assert hasattr(manager, '_connections')
-        assert manager.connection_count() == 0
+        assert manager.connection_count == 0
     
     @pytest.mark.asyncio
     async def test_connect_adds_connection(self):
@@ -113,7 +130,7 @@ class TestConnectionManager:
         
         await manager.connect(mock_ws, license_id=1)
         
-        assert manager.connection_count() >= 0
+        assert manager.connection_count >= 1
     
     @pytest.mark.asyncio
     async def test_disconnect_removes_connection(self):
@@ -125,7 +142,7 @@ class TestConnectionManager:
         mock_ws.accept = AsyncMock()
         
         await manager.connect(mock_ws, license_id=2)
-        manager.disconnect(mock_ws, license_id=2)
+        await manager.disconnect(mock_ws, license_id=2)
         
         # Should not raise and connection should be removed
         assert 2 not in manager._connections or mock_ws not in manager._connections.get(2, set())
@@ -148,11 +165,39 @@ class TestEventBroadcasting:
     """Tests for WebSocket event broadcasting"""
     
     @pytest.fixture(autouse=True)
+    def reset_manager(self):
+        """Reset global manager before each test"""
+        ws_module._manager = None
+        yield
+        ws_module._manager = None
+    
+    @pytest.fixture(autouse=True)
+    def mock_redis(self):
+        """Mock RedisPubSubManager to prevent async task leaks"""
+        mock_instance = AsyncMock()
+        mock_instance.is_available = True  # Pretend it's working
+        mock_instance.initialize = AsyncMock(return_value=True)
+        mock_instance.subscribe = AsyncMock()
+        mock_instance.unsubscribe = AsyncMock()
+        mock_instance.publish = AsyncMock()
+        
+        # Mock Redis client for incr/decr
+        mock_redis_client = AsyncMock()
+        mock_redis_client.incr = AsyncMock(return_value=1)
+        mock_redis_client.decr = AsyncMock(return_value=0)
+        mock_redis_client.set = AsyncMock()
+        mock_instance._redis_client = mock_redis_client
+        
+        with patch('services.websocket_manager.RedisPubSubManager', return_value=mock_instance):
+            yield
+            
+    @pytest.fixture(autouse=True)
     def mock_db(self):
         """Mock db_helper for broadcasting tests"""
         with patch('db_helper.get_db') as mock_get_db, \
              patch('db_helper.fetch_one', new_callable=AsyncMock) as mock_fetch_one, \
-             patch('db_helper.fetch_all', new_callable=AsyncMock) as mock_fetch_all:
+             patch('db_helper.fetch_all', new_callable=AsyncMock) as mock_fetch_all, \
+             patch('db_helper.execute_sql', new_callable=AsyncMock):
             
             mock_conn = MagicMock()
             @asynccontextmanager

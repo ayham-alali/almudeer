@@ -236,13 +236,32 @@ class ConnectionManager:
                     )
             self._connections[license_id].add(websocket)
         
-        # Update last_seen_at and broadcast online status
-        from db_helper import get_db, execute_sql, commit_db
-        async with get_db() as db:
-            await execute_sql(db, "UPDATE license_keys SET last_seen_at = ? WHERE id = ?", (datetime.now(), license_id))
-            await commit_db(db)
-        
-        await broadcast_presence_update(license_id, is_online=True)
+        # Global presence tracking via Redis
+        if self._pubsub.is_available:
+            try:
+                # Increment global connection count for this license
+                global_count_key = f"almudeer:presence:count:{license_id}"
+                new_count = await self._pubsub._redis_client.incr(global_count_key)
+                
+                # Update last_seen_at
+                from db_helper import get_db, execute_sql, commit_db
+                now = datetime.now()
+                async with get_db() as db:
+                    await execute_sql(db, "UPDATE license_keys SET last_seen_at = ? WHERE id = ?", (now, license_id))
+                    await commit_db(db)
+                
+                # Only broadcast online if this is the first connection globally
+                if new_count == 1:
+                    await broadcast_presence_update(license_id, is_online=True)
+            except Exception as e:
+                logger.error(f"Error updating global presence on connect: {e}")
+        else:
+            # Fallback for single-worker / no redis
+            from db_helper import get_db, execute_sql, commit_db
+            async with get_db() as db:
+                await execute_sql(db, "UPDATE license_keys SET last_seen_at = ? WHERE id = ?", (datetime.now(), license_id))
+                await commit_db(db)
+            await broadcast_presence_update(license_id, is_online=True)
         
         logger.info(f"WebSocket connected: license {license_id} (total: {self.connection_count})")
     
@@ -253,18 +272,41 @@ class ConnectionManager:
                 self._connections[license_id].discard(websocket)
                 if not self._connections[license_id]:
                     del self._connections[license_id]
-                    # Unsubscribe from Redis when no more local connections
+                    
+                    # Global presence tracking via Redis
                     if self._pubsub.is_available:
-                        await self._pubsub.unsubscribe(license_id)
-                    
-                    # Update last_seen_at and broadcast offline status
-                    from db_helper import get_db, execute_sql, commit_db
-                    now = datetime.now()
-                    async with get_db() as db:
-                        await execute_sql(db, "UPDATE license_keys SET last_seen_at = ? WHERE id = ?", (now, license_id))
-                        await commit_db(db)
-                    
-                    await broadcast_presence_update(license_id, is_online=False, last_seen=now.isoformat())
+                        try:
+                            # Unsubscribe from Redis channel locally
+                            await self._pubsub.unsubscribe(license_id)
+                            
+                            # Decrement global connection count
+                            global_count_key = f"almudeer:presence:count:{license_id}"
+                            new_count = await self._pubsub._redis_client.decr(global_count_key)
+                            if new_count < 0:
+                                await self._pubsub._redis_client.set(global_count_key, 0)
+                                new_count = 0
+                                
+                            # Update last_seen_at
+                            from db_helper import get_db, execute_sql, commit_db
+                            now = datetime.now()
+                            async with get_db() as db:
+                                await execute_sql(db, "UPDATE license_keys SET last_seen_at = ? WHERE id = ?", (now, license_id))
+                                await commit_db(db)
+                            
+                            # Only broadcast offline if no more global connections
+                            if new_count == 0:
+                                await broadcast_presence_update(license_id, is_online=False, last_seen=now.isoformat())
+                        except Exception as e:
+                            logger.error(f"Error updating global presence on disconnect: {e}")
+                    else:
+                        # Fallback for single-worker / no redis
+                        from db_helper import get_db, execute_sql, commit_db
+                        now = datetime.now()
+                        async with get_db() as db:
+                            await execute_sql(db, "UPDATE license_keys SET last_seen_at = ? WHERE id = ?", (now, license_id))
+                            await commit_db(db)
+                        
+                        await broadcast_presence_update(license_id, is_online=False, last_seen=now.isoformat())
                     
         logger.info(f"WebSocket disconnected: license {license_id}")
     
