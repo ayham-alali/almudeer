@@ -177,3 +177,86 @@ async def transcribe_audio(
     except Exception as e:
         logger.error(f"Transcription failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ Voice Call Signaling (Agora) ============
+
+class CallInviteRequest(BaseModel):
+    recipient_username: str
+    channel_name: Optional[str] = None
+
+@router.post("/call/invite")
+async def invite_to_call(
+    data: CallInviteRequest,
+    license: dict = Depends(get_license_from_header)
+):
+    """
+    Send a call invitation signal to a specific user.
+    """
+    from services.websocket_manager import get_websocket_manager, WebSocketMessage
+    from db_helper import get_db, fetch_one
+    
+    sender_username = license.get("username")
+    if not sender_username:
+        # Fallback if username not in license dict
+        async with get_db() as db:
+            row = await fetch_one(db, "SELECT username, company_name FROM license_keys WHERE id = ?", [license["license_id"]])
+            sender_username = row["username"] if row else "mudeer_user"
+            sender_company = row["company_name"] if row else "Al-Mudeer User"
+    else:
+        sender_company = license.get("company_name", "Al-Mudeer User")
+
+    # 1. Find the recipient's license holder
+    async with get_db() as db:
+        recipient = await fetch_one(db, "SELECT id FROM license_keys WHERE username = ?", [data.recipient_username])
+        if not recipient:
+            raise HTTPException(status_code=404, detail="المستخدم المستهدف غير موجود")
+        
+    # 2. Generate or use provided channel name
+    channel_name = data.channel_name or f"call_{sender_username}_{data.recipient_username}_{int(datetime.utcnow().timestamp())}"
+    
+    # 3. Broadcast signal via WebSocket
+    manager = get_websocket_manager()
+    await manager.send_to_license(recipient["id"], WebSocketMessage(
+        event="call_invite",
+        data={
+            "sender_username": sender_username,
+            "sender_name": sender_company,
+            "channel_name": channel_name,
+            "type": "voice"
+        }
+    ))
+    
+    # Optional: Trigger FCM push for background handling
+    # from services.push_service import send_push_to_license
+    # await send_push_to_license(recipient["id"], "مكالمة واردة", f"مكالمة من {sender_company}", tag="call_invite")
+
+    return {
+        "success": True,
+        "channel_name": channel_name,
+        "message": "تم إرسال دعوة المكالمة"
+    }
+
+
+@router.get("/call/token")
+async def get_call_token(
+    channel_name: str,
+    uid: int = 0,
+    license: dict = Depends(get_license_from_header)
+):
+    """
+    Generate an Agora RTC token for the given channel.
+    """
+    from services.agora_service import AgoraService
+    
+    token = AgoraService.generate_token(channel_name, uid=uid)
+    if not token:
+        raise HTTPException(status_code=500, detail="فشل في إنشاء مفتاح الوصول للمكالمة")
+        
+    return {
+        "success": True,
+        "token": token,
+        "app_id": AgoraService.get_app_id(),
+        "channel_name": channel_name
+    }
+
