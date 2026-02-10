@@ -462,6 +462,7 @@ async def send_approved_message(outbox_id: int, license_id: int):
                                         att_list = message["attachments"]
                                 except: pass
 
+                            internal_platform_id = f"alm_{message['id']}"
                             new_inbox_id = await save_inbox_message(
                                 license_id=target_license["id"],
                                 channel="almudeer",
@@ -474,6 +475,7 @@ async def send_approved_message(outbox_id: int, license_id: int):
                                 reply_to_platform_id=message.get("reply_to_platform_id"),
                                 reply_to_body_preview=message.get("reply_to_body_preview"),
                                 reply_to_sender_name=message.get("reply_to_sender_name"),
+                                platform_message_id=internal_platform_id,
                                 status='analyzed',
                                 is_forwarded=message.get("is_forwarded", False)
                             )

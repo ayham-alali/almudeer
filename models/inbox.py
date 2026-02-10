@@ -23,6 +23,7 @@ async def save_inbox_message(
     reply_to_body_preview: str = None,
     reply_to_sender_name: str = None,
     reply_to_id: int = None,
+    platform_message_id: str = None,
     platform_status: str = 'received',
     original_sender: str = None,
     status: str = None,
@@ -1595,13 +1596,13 @@ async def save_synced_outbox_message(
             INSERT INTO outbox_messages 
                 (license_key_id, channel, recipient_id,
                  recipient_email, subject, body, attachments,
-                 status, sent_at, created_at, is_forwarded)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?)
+                 status, sent_at, created_at, is_forwarded, platform_message_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?, ?)
             """,
             [
                 license_id, channel, recipient_id,
                 recipient_email, subject, body, attachments_json,
-                ts_value, ts_value, is_forwarded
+                ts_value, ts_value, is_forwarded, platform_message_id
             ],
         )
 
