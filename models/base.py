@@ -131,7 +131,9 @@ async def init_enhanced_tables():
                 reply_to_body_preview TEXT,
                 reply_to_sender_name TEXT,
                 reply_to_id INTEGER,
+                reply_to_id INTEGER,
                 attachments TEXT,
+                is_forwarded BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
@@ -157,6 +159,7 @@ async def init_enhanced_tables():
                 reply_to_platform_id TEXT,
                 reply_to_body_preview TEXT,
                 reply_to_id INTEGER,
+                is_forwarded BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (inbox_message_id) REFERENCES inbox_messages(id),
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
@@ -290,6 +293,13 @@ async def init_enhanced_tables():
             await execute_sql(db, "ALTER TABLE inbox_messages ADD COLUMN reply_to_sender_name TEXT")
         except:
             pass
+
+        # Migration for is_forwarded column
+        for table in ["inbox_messages", "outbox_messages"]:
+            try:
+                await execute_sql(db, f"ALTER TABLE {table} ADD COLUMN is_forwarded BOOLEAN DEFAULT FALSE")
+            except:
+                pass
 
         # Library Items (Notes, Images, Files, Audio, Video)
         await execute_sql(db, f"""
