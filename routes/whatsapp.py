@@ -441,7 +441,8 @@ async def receive_webhook(request: Request):
                         sender_contact=msg.get("sender_phone"),
                         body=msg.get("body", ""),
                         received_at=msg.get("timestamp"),
-                        attachments=attachments
+                        attachments=attachments,
+                        is_forwarded=msg.get("is_forwarded", False)
                     )
 
 

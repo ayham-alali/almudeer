@@ -334,7 +334,8 @@ class TelegramService:
             "date": datetime.fromtimestamp(message.get("date", 0)),
             "is_bot": from_user.get("is_bot", False),
             "attachments": attachments,
-            "reply_to_platform_id": str(message.get("reply_to_message", {}).get("message_id")) if message.get("reply_to_message") else None
+            "reply_to_platform_id": str(message.get("reply_to_message", {}).get("message_id")) if message.get("reply_to_message") else None,
+            "is_forwarded": bool(message.get("forward_from") or message.get("forward_date"))
         }
         
         # Add fallback body if empty but has attachments (for Inbox visibility)

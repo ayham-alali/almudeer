@@ -175,7 +175,8 @@ async def telegram_webhook(
         sender_id=parsed["user_id"],
         channel_message_id=str(parsed["message_id"]),
         received_at=parsed["date"],
-        attachments=attachments 
+        attachments=attachments,
+        is_forwarded=parsed.get("is_forwarded", False)
     )
     
     from routes.chat_routes import analyze_inbox_message

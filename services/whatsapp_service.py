@@ -174,7 +174,8 @@ class WhatsAppService:
                             "sender_name": contact.get("profile", {}).get("name"),
                             "sender_phone": contact.get("wa_id"),
                             "is_group": bool(msg.get("group_id")),
-                            "reply_to_platform_id": msg.get("context", {}).get("message_id")
+                            "reply_to_platform_id": msg.get("context", {}).get("message_id"),
+                            "is_forwarded": bool(msg.get("context", {}).get("forwarded"))
                         }
                         
                         # Extra check: Some providers/versions put group_id in different places
