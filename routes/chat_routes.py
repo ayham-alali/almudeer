@@ -288,9 +288,12 @@ async def edit_message_route(message_id: int, request: Request, license: dict = 
     new_body = data.get("body", "").strip()
     if not new_body: raise HTTPException(status_code=400, detail="النص فارغ")
     
-    result = await edit_outbox_message(message_id, license["license_id"], new_body)
-    await broadcast_message_edited(license["license_id"], message_id, new_body, result["edited_at"])
-    return result
+    try:
+        result = await edit_outbox_message(message_id, license["license_id"], new_body)
+        await broadcast_message_edited(license["license_id"], message_id, new_body, result["edited_at"])
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.delete("/messages/{message_id}")
 async def delete_message_route(

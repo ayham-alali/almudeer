@@ -1690,26 +1690,14 @@ async def edit_outbox_message(
         if not message:
             raise ValueError("الرسالة غير موجودة")
         
-        # Check if message was sent too long ago
-        created_at = message.get("created_at")
-        if created_at:
-            if isinstance(created_at, str):
-                from datetime import datetime
-                try:
-                    created_time = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                except:
-                    created_time = datetime.utcnow()
-            else:
-                created_time = created_at
+        channel = message.get("channel")
+        
+        # Channel-specific restrictions
+        if channel in ['telegram', 'whatsapp', 'gmail']:
+            raise ValueError(f"لا يمكن تعديل الرسائل المرسلة عبر {channel}")
             
-            from datetime import datetime, timezone, timedelta
-            now = datetime.now(timezone.utc)
-            if created_time.tzinfo is None:
-                created_time = created_time.replace(tzinfo=timezone.utc)
-            
-            time_diff = now - created_time
-            if time_diff > timedelta(minutes=edit_window_minutes):
-                raise ValueError(f"لا يمكن تعديل الرسالة بعد {edit_window_minutes} دقيقة من الإرسال")
+        # Time limit removed for all channels (Almudeer, generic, etc.)
+        # No time window check here anymore.
         
         # Store original body if this is the first edit
         original_body = message.get("original_body") or message.get("body", "")
