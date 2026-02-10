@@ -54,6 +54,7 @@ class ApprovalRequest(BaseModel):
     edited_body: Optional[str] = None
     reply_to_platform_id: Optional[str] = None
     reply_to_body_preview: Optional[str] = None
+    reply_to_sender_name: Optional[str] = None
     reply_to_id: Optional[int] = None
 
 class ForwardRequest(BaseModel):
@@ -194,6 +195,7 @@ async def send_chat_message(
     attachments = data.get("attachments", [])
     reply_to_platform_id = data.get("reply_to_platform_id")
     reply_to_body_preview = data.get("reply_to_body_preview")
+    reply_to_sender_name = data.get("reply_to_sender_name")
     reply_to_id = data.get("reply_to_id") or data.get("reply_to_message_id")
     is_forwarded = data.get("is_forwarded", False)
     
@@ -227,6 +229,7 @@ async def send_chat_message(
         reply_to_platform_id=reply_to_platform_id,
         reply_to_body_preview=reply_to_body_preview,
         reply_to_id=reply_to_id,
+        reply_to_sender_name=reply_to_sender_name,
         is_forwarded=is_forwarded
     )
     
@@ -263,7 +266,8 @@ async def approve_chat_message(
             recipient_email=message.get("sender_contact"),
             reply_to_platform_id=approval.reply_to_platform_id or message.get("channel_message_id"),
             reply_to_body_preview=approval.reply_to_body_preview,
-            reply_to_id=approval.reply_to_id or message_id
+            reply_to_id=approval.reply_to_id or message_id,
+            reply_to_sender_name=approval.reply_to_sender_name
         )
         await approve_outbox_message(outbox_id, body)
         await update_inbox_status(message_id, "approved")
@@ -474,7 +478,7 @@ async def send_approved_message(outbox_id: int, license_id: int):
                                 attachments=att_list,
                                 reply_to_platform_id=message.get("reply_to_platform_id"),
                                 reply_to_body_preview=message.get("reply_to_body_preview"),
-                                reply_to_sender_name=message.get("reply_to_sender_name"),
+                                reply_to_sender_name=None, # Let recipient resolve context (Me)
                                 platform_message_id=internal_platform_id,
                                 status='analyzed',
                                 is_forwarded=message.get("is_forwarded", False)
@@ -494,7 +498,7 @@ async def send_approved_message(outbox_id: int, license_id: int):
                                     "received_at": datetime.utcnow().isoformat(),
                                     "reply_to_platform_id": message.get("reply_to_platform_id"),
                                     "reply_to_body_preview": message.get("reply_to_body_preview"),
-                                    "reply_to_sender_name": message.get("reply_to_sender_name"),
+                                    "reply_to_sender_name": None, # Recipient sees "You" via fallback
                                     "status": "analyzed",
                                     "direction": "incoming",
                                     "is_forwarded": message.get("is_forwarded", False)

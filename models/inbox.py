@@ -392,6 +392,7 @@ async def create_outbox_message(
     reply_to_platform_id: Optional[str] = None,
     reply_to_body_preview: Optional[str] = None,
     reply_to_id: Optional[int] = None,
+    reply_to_sender_name: Optional[str] = None,
     is_forwarded: bool = False
 ) -> int:
     """Create outbox message for approval (DB agnostic)."""
@@ -408,13 +409,15 @@ async def create_outbox_message(
             INSERT INTO outbox_messages 
                 (inbox_message_id, license_key_id, channel, recipient_id,
                  recipient_email, subject, body, attachments,
-                 reply_to_platform_id, reply_to_body_preview, reply_to_id, is_forwarded)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 reply_to_platform_id, reply_to_body_preview, reply_to_id, 
+                 reply_to_sender_name, is_forwarded)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 inbox_message_id, license_id, channel, recipient_id, 
                 recipient_email, subject, body, attachments_json,
-                reply_to_platform_id, reply_to_body_preview, reply_to_id, is_forwarded
+                reply_to_platform_id, reply_to_body_preview, reply_to_id,
+                reply_to_sender_name, is_forwarded
             ],
         )
 
@@ -1080,7 +1083,7 @@ async def get_conversation_messages_cursor(
                 COALESCE(sent_at, created_at) as effective_ts,
                 'outgoing' as direction,
                 NULL as ai_summary, NULL as ai_draft_response,
-                NULL as reply_to_id, o.reply_to_platform_id, o.reply_to_body_preview, NULL as reply_to_sender_name,
+                NULL as reply_to_id, o.reply_to_platform_id, o.reply_to_body_preview, o.reply_to_sender_name,
                 delivery_status,
                 sent_at
             FROM outbox_messages o

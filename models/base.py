@@ -131,7 +131,6 @@ async def init_enhanced_tables():
                 reply_to_body_preview TEXT,
                 reply_to_sender_name TEXT,
                 reply_to_id INTEGER,
-                reply_to_id INTEGER,
                 attachments TEXT,
                 is_forwarded BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -159,6 +158,7 @@ async def init_enhanced_tables():
                 reply_to_platform_id TEXT,
                 reply_to_body_preview TEXT,
                 reply_to_id INTEGER,
+                reply_to_sender_name TEXT,
                 is_forwarded BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (inbox_message_id) REFERENCES inbox_messages(id),
@@ -285,6 +285,10 @@ async def init_enhanced_tables():
                     pass
             try:
                 await execute_sql(db, f"ALTER TABLE {table} ADD COLUMN reply_to_id INTEGER")
+            except:
+                pass
+            try:
+                await execute_sql(db, f"ALTER TABLE {table} ADD COLUMN reply_to_sender_name TEXT")
             except:
                 pass
 
