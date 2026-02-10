@@ -23,10 +23,10 @@ async def save_inbox_message(
     reply_to_body_preview: str = None,
     reply_to_sender_name: str = None,
     reply_to_id: int = None,
-    platform_message_id: str = None,
     platform_status: str = 'received',
     original_sender: str = None,
-    status: str = None
+    status: str = None,
+    is_forwarded: bool = False
 ) -> int:
     """Save incoming message to inbox (SQLite & PostgreSQL compatible)."""
 
@@ -140,8 +140,8 @@ async def save_inbox_message(
                 (license_key_id, channel, channel_message_id, sender_id, sender_name,
                  sender_contact, subject, body, received_at, attachments,
                  reply_to_platform_id, reply_to_body_preview, reply_to_sender_name,
-                 reply_to_id, platform_message_id, platform_status, original_sender, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 reply_to_id, platform_message_id, platform_status, original_sender, status, is_forwarded)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 license_id,
@@ -161,7 +161,8 @@ async def save_inbox_message(
                 platform_message_id,
                 platform_status,
                 original_sender,
-                status or 'pending'
+                status or 'pending',
+                is_forwarded
             ],
         )
 
@@ -389,7 +390,8 @@ async def create_outbox_message(
     attachments: Optional[List[dict]] = None,
     reply_to_platform_id: Optional[str] = None,
     reply_to_body_preview: Optional[str] = None,
-    reply_to_id: Optional[int] = None
+    reply_to_id: Optional[int] = None,
+    is_forwarded: bool = False
 ) -> int:
     """Create outbox message for approval (DB agnostic)."""
     
@@ -405,13 +407,13 @@ async def create_outbox_message(
             INSERT INTO outbox_messages 
                 (inbox_message_id, license_key_id, channel, recipient_id,
                  recipient_email, subject, body, attachments,
-                 reply_to_platform_id, reply_to_body_preview, reply_to_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 reply_to_platform_id, reply_to_body_preview, reply_to_id, is_forwarded)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 inbox_message_id, license_id, channel, recipient_id, 
                 recipient_email, subject, body, attachments_json,
-                reply_to_platform_id, reply_to_body_preview, reply_to_id
+                reply_to_platform_id, reply_to_body_preview, reply_to_id, is_forwarded
             ],
         )
 
@@ -1507,6 +1509,7 @@ async def save_synced_outbox_message(
     attachments: Optional[List[dict]] = None,
     sent_at: datetime = None,
     platform_message_id: str = None,
+    is_forwarded: bool = False
 ) -> int:
     """
     Save a synced outgoing message (sent from external platform) to outbox.
@@ -1592,13 +1595,13 @@ async def save_synced_outbox_message(
             INSERT INTO outbox_messages 
                 (license_key_id, channel, recipient_id,
                  recipient_email, subject, body, attachments,
-                 status, sent_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?)
+                 status, sent_at, created_at, is_forwarded)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?)
             """,
             [
                 license_id, channel, recipient_id,
                 recipient_email, subject, body, attachments_json,
-                ts_value, ts_value 
+                ts_value, ts_value, is_forwarded
             ],
         )
 

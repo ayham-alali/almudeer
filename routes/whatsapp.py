@@ -34,6 +34,7 @@ class WhatsAppSendMessage(BaseModel):
     to: str = Field(..., description="Recipient phone number with country code")
     message: str = Field(..., description="Message text")
     reply_to_message_id: Optional[str] = None
+    is_forwarded: bool = False
 
 
 # ============ Routes ============
@@ -200,7 +201,8 @@ async def send_message(
     result = await service.send_message(
         to=sanitized_to,
         message=sanitized_body,
-        reply_to_message_id=msg.reply_to_message_id
+        reply_to_message_id=msg.reply_to_message_id,
+        is_forwarded=msg.is_forwarded
     )
     
     if not result["success"]:

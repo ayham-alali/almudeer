@@ -195,6 +195,7 @@ async def send_chat_message(
     reply_to_platform_id = data.get("reply_to_platform_id")
     reply_to_body_preview = data.get("reply_to_body_preview")
     reply_to_id = data.get("reply_to_id") or data.get("reply_to_message_id")
+    is_forwarded = data.get("is_forwarded", False)
     
     if not body and not attachments: raise HTTPException(status_code=400, detail="الرسالة فارغة")
     
@@ -225,7 +226,8 @@ async def send_chat_message(
         attachments=attachments or None,
         reply_to_platform_id=reply_to_platform_id,
         reply_to_body_preview=reply_to_body_preview,
-        reply_to_id=reply_to_id
+        reply_to_id=reply_to_id,
+        is_forwarded=is_forwarded
     )
     
     await approve_outbox_message(outbox_id, body)
@@ -469,7 +471,8 @@ async def send_approved_message(outbox_id: int, license_id: int):
                                 reply_to_platform_id=message.get("reply_to_platform_id"),
                                 reply_to_body_preview=message.get("reply_to_body_preview"),
                                 reply_to_sender_name=message.get("reply_to_sender_name"),
-                                status='analyzed'
+                                status='analyzed',
+                                is_forwarded=message.get("is_forwarded", False)
                             )
                             
                             # Broadcast to recipient instantly if message was saved
@@ -488,7 +491,8 @@ async def send_approved_message(outbox_id: int, license_id: int):
                                     "reply_to_body_preview": message.get("reply_to_body_preview"),
                                     "reply_to_sender_name": message.get("reply_to_sender_name"),
                                     "status": "analyzed",
-                                    "direction": "incoming"
+                                    "direction": "incoming",
+                                    "is_forwarded": message.get("is_forwarded", False)
                                 })
 
                             # Mark as sent and notify the sender
@@ -606,11 +610,44 @@ async def send_approved_message(outbox_id: int, license_id: int):
                 attachments_list = message["attachments"]
                 
             for att in attachments_list:
-                if not att.get("base64") or not att.get("filename"): continue
+                filename = att.get("filename")
+                if not filename: continue
                 
                 try:
-                    file_data = base64.b64decode(att["base64"])
-                    suffix = os.path.splitext(att["filename"])[1]
+                    file_data = None
+                    if att.get("base64"):
+                        file_data = base64.b64decode(att["base64"])
+                    elif att.get("path"):
+                        # Internal path fallback
+                        from services.file_storage_service import UPLOAD_DIR
+                        full_path = os.path.join(UPLOAD_DIR, att["path"])
+                        if os.path.exists(full_path):
+                            with open(full_path, "rb") as f:
+                                file_data = f.read()
+                    elif att.get("url"):
+                        # Remote/Static URL fallback
+                        url = att["url"]
+                        if url.startswith("/"):
+                            # Local relative URL
+                            from services.file_storage_service import UPLOAD_DIR, UPLOAD_URL_PREFIX
+                            rel_url = url.replace(UPLOAD_URL_PREFIX, "").lstrip("/")
+                            full_path = os.path.join(UPLOAD_DIR, rel_url)
+                            if os.path.exists(full_path):
+                                with open(full_path, "rb") as f:
+                                    file_data = f.read()
+                        else:
+                            # External absolute URL
+                            import httpx
+                            async with httpx.AsyncClient() as client:
+                                resp = await client.get(url)
+                                if resp.status_code == 200:
+                                    file_data = resp.content
+                    
+                    if not file_data:
+                        print(f"Skipping attachment {filename}: No data found via base64, path, or url")
+                        continue
+
+                    suffix = os.path.splitext(filename)[1]
                     
                     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                         tmp.write(file_data)

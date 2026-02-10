@@ -90,6 +90,7 @@ class HistoricalBackfillService:
                 subject=msg.get("subject"),
                 received_at=msg.get("received_at"),
                 attachments=msg.get("attachments"),
+                is_forwarded=msg.get("is_forwarded", False)
             )
             
             if queue_id:
@@ -138,7 +139,8 @@ class HistoricalBackfillService:
                 subject=pending.get("subject"),
                 channel_message_id=pending.get("channel_message_id"),
                 received_at=pending.get("received_at"),
-                attachments=attachments if attachments else None
+                attachments=attachments if attachments else None,
+                is_forwarded=pending.get("is_forwarded", False)
             )
             
             if inbox_id:
