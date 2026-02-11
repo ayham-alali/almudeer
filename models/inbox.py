@@ -696,6 +696,11 @@ async def get_inbox_conversations(
         rows = await fetch_all(db, query, params)
         conversations = [_parse_message_row(dict(row)) for row in rows]
         
+        # Ensure last_seen_at datetime is serialized as ISO string (PostgreSQL returns datetime objects)
+        for c in conversations:
+            if c.get("last_seen_at") and hasattr(c["last_seen_at"], "isoformat"):
+                c["last_seen_at"] = c["last_seen_at"].isoformat()
+        
         # Add online status from Redis
         from services.websocket_manager import get_websocket_manager
         manager = get_websocket_manager()
@@ -1217,10 +1222,13 @@ async def get_conversation_messages_cursor(
         
         try:
             from services.websocket_manager import get_websocket_manager
+            from logging_config import get_logger
+            _logger = get_logger(__name__)
             manager = get_websocket_manager()
             
-            # Find peer license ID
+            # Find peer license ID by username
             peer = await fetch_one(db, "SELECT id, last_seen_at FROM license_keys WHERE username = ?", (sender_contact,))
+            _logger.info(f"Presence lookup for '{sender_contact}': found={peer is not None}, last_seen_at={peer['last_seen_at'] if peer else None}")
             if peer:
                 peer_id = peer["id"]
                 last_seen_at = peer["last_seen_at"]
