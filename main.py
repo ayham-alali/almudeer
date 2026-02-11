@@ -276,6 +276,15 @@ async def lifespan(app: FastAPI):
             logger.warning(f"Failed to start Telegram Listener: {e}")
         
         logger.info("Al-Mudeer backend initialized successfully")
+        
+        # Clean up stale presence counters from previous server runs
+        try:
+            ws_manager = get_websocket_manager()
+            await ws_manager._ensure_pubsub()
+            await ws_manager.cleanup_stale_presence()
+        except Exception as e:
+            logger.warning(f"Presence cleanup on startup: {e}")
+        
         print("Al-Mudeer Premium Backend Ready!")
         print("Customers & Notifications tables initialized")
         print("Background workers active for automatic message processing")
@@ -746,8 +755,15 @@ async def handle_websocket_connection(websocket: WebSocket, license_key: str):
         while True:
             # Keep connection alive, handle pings
             data = await websocket.receive_text()
-            if data == "ping":
+            if data == "ping" or '"ping"' in data:
                 await websocket.send_text('{"event":"pong"}')
+                # Refresh presence TTL on heartbeat
+                if manager.redis_enabled:
+                    try:
+                        key = f"almudeer:presence:count:{license_id}"
+                        await manager.redis_client.expire(key, 120)
+                    except Exception:
+                        pass
     except WebSocketDisconnect:
         await manager.disconnect(websocket, license_id)
 

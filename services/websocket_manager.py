@@ -235,6 +235,31 @@ class ConnectionManager:
             await self._pubsub.initialize()
             self._pubsub_initialized = True
     
+    async def cleanup_stale_presence(self):
+        """Clear all stale presence counters on server startup.
+        
+        When the server restarts, all WebSocket connections are lost,
+        but Redis INCR counters may still be > 0 from the previous run.
+        This resets them all to 0 so nobody shows as falsely online.
+        """
+        if not self._pubsub.is_available:
+            return
+        try:
+            redis = self._pubsub._redis_client
+            cursor = 0
+            total_cleaned = 0
+            while True:
+                cursor, keys = await redis.scan(cursor, match="almudeer:presence:count:*", count=100)
+                if keys:
+                    await redis.delete(*keys)
+                    total_cleaned += len(keys)
+                if cursor == 0:
+                    break
+            if total_cleaned > 0:
+                logger.info(f"Cleaned {total_cleaned} stale presence keys on startup")
+        except Exception as e:
+            logger.warning(f"Failed to cleanup stale presence keys: {e}")
+    
     async def connect(self, websocket: WebSocket, license_id: int):
         """Accept and register a new WebSocket connection"""
         await websocket.accept()
@@ -257,6 +282,8 @@ class ConnectionManager:
                 # Increment global connection count for this license
                 global_count_key = f"almudeer:presence:count:{license_id}"
                 new_count = await self._pubsub._redis_client.incr(global_count_key)
+                # Set TTL so stale keys auto-expire if server crashes (2 min)
+                await self._pubsub._redis_client.expire(global_count_key, 120)
                 
                 # Update last_seen_at and ensure username is populated (safety net for old users)
                 from db_helper import get_db, execute_sql, commit_db, fetch_one
