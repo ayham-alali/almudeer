@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from dependencies import get_license_from_header
 from services.voice_service import transcribe_voice_message
 from services.file_storage_service import get_file_storage
+from services.agora_service import AGORA_APP_ID
 from logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -227,9 +228,25 @@ async def invite_to_call(
         }
     ))
     
-    # Optional: Trigger FCM push for background handling
-    # from services.push_service import send_push_to_license
-    # await send_push_to_license(recipient["id"], "مكالمة واردة", f"مكالمة من {sender_company}", tag="call_invite")
+    # 4. Trigger FCM push for mobile background handling
+    try:
+        from services.fcm_mobile_service import send_fcm_to_license
+        await send_fcm_to_license(
+            recipient["id"], 
+            "مكالمة واردة", 
+            f"مكالمة من {sender_company}", 
+            data={
+                "type": "voice_call",
+                "channel_name": channel_name,
+                "sender_username": sender_username,
+                "sender_name": sender_company,
+                "agora_token": agora_token,
+                "app_id": AGORA_APP_ID
+            },
+            sound="call_ringtone.mp3"  # Logic for custom sound on mobile
+        )
+    except Exception as e:
+        logger.error(f"Failed to send call push notification: {e}")
 
     return {
         "success": True,
