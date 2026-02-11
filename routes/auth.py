@@ -204,6 +204,13 @@ async def register(data: RegisterRequest):
             """,
             [data.email, password_hash, data.name, license_result.get("license_id"), "user", datetime.utcnow().isoformat()]
         )
+        
+        # Also update license_keys username if it's currently NULL
+        await execute_sql(
+            db,
+            "UPDATE license_keys SET username = ? WHERE id = ? AND (username IS NULL OR username = '')",
+            [data.email, license_result.get("license_id")]
+        )
     
     # Create tokens
     tokens = create_token_pair(

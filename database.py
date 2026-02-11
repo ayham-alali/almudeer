@@ -506,11 +506,11 @@ async def validate_license_key(key: str) -> dict:
         else:
             expires_at = datetime.fromisoformat(str(row_dict["expires_at"]))
         
-        if datetime.now() > expires_at:
+        if datetime.utcnow() > expires_at:
             return {"valid": False, "error": "انتهت صلاحية الاشتراك"}
     
     # Check daily rate limit
-    today = datetime.now().date()
+    today = datetime.utcnow().date()
     last_request_date = None
     if row_dict.get("last_request_date"):
         if isinstance(row_dict["last_request_date"], str):

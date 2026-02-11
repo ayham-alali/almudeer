@@ -2486,7 +2486,7 @@ async def upsert_conversation_state(
             # No valid messages? (Maybe all pending or deleted).
             # We keep the conversation entry with 0 counts so it stays in Inbox
             # unless explicitly deleted via soft_delete_conversation.
-            ts_now = datetime.now(timezone.utc).replace(tzinfo=None) if DB_TYPE == "postgresql" else datetime.now().isoformat()
+            ts_now = datetime.now(timezone.utc).replace(tzinfo=None) if DB_TYPE == "postgresql" else datetime.utcnow().isoformat()
             
             await execute_sql(
                 db, 

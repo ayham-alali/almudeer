@@ -253,10 +253,17 @@ class ConnectionManager:
                 global_count_key = f"almudeer:presence:count:{license_id}"
                 new_count = await self._pubsub._redis_client.incr(global_count_key)
                 
-                # Update last_seen_at
-                from db_helper import get_db, execute_sql, commit_db
-                now = datetime.now()
+                # Update last_seen_at and ensure username is populated (safety net for old users)
+                from db_helper import get_db, execute_sql, commit_db, fetch_one
+                now = datetime.utcnow()
                 async with get_db() as db:
+                    # Check if username is missing
+                    license_row = await fetch_one(db, "SELECT username FROM license_keys WHERE id = ?", [license_id])
+                    if license_row and not license_row.get("username"):
+                        user_row = await fetch_one(db, "SELECT email FROM users WHERE license_key_id = ? ORDER BY id ASC LIMIT 1", [license_id])
+                        if user_row and user_row.get("email"):
+                            await execute_sql(db, "UPDATE license_keys SET username = ? WHERE id = ?", (user_row["email"], license_id))
+                    
                     await execute_sql(db, "UPDATE license_keys SET last_seen_at = ? WHERE id = ?", (now, license_id))
                     await commit_db(db)
                 
@@ -269,7 +276,7 @@ class ConnectionManager:
             # Fallback for single-worker / no redis
             from db_helper import get_db, execute_sql, commit_db
             async with get_db() as db:
-                await execute_sql(db, "UPDATE license_keys SET last_seen_at = ? WHERE id = ?", (datetime.now(), license_id))
+                await execute_sql(db, "UPDATE license_keys SET last_seen_at = ? WHERE id = ?", (datetime.utcnow(), license_id))
                 await commit_db(db)
             await broadcast_presence_update(license_id, is_online=True)
         
@@ -298,7 +305,7 @@ class ConnectionManager:
                                 
                             # Update last_seen_at
                             from db_helper import get_db, execute_sql, commit_db
-                            now = datetime.now()
+                            now = datetime.utcnow()
                             async with get_db() as db:
                                 await execute_sql(db, "UPDATE license_keys SET last_seen_at = ? WHERE id = ?", (now, license_id))
                                 await commit_db(db)
@@ -311,7 +318,7 @@ class ConnectionManager:
                     else:
                         # Fallback for single-worker / no redis
                         from db_helper import get_db, execute_sql, commit_db
-                        now = datetime.now()
+                        now = datetime.utcnow()
                         async with get_db() as db:
                             await execute_sql(db, "UPDATE license_keys SET last_seen_at = ? WHERE id = ?", (now, license_id))
                             await commit_db(db)
