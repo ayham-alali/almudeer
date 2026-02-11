@@ -1220,20 +1220,19 @@ async def get_conversation_messages_cursor(
             manager = get_websocket_manager()
             
             # Find peer license ID
-            async with get_db() as db:
-                peer = await fetch_one(db, "SELECT id, last_seen_at FROM license_keys WHERE username = ?", (sender_contact,))
-                if peer:
-                    peer_id = peer["id"]
-                    last_seen_at = peer["last_seen_at"]
-                    # Convert to ISO string for the frontend
-                    if last_seen_at:
-                        if hasattr(last_seen_at, "isoformat"):
-                            last_seen_at = last_seen_at.isoformat()
-                    
-                    if manager.redis_enabled:
-                        redis = manager.redis_client
-                        count = await redis.get(f"almudeer:presence:count:{peer_id}")
-                        is_online = int(count) > 0 if count else False
+            peer = await fetch_one(db, "SELECT id, last_seen_at FROM license_keys WHERE username = ?", (sender_contact,))
+            if peer:
+                peer_id = peer["id"]
+                last_seen_at = peer["last_seen_at"]
+                # Convert to ISO string for the frontend
+                if last_seen_at:
+                    if hasattr(last_seen_at, "isoformat"):
+                        last_seen_at = last_seen_at.isoformat()
+                
+                if manager.redis_enabled:
+                    redis = manager.redis_client
+                    count = await redis.get(f"almudeer:presence:count:{peer_id}")
+                    is_online = int(count) > 0 if count else False
         except Exception as e:
             from logging_config import get_logger
             get_logger(__name__).warning(f"Failed to fetch presence info in cursor: {e}")

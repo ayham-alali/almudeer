@@ -223,6 +223,11 @@ class ConnectionManager:
     def redis_client(self):
         """Get the underlying Redis client from pubsub manager"""
         return self._pubsub.redis_client
+
+    @property
+    def redis_enabled(self) -> bool:
+        """Check if Redis is enabled and available"""
+        return self._pubsub.is_available
     
     async def _ensure_pubsub(self):
         """Initialize pub/sub lazily"""
