@@ -88,6 +88,7 @@ try:
         purchases_router, 
         knowledge_router,
         library_router,
+        stories_router,
         tasks
     )
     from routes.tasks import router as tasks_router
@@ -145,6 +146,7 @@ async def lifespan(app: FastAPI):
         from models.purchases import init_ifc_ledger
         from services.notification_service import init_notification_tables
         from services.push_service import log_vapid_status, ensure_push_subscription_table
+        from models.stories import init_stories_tables
         from migrations.users_table import create_users_table
         from migrations.fix_customers_serial import fix_customers_serial
         from migrations.backfill_queue_table import create_backfill_queue_table
@@ -166,7 +168,8 @@ async def lifespan(app: FastAPI):
             create_backfill_queue_table(),
             create_task_queue_table(),
             create_purchases_table(),
-            ensure_message_edit_delete_schema()
+            ensure_message_edit_delete_schema(),
+            init_stories_tables()
         ]
         
         results = await asyncio.gather(*init_tasks, return_exceptions=True)
@@ -393,6 +396,7 @@ app.include_router(knowledge_router)       # Knowledge Base (RAG)
 app.include_router(library_router)         # Library of Everything
 app.include_router(tasks_router)           # Task Management
 app.include_router(subscription_router)    # Subscription Key Management
+app.include_router(stories_router)         # Stories Feature
 
 # JWT Authentication routes
 from routes.auth import router as auth_router

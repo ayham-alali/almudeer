@@ -1,0 +1,144 @@
+"""
+Al-Mudeer - Stories API Routes
+Handling story creation, listing, viewing, and real-time broadcasts
+"""
+
+import os
+from typing import Optional, List
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
+from starlette.requests import Request
+
+from dependencies import get_license_from_header
+from services.jwt_auth import get_current_user_optional
+from models.stories import (
+    add_story,
+    get_active_stories,
+    mark_story_viewed,
+    get_story_viewers,
+    delete_story
+)
+from schemas.stories import StoryCreateText, StoriesListResponse, StoryResponse, StoryViewerDetails
+from services.file_storage_service import get_file_storage
+from services.websocket_manager import get_websocket_manager, WebSocketMessage
+from security import sanitize_string
+
+router = APIRouter(prefix="/api/stories", tags=["Stories"])
+
+# File storage service instance
+file_storage = get_file_storage()
+
+@router.get("/", response_model=StoriesListResponse)
+async def list_stories(
+    viewer_contact: Optional[str] = Query(None),
+    license: dict = Depends(get_license_from_header)
+):
+    """List active stories (last 24h) for the license."""
+    stories = await get_active_stories(license["license_id"], viewer_contact=viewer_contact)
+    return {"success": True, "stories": stories}
+
+@router.post("/text", response_model=StoryResponse)
+async def create_text_story(
+    data: StoryCreateText,
+    license: dict = Depends(get_license_from_header),
+    user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Create a new text-only story."""
+    user_id = user.get("user_id") if user else None
+    story = await add_story(
+        license_id=license["license_id"],
+        story_type="text",
+        user_id=user_id,
+        title=sanitize_string(data.title) if data.title else None,
+        content=sanitize_string(data.content, max_length=1000)
+    )
+    
+    # Broadcast to all connected clients for this license
+    manager = get_websocket_manager()
+    await manager.send_to_license(
+        license["license_id"],
+        WebSocketMessage(event="new_story", data=story)
+    )
+    
+    return story
+
+@router.post("/upload", response_model=StoryResponse)
+async def upload_media_story(
+    file: UploadFile = File(...),
+    title: Optional[str] = Form(None),
+    license: dict = Depends(get_license_from_header),
+    user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Upload a media story (image/video/audio)."""
+    user_id = user.get("user_id") if user else None
+    content_type = file.content_type or "application/octet-stream"
+    
+    # Determine type
+    story_type = "file"
+    if content_type.startswith("image/"):
+        story_type = "image"
+    elif content_type.startswith("video/"):
+        story_type = "video"
+    elif content_type.startswith("audio/"):
+        story_type = "audio"
+
+    try:
+        content = await file.read()
+        # Save file
+        relative_path, public_url = file_storage.save_file(
+            content=content,
+            filename=file.filename,
+            mime_type=content_type,
+            subfolder="stories"
+        )
+        
+        # In a real app we might generate thumbnails for images/videos here
+        
+        story = await add_story(
+            license_id=license["license_id"],
+            story_type=story_type,
+            user_id=user_id,
+            title=sanitize_string(title) if title else None,
+            media_path=public_url
+        )
+        
+        # Broadcast real-time update
+        manager = get_websocket_manager()
+        await manager.send_to_license(
+            license["license_id"],
+            WebSocketMessage(event="new_story", data=story)
+        )
+        
+        return story
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"حدث خطأ أثناء رفع القصة: {str(e)}")
+
+@router.post("/{story_id}/view")
+async def view_story(
+    story_id: int,
+    viewer_contact: str = Form(...),
+    viewer_name: Optional[str] = Form(None),
+    license: dict = Depends(get_license_from_header)
+):
+    """Mark a story as viewed by a contact."""
+    success = await mark_story_viewed(story_id, viewer_contact, viewer_name)
+    return {"success": success}
+
+@router.get("/{story_id}/viewers", response_model=List[StoryViewerDetails])
+async def list_story_viewers(
+    story_id: int,
+    license: dict = Depends(get_license_from_header)
+):
+    """Get list of people who viewed this story."""
+    viewers = await get_story_viewers(story_id, license["license_id"])
+    return viewers
+
+@router.delete("/{story_id}")
+async def remove_story(
+    story_id: int,
+    license: dict = Depends(get_license_from_header),
+    user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Delete a story."""
+    # Note: In production, we'd check if user has permission to delete this specific story
+    success = await delete_story(story_id, license["license_id"])
+    return {"success": success}

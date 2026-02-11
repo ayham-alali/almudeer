@@ -26,6 +26,7 @@ __all__ = [
     'notifications_router',
     'purchases_router',
     'knowledge_router',
-    'library_router'
+    'library_router',
+    'stories_router'
 ]
 
