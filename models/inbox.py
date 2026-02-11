@@ -682,7 +682,8 @@ async def get_inbox_conversations(
             ic.status,
             unread_count,
             message_count,
-            lk.last_seen_at
+            lk.last_seen_at,
+            lk.id as peer_license_id
         FROM inbox_conversations ic
         LEFT JOIN license_keys lk ON ic.sender_contact = lk.username AND ic.channel = 'almudeer'
         WHERE {where_sql}
@@ -693,7 +694,46 @@ async def get_inbox_conversations(
     
     async with get_db() as db:
         rows = await fetch_all(db, query, params)
-        return [_parse_message_row(dict(row)) for row in rows]
+        conversations = [_parse_message_row(dict(row)) for row in rows]
+        
+        # Add online status from Redis
+        from services.websocket_manager import get_websocket_manager
+        manager = get_websocket_manager()
+        
+        if manager.redis_enabled and conversations:
+            try:
+                redis = manager.redis_client
+                # Filter for conversations that have a peer_license_id (channel='almudeer')
+                peer_ids = [c["peer_license_id"] for c in conversations if c.get("peer_license_id")]
+                
+                if peer_ids:
+                    # MGET all counts
+                    keys = [f"almudeer:presence:count:{pid}" for pid in peer_ids]
+                    counts = await redis.mget(keys)
+                    
+                    # Create a mapping
+                    status_map = {}
+                    for pid, count in zip(peer_ids, counts):
+                        status_map[pid] = int(count) > 0 if count else False
+                        
+                    # Apply to conversations
+                    for c in conversations:
+                        pid = c.get("peer_license_id")
+                        if pid:
+                            c["is_online"] = status_map.get(pid, False)
+                        else:
+                            c["is_online"] = False
+            except Exception as e:
+                from logging_config import get_logger
+                get_logger(__name__).warning(f"Failed to fetch online status from Redis: {e}")
+                for c in conversations:
+                    c["is_online"] = False
+        else:
+            # Fallback for no Redis
+            for c in conversations:
+                c["is_online"] = False
+                
+        return conversations
 
 
 async def get_conversations_delta(

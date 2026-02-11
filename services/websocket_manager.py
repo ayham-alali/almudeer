@@ -198,6 +198,11 @@ class RedisPubSubManager:
         """Check if Redis pub/sub is available"""
         return self._initialized
 
+    @property
+    def redis_client(self):
+        """Get the underlying Redis client"""
+        return self._redis_client
+
 
 class ConnectionManager:
     """
@@ -213,6 +218,11 @@ class ConnectionManager:
         self._lock = asyncio.Lock()
         self._pubsub = RedisPubSubManager()
         self._pubsub_initialized = False
+
+    @property
+    def redis_client(self):
+        """Get the underlying Redis client from pubsub manager"""
+        return self._pubsub.redis_client
     
     async def _ensure_pubsub(self):
         """Initialize pub/sub lazily"""
