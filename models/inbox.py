@@ -1211,10 +1211,39 @@ async def get_conversation_messages_cursor(
             cursor_str = f"{ts}_{last_msg['id']}"
             next_cursor = base64.b64encode(cursor_str.encode('utf-8')).decode('utf-8')
             
+        # Fetch presence info for the peer
+        is_online = False
+        last_seen_at = None
+        
+        try:
+            from services.websocket_manager import get_websocket_manager
+            manager = get_websocket_manager()
+            
+            # Find peer license ID
+            async with get_db() as db:
+                peer = await fetch_one(db, "SELECT id, last_seen_at FROM license_keys WHERE username = ?", (sender_contact,))
+                if peer:
+                    peer_id = peer["id"]
+                    last_seen_at = peer["last_seen_at"]
+                    # Convert to ISO string for the frontend
+                    if last_seen_at:
+                        if hasattr(last_seen_at, "isoformat"):
+                            last_seen_at = last_seen_at.isoformat()
+                    
+                    if manager.redis_enabled:
+                        redis = manager.redis_client
+                        count = await redis.get(f"almudeer:presence:count:{peer_id}")
+                        is_online = int(count) > 0 if count else False
+        except Exception as e:
+            from logging_config import get_logger
+            get_logger(__name__).warning(f"Failed to fetch presence info in cursor: {e}")
+
         return {
             "messages": messages,
             "next_cursor": next_cursor,
-            "has_more": has_more
+            "has_more": has_more,
+            "is_online": is_online,
+            "last_seen_at": last_seen_at
         }
 
 
