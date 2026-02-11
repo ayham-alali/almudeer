@@ -11,6 +11,7 @@ from .notifications import router as notifications_router
 from .purchases import router as purchases_router
 from .knowledge import router as knowledge_router
 from .library import router as library_router
+from .stories import router as stories_router
 
 # Subscription router is imported directly in main.py to avoid circular imports
 # from .subscription import router as subscription_router
