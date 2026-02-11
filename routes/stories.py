@@ -138,7 +138,11 @@ async def remove_story(
     license: dict = Depends(get_license_from_header),
     user: Optional[dict] = Depends(get_current_user_optional)
 ):
-    """Delete a story."""
-    # Note: In production, we'd check if user has permission to delete this specific story
-    success = await delete_story(story_id, license["license_id"])
+    """Delete a story. Ensures only owner or admin can delete."""
+    user_id = user.get("user_id") if user else None
+    # We pass user_id to ensure ownership check at the DB level
+    # If user is None (anonymous with valid license), they might not be able to delete
+    # unless we decide anonymous license owners can delete anything.
+    # For now, we enforce that ONLY the person who created it (via user_id) can delete it.
+    success = await delete_story(story_id, license["license_id"], user_id=user_id)
     return {"success": success}

@@ -1630,6 +1630,42 @@ async def stop_token_cleanup_worker():
         _token_cleanup_task = None
         logger.info("Stopped FCM token cleanup worker")
 
+
+# ============ Stories Cleanup Worker ============
+
+_story_cleanup_task: Optional[asyncio.Task] = None
+
+
+async def _story_cleanup_loop():
+    """Background loop that runs once every hour to clean up expired stories."""
+    while True:
+        try:
+            from models.stories import cleanup_expired_stories
+            await cleanup_expired_stories()
+            logger.info("Hourly Cleanup: Removed expired stories and media references")
+        except Exception as e:
+            logger.error(f"Error in story cleanup loop: {e}", exc_info=True)
+        
+        # Wait 1 hour before next check
+        await asyncio.sleep(60 * 60)
+
+
+async def start_story_cleanup_worker():
+    """Start the story cleanup background task."""
+    global _story_cleanup_task
+    if _story_cleanup_task is None:
+        _story_cleanup_task = asyncio.create_task(_story_cleanup_loop())
+        logger.info("Started Stories cleanup worker")
+
+
+async def stop_story_cleanup_worker():
+    """Stop the story cleanup background task."""
+    global _story_cleanup_task
+    if _story_cleanup_task:
+        _story_cleanup_task.cancel()
+        _story_cleanup_task = None
+        logger.info("Stopped Stories cleanup worker")
+
 # ============ Task Queue Worker ============
 
 class TaskWorker:

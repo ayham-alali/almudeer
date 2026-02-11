@@ -80,29 +80,37 @@ async def add_story(
     thumbnail_path: Optional[str] = None,
     duration_ms: int = 0
 ) -> dict:
-    """Publish a new story."""
+    """Publish a new story and return the created object atomically."""
     now = datetime.utcnow()
     ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
     
     async with get_db() as db:
-        await execute_sql(
-            db,
+        if DB_TYPE == "postgresql":
+            # Atomic return in PostgreSQL
+            query = """
+                INSERT INTO stories 
+                (license_key_id, user_id, type, title, content, media_path, thumbnail_path, duration_ms, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING *
             """
-            INSERT INTO stories 
-            (license_key_id, user_id, type, title, content, media_path, thumbnail_path, duration_ms, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [license_id, user_id, story_type, title, content, media_path, thumbnail_path, duration_ms, ts_value]
-        )
-        await commit_db(db)
-        
-        # Fetch created story
-        row = await fetch_one(
-            db,
-            "SELECT * FROM stories WHERE license_key_id = ? ORDER BY id DESC LIMIT 1",
-            [license_id]
-        )
-        return dict(row)
+            row = await fetch_one(db, query, [license_id, user_id, story_type, title, content, media_path, thumbnail_path, duration_ms, ts_value])
+            await commit_db(db)
+            return dict(row) if row else {}
+        else:
+            # SQLite insertion
+            await execute_sql(
+                db,
+                """
+                INSERT INTO stories 
+                (license_key_id, user_id, type, title, content, media_path, thumbnail_path, duration_ms, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [license_id, user_id, story_type, title, content, media_path, thumbnail_path, duration_ms, ts_value]
+            )
+            # Use last_insert_rowid() inside the same connection context
+            row = await fetch_one(db, "SELECT * FROM stories WHERE id = last_insert_rowid()")
+            await commit_db(db)
+            return dict(row) if row else {}
 
 async def get_active_stories(license_id: int, viewer_contact: Optional[str] = None) -> List[dict]:
     """
@@ -167,16 +175,30 @@ async def get_story_viewers(story_id: int, license_id: int) -> List[dict]:
         rows = await fetch_all(db, query, [story_id, license_id])
         return [dict(row) for row in rows]
 
-async def delete_story(story_id: int, license_id: int) -> bool:
-    """Soft delete a story."""
+async def delete_story(story_id: int, license_id: int, user_id: Optional[str] = None) -> bool:
+    """Soft delete a story. If user_id is provided, only deletes if owner matches."""
     now = datetime.utcnow()
     ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
     
+    query = "UPDATE stories SET deleted_at = ? WHERE id = ? AND license_key_id = ?"
+    params = [ts_value, story_id, license_id]
+    
+    if user_id:
+        query += " AND user_id = ?"
+        params.append(user_id)
+    
     async with get_db() as db:
-        res = await execute_sql(
-            db,
-            "UPDATE stories SET deleted_at = ? WHERE id = ? AND license_key_id = ?",
-            [ts_value, story_id, license_id]
-        )
+        await execute_sql(db, query, params)
         await commit_db(db)
-        return True # Simplified for now
+        return True
+
+async def cleanup_expired_stories():
+    """Permanent deletion of stories older than expiry hours or soft-deleted items."""
+    if DB_TYPE == "postgresql":
+        query = f"DELETE FROM stories WHERE created_at < NOW() - INTERVAL '{STORY_EXPIRATION_HOURS} hours' OR deleted_at IS NOT NULL"
+    else:
+        query = f"DELETE FROM stories WHERE created_at < datetime('now', '-{STORY_EXPIRATION_HOURS} hours') OR deleted_at IS NOT NULL"
+    
+    async with get_db() as db:
+        await execute_sql(db, query)
+        await commit_db(db)

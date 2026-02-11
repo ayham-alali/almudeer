@@ -99,7 +99,7 @@ except ImportError as e:
     raise e
 from routes.subscription import router as subscription_router
 from security import sanitize_message, sanitize_string
-from workers import start_message_polling, stop_message_polling, start_subscription_reminders, stop_subscription_reminders, start_token_cleanup_worker, stop_token_cleanup_worker
+from workers import start_message_polling, stop_message_polling, start_subscription_reminders, stop_subscription_reminders, start_token_cleanup_worker, stop_token_cleanup_worker, start_story_cleanup_worker, stop_story_cleanup_worker
 from db_pool import db_pool
 from services.websocket_manager import get_websocket_manager, broadcast_new_message
 from services.pagination import paginate_inbox, paginate_crm, paginate_customers, PaginationParams
@@ -248,6 +248,13 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to start FCM token cleanup worker: {e}")
         
+        # Start Story cleanup worker (hourly)
+        try:
+            await start_story_cleanup_worker()
+            logger.info("Stories cleanup worker started")
+        except Exception as e:
+            logger.warning(f"Failed to start Stories cleanup worker: {e}")
+        
         # Initialize task queue worker
         try:
             from workers import TaskWorker
@@ -292,6 +299,11 @@ async def lifespan(app: FastAPI):
         logger.info("FCM token cleanup worker stopped")
     except Exception as e:
         logger.warning(f"Error stopping token cleanup worker: {e}")
+    try:
+        await stop_story_cleanup_worker()
+        logger.info("Stories cleanup worker stopped")
+    except Exception as e:
+        logger.warning(f"Error stopping Stories cleanup: {e}")
     try:
         if hasattr(app.state, "task_worker"):
             await app.state.task_worker.stop()
