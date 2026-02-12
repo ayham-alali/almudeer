@@ -757,7 +757,8 @@ async def handle_websocket_connection(websocket: WebSocket, license_key: str):
             data = await websocket.receive_text()
             if data == "ping" or '"ping"' in data:
                 await websocket.send_text('{"event":"pong"}')
-                # Refresh presence TTL on heartbeat
+                # Refresh presence in both Redis and DB
+                await manager.refresh_last_seen(license_id)
                 if manager.redis_enabled:
                     try:
                         key = f"almudeer:presence:count:{license_id}"

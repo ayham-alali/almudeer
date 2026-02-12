@@ -314,6 +314,19 @@ class ConnectionManager:
         
         logger.info(f"WebSocket connected: license {license_id} (total: {self.connection_count})")
     
+    async def refresh_last_seen(self, license_id: int):
+        """Update last_seen_at timestamp for a license without changing online status"""
+        if self._pubsub.is_available:
+            try:
+                from db_helper import get_db, execute_sql, commit_db
+                from datetime import datetime
+                now = datetime.utcnow()
+                async with get_db() as db:
+                    await execute_sql(db, "UPDATE license_keys SET last_seen_at = ? WHERE id = ?", (now, license_id))
+                    await commit_db(db)
+            except Exception as e:
+                logger.error(f"Error in refresh_last_seen: {e}")
+
     async def disconnect(self, websocket: WebSocket, license_id: int):
         """Remove a WebSocket connection"""
         async with self._lock:
