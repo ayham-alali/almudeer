@@ -18,6 +18,7 @@ To trigger update:
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
+from datetime import datetime, timezone
 from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
 import os
@@ -458,6 +459,9 @@ async def check_app_version(request: Request):
         
         # Security
         "apk_signing_fingerprint": await _get_apk_signing_fingerprint(),
+
+        # Clock Sync
+        "server_time": datetime.now(timezone.utc).isoformat(),
     }
 
 
