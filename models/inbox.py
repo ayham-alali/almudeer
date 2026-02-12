@@ -982,7 +982,7 @@ async def get_conversation_messages(
         rows = await fetch_all(
             db,
             f"""
-            SELECT * FROM inbox_messages
+            SELECT *, is_forwarded FROM inbox_messages
             WHERE license_key_id = ?
             AND ({where_clause})
             AND status != 'pending'
@@ -1113,6 +1113,7 @@ async def get_conversation_messages_cursor(
                 'incoming' as direction,
                 ai_summary, ai_draft_response,
                 reply_to_id, reply_to_platform_id, reply_to_body_preview, reply_to_sender_name,
+                is_forwarded,
                 NULL as delivery_status,
                 NULL as sent_at
             FROM inbox_messages i
@@ -1131,6 +1132,7 @@ async def get_conversation_messages_cursor(
                 'outgoing' as direction,
                 NULL as ai_summary, NULL as ai_draft_response,
                 NULL as reply_to_id, o.reply_to_platform_id, o.reply_to_body_preview, o.reply_to_sender_name,
+                is_forwarded,
                 delivery_status,
                 sent_at
             FROM outbox_messages o
@@ -1719,7 +1721,8 @@ async def save_synced_outbox_message(
                 "status": "sent",
                 "direction": "outgoing",
                 "timestamp": ts_value.isoformat() if hasattr(ts_value, 'isoformat') else str(ts_value),
-                "attachments": attachments or []
+                "attachments": attachments or [],
+                "is_forwarded": is_forwarded
             }
             await broadcast_new_message(license_id, evt_data)
         except Exception as e:
