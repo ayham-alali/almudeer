@@ -480,6 +480,7 @@ class TelegramListenerService:
 
                     # 5. Save to Inbox
                     from models.inbox import save_inbox_message
+                    is_forwarded = bool(event.message.fwd_from)
                     msg_id = await save_inbox_message(
                         license_id=license_id,
                         channel="telegram",
@@ -490,6 +491,7 @@ class TelegramListenerService:
                         channel_message_id=channel_message_id,
                         received_at=event.message.date,
                         attachments=attachments,
+                        is_forwarded=is_forwarded,
                         reply_to_platform_id=reply_to_platform_id
                     )
                     
