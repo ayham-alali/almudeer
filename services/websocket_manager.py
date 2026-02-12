@@ -533,15 +533,41 @@ async def broadcast_chat_cleared(license_id: int, sender_contact: str):
 
 
 async def broadcast_typing_indicator(license_id: int, sender_contact: str, is_typing: bool):
-    """Broadcast typing indicator for a specific conversation"""
+    """Broadcast typing indicator for a specific conversation to self and internal peers"""
     manager = get_websocket_manager()
+    
+    # 1. Broadcast to self (multi-device sync)
     await manager.send_to_license(license_id, WebSocketMessage(
         event="typing_indicator",
         data={
             "sender_contact": sender_contact,
-            "is_typing": is_typing
+            "is_typing": is_typing,
+            "is_self": True
         }
     ))
+
+    # 2. Check if peer is an internal almudeer user and notify them
+    from db_helper import get_db, fetch_one
+    async with get_db() as db:
+        # Get this user's username (to show who is typing to the peer)
+        user_row = await fetch_one(db, "SELECT username FROM license_keys WHERE id = ?", [license_id])
+        if not user_row or not user_row.get("username"):
+            return
+
+        username = user_row["username"]
+        
+        # Check if the sender_contact (the person being typed to) is an internal user
+        peer_row = await fetch_one(db, "SELECT id FROM license_keys WHERE username = ?", [sender_contact])
+        if peer_row:
+            peer_license_id = peer_row["id"]
+            await manager.send_to_license(peer_license_id, WebSocketMessage(
+                event="typing_indicator",
+                data={
+                    "sender_contact": username, # From peer's perspective, 'username' is the sender
+                    "is_typing": is_typing,
+                    "is_self": False
+                }
+            ))
 
 
 async def broadcast_presence_update(license_id: int, is_online: bool, last_seen: Optional[str] = None):
@@ -594,15 +620,41 @@ async def broadcast_presence_update(license_id: int, is_online: bool, last_seen:
 
 
 async def broadcast_recording_indicator(license_id: int, sender_contact: str, is_recording: bool):
-    """Broadcast recording indicator for a specific conversation"""
+    """Broadcast recording indicator for a specific conversation to self and internal peers"""
     manager = get_websocket_manager()
+    
+    # 1. Broadcast to self (multi-device sync)
     await manager.send_to_license(license_id, WebSocketMessage(
         event="recording_indicator",
         data={
             "sender_contact": sender_contact,
-            "is_recording": is_recording
+            "is_recording": is_recording,
+            "is_self": True
         }
     ))
+
+    # 2. Check if peer is an internal almudeer user and notify them
+    from db_helper import get_db, fetch_one
+    async with get_db() as db:
+        # Get this user's username
+        user_row = await fetch_one(db, "SELECT username FROM license_keys WHERE id = ?", [license_id])
+        if not user_row or not user_row.get("username"):
+            return
+
+        username = user_row["username"]
+        
+        # Check if the sender_contact is an internal user
+        peer_row = await fetch_one(db, "SELECT id FROM license_keys WHERE username = ?", [sender_contact])
+        if peer_row:
+            peer_license_id = peer_row["id"]
+            await manager.send_to_license(peer_license_id, WebSocketMessage(
+                event="recording_indicator",
+                data={
+                    "sender_contact": username,
+                    "is_recording": is_recording,
+                    "is_self": False
+                }
+            ))
 
 
 async def broadcast_message_status_update(license_id: int, status_data: Dict[str, Any]):
