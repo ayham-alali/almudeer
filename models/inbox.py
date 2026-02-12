@@ -210,7 +210,7 @@ async def update_inbox_analysis(
     async with get_db() as db:
         # First, get the message details to pass to upsert_conversation_state
         # Added 'body' to fetch for broadcast
-        message_row = await fetch_one(db, "SELECT license_key_id, sender_contact, sender_name, channel, body FROM inbox_messages WHERE id = ?", [message_id])
+        message_row = await fetch_one(db, "SELECT license_key_id, sender_contact, sender_name, channel, body, is_forwarded FROM inbox_messages WHERE id = ?", [message_id])
         
         try:
             # Try to update with all columns including language/dialect
@@ -281,6 +281,7 @@ async def update_inbox_analysis(
                         "status": "analyzed",
                         "direction": "incoming",
                         "unread_count": unread_count, # Authoritative count
+                        "is_forwarded": bool(message_row.get("is_forwarded", False)),
                     }
                 )
             except Exception as e:
@@ -519,7 +520,8 @@ async def approve_outbox_message(message_id: int, edited_body: str = None):
                        "status": "sending", # It is 'approved' in DB, but 'sending' for UI
                        "direction": "outgoing",
                        "timestamp": ts_value.isoformat() if hasattr(ts_value, 'isoformat') else str(ts_value),
-                       "attachments": attachments
+                       "attachments": attachments,
+                       "is_forwarded": bool(msg_data.get("is_forwarded", False))
                    }
                    await broadcast_new_message(lic_id, evt_data)
 
