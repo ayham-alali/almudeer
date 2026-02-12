@@ -216,6 +216,10 @@ async def invite_to_call(
     # 2. Generate or use provided channel name
     channel_name = data.channel_name or f"call_{sender_username}_{data.recipient_username}_{int(datetime.utcnow().timestamp())}"
     
+    # Generate Agora Token
+    from services.agora_service import AgoraService
+    agora_token = AgoraService.generate_token(channel_name)
+    
     # 3. Broadcast signal via WebSocket
     manager = get_websocket_manager()
     await manager.send_to_license(recipient["id"], WebSocketMessage(
@@ -224,7 +228,9 @@ async def invite_to_call(
             "sender_username": sender_username,
             "sender_name": sender_company,
             "channel_name": channel_name,
-            "type": "voice"
+            "type": "voice",
+            "app_id": AGORA_APP_ID,
+            "agora_token": agora_token
         }
     ))
     
@@ -243,16 +249,62 @@ async def invite_to_call(
                 "agora_token": agora_token,
                 "app_id": AGORA_APP_ID
             },
-            sound="call_ringtone.mp3"  # Logic for custom sound on mobile
+            sound="call_ringtone.mp3"
         )
     except Exception as e:
         logger.error(f"Failed to send call push notification: {e}")
 
     return {
-        "success": True,
-        "channel_name": channel_name,
-        "message": "تم إرسال دعوة المكالمة"
+        "success": True, 
+        "channel_name": channel_name, 
+        "agora_token": agora_token,
+        "app_id": AGORA_APP_ID
     }
+
+@router.post("/call/cancel")
+async def cancel_call(
+    data: CallInviteRequest,
+    license: dict = Depends(get_license_from_header)
+):
+    """
+    Cancel an outgoing call invitation (hang up before answer).
+    Signals the recipient to stop ringing.
+    """
+    sender_username = license.get("username") or "mudeer_user"
+    sender_company = license.get("company_name", "Al-Mudeer User")
+    
+    async with get_db() as db:
+        recipient = await fetch_one(db, "SELECT id FROM license_keys WHERE username = ?", [data.recipient_username])
+        if not recipient:
+            return {"success": False, "detail": "Recipient not found"}
+
+    # Signal recipient via WebSocket
+    manager = get_websocket_manager()
+    await manager.send_to_license(recipient["id"], WebSocketMessage(
+        event="call_cancel",
+        data={
+            "sender_username": sender_username,
+            "channel_name": data.channel_name
+        }
+    ))
+
+    # Trigger FCM to dismiss notification (optional, based on mobile implementation)
+    try:
+        from services.fcm_mobile_service import send_fcm_to_license
+        await send_fcm_to_license(
+            recipient["id"],
+            "مكالمة فائتة",
+            f"مكالمة فائتة من {sender_company}",
+            data={
+                "type": "call_cancel",
+                "channel_name": data.channel_name,
+                "sender_username": sender_username
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to send call cancel notification: {e}")
+
+    return {"success": True}
 
 
 @router.get("/call/token")
