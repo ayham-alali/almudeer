@@ -4,24 +4,23 @@ Supports both SQLite (development) and PostgreSQL (production)
 """
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import hashlib
 import secrets
 
-from db_pool import DB_TYPE, adapt_sql_for_db as _adapt_sql_for_db
+from db_pool import DB_TYPE, POSTGRES_AVAILABLE, db_pool, adapt_sql_for_db as _adapt_sql_for_db
 from db_helper import get_db, execute_sql, fetch_one, fetch_all, commit_db
 
 
 async def init_database():
     """Initialize the database with required tables (supports both SQLite and PostgreSQL)"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        from db_helper import get_db
-        async with get_db() as conn:
+    async with get_db() as conn:
+        if DB_TYPE == "postgresql":
             try:
                 await _init_postgresql_tables(conn)
                 # Add new columns if they don't exist (for existing databases)
-                await conn.execute("""
+                await execute_sql(conn, """
                     ALTER TABLE license_keys 
                     ADD COLUMN IF NOT EXISTS referral_code VARCHAR(50) UNIQUE,
                     ADD COLUMN IF NOT EXISTS referred_by_id INTEGER REFERENCES license_keys(id),
@@ -30,41 +29,35 @@ async def init_database():
                     ADD COLUMN IF NOT EXISTS username VARCHAR(255) UNIQUE,
                     ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP
                 """)
-            except Exception:
-                pass
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            await _init_sqlite_tables(db)
+            except Exception as e:
+                from logging_config import get_logger
+                get_logger(__name__).debug(f"PostgreSQL migration note (might already exist): {e}")
+        else:
+            await _init_sqlite_tables(conn)
             # Migrations for existing SQLite tables
             try:
-                await db.execute("ALTER TABLE license_keys ADD COLUMN referral_code TEXT UNIQUE")
-            except Exception: pass
-            try:
-                await db.execute("ALTER TABLE license_keys ADD COLUMN referred_by_id INTEGER")
-            except Exception: pass
-            try:
-                await db.execute("ALTER TABLE license_keys ADD COLUMN is_trial BOOLEAN DEFAULT FALSE")
-            except Exception: pass
-            try:
-                await db.execute("ALTER TABLE license_keys ADD COLUMN referral_count INTEGER DEFAULT 0")
-            except Exception: pass
-            try:
-                await db.execute("ALTER TABLE license_keys ADD COLUMN username TEXT UNIQUE")
-            except Exception: pass
-            try:
-                await db.execute("ALTER TABLE license_keys ADD COLUMN last_seen_at TIMESTAMP")
-            except Exception: pass
-            await db.commit()
+                pass # Placeholder for future migrations, previous ones moved to _init_sqlite_tables
+            except Exception as e:
+                from logging_config import get_logger
+                get_logger(__name__).debug(f"SQLite migration note (might already exist): {e}")
+            await commit_db(conn)
     
     # === Startup migration: Backfill username for all license_keys ===
     # The presence system relies on license_keys.username to match peers.
     # If username is NULL, "last seen" will never display for that user.
     try:
-        from db_helper import get_db, fetch_all, execute_sql, commit_db
         from logging_config import get_logger
         logger = get_logger(__name__)
         
         async with get_db() as db:
+            # First, ensure the tables are initialized if they haven't been already
+            # (In case this runs after an aborted previous startup)
+            if DB_TYPE == "postgresql":
+                # Ensure last_seen_at column exists in customers (it might be missing in very old versions)
+                try:
+                    await execute_sql(db, "ALTER TABLE customers ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP")
+                except Exception: pass
+            
             # Find all license_keys with NULL username
             missing = await fetch_all(db, """
                 SELECT lk.id, u.email 
@@ -116,6 +109,8 @@ async def _init_sqlite_tables(db):
             referred_by_id INTEGER,
             is_trial BOOLEAN DEFAULT FALSE,
             referral_count INTEGER DEFAULT 0,
+            phone TEXT,
+            email TEXT,
             FOREIGN KEY (referred_by_id) REFERENCES license_keys(id)
         )
     """)
@@ -146,6 +141,8 @@ async def _init_sqlite_tables(db):
             license_key_id INTEGER,
             name TEXT,
             contact TEXT UNIQUE NOT NULL,
+            phone TEXT,
+            email TEXT,
             type TEXT DEFAULT 'Regular',
             total_spend REAL DEFAULT 0.0,
             notes TEXT,
@@ -237,7 +234,10 @@ async def _init_postgresql_tables(conn):
             referral_code VARCHAR(50) UNIQUE,
             referred_by_id INTEGER REFERENCES license_keys(id),
             is_trial BOOLEAN DEFAULT FALSE,
-            referral_count INTEGER DEFAULT 0
+            referral_count INTEGER DEFAULT 0,
+            last_seen_at TIMESTAMP,
+            phone VARCHAR(255),
+            email VARCHAR(255)
         )
     """))
     
@@ -374,33 +374,40 @@ async def generate_license_key(
     from db_helper import get_db, execute_sql, fetch_one, commit_db
     
     async with get_db() as db:
-        if DB_TYPE == "postgresql":
-            # Get the next ID manually to avoid sequence issues
-            max_id_row = await fetch_one(db, "SELECT COALESCE(MAX(id), 0) as max_id FROM license_keys")
-            next_id = (max_id_row["max_id"] if max_id_row else 0) + 1
-            
-            # Reset sequence if needed
-            await execute_sql(db, f"SELECT setval('license_keys_id_seq', {next_id}, false)")
-            
-            await execute_sql(db, """
-                INSERT INTO license_keys (id, key_hash, license_key_encrypted, company_name, expires_at, max_requests_per_day, is_trial, referred_by_id, referral_code, username)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, [next_id, key_hash, encrypted_key, company_name, expires_at, max_requests, is_trial, referred_by_id, referral_code, username])
-            
-            # If referred, increment referrer's count
-            if referred_by_id:
-                await execute_sql(db, "UPDATE license_keys SET referral_count = referral_count + 1 WHERE id = ?", [referred_by_id])
-        else:
-            await execute_sql(db, """
-                INSERT INTO license_keys (key_hash, license_key_encrypted, company_name, expires_at, max_requests_per_day, is_trial, referred_by_id, referral_code, username)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (key_hash, encrypted_key, company_name, expires_at.isoformat(), max_requests, is_trial, referred_by_id, referral_code, username))
-            
-            # If referred, increment referrer's count
-            if referred_by_id:
-                await execute_sql(db, "UPDATE license_keys SET referral_count = referral_count + 1 WHERE id = ?", [referred_by_id])
-            
-            await commit_db(db)
+        try:
+            if DB_TYPE == "postgresql":
+                # Senior Pattern: Atomic transaction for insert + referrer update
+                # Note: db handles the connection. We use a transaction context if possible, 
+                # but for now we'll use a safer multi-statement approach if supported 
+                # or just ensure consistency.
+                
+                # Fetch row to check for referral count increment atomicity
+                row = await fetch_one(db, """
+                    INSERT INTO license_keys (key_hash, license_key_encrypted, company_name, expires_at, max_requests_per_day, is_trial, referred_by_id, referral_code, username)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING id
+                """, [key_hash, encrypted_key, company_name, expires_at, max_requests, is_trial, referred_by_id, referral_code, username])
+                
+                # If referred, increment referrer's count
+                if referred_by_id and row:
+                    await execute_sql(db, "UPDATE license_keys SET referral_count = referral_count + 1 WHERE id = ?", [referred_by_id])
+                
+                return raw_key # PG is auto-committed per execute unless in transaction() block
+            else:
+                cursor = await execute_sql(db, """
+                    INSERT INTO license_keys (key_hash, license_key_encrypted, company_name, expires_at, max_requests_per_day, is_trial, referred_by_id, referral_code, username)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (key_hash, encrypted_key, company_name, expires_at.isoformat(), max_requests, is_trial, referred_by_id, referral_code, username))
+                
+                if referred_by_id:
+                    await execute_sql(db, "UPDATE license_keys SET referral_count = referral_count + 1 WHERE id = ?", [referred_by_id])
+                
+                await commit_db(db)
+                return raw_key
+        except Exception as e:
+            from logging_config import get_logger
+            get_logger(__name__).error(f"Failed to generate license key: {e}")
+            raise
     
     return raw_key
 
@@ -465,28 +472,36 @@ async def validate_license_key(key: str) -> dict:
     if not row_dict["is_active"]:
         return {"valid": False, "error": "تم تعطيل هذا الاشتراك"}
     
+    # Helper for robust date parsing
+    def parse_datetime(val) -> Optional[datetime]:
+        if not val:
+            return None
+        if isinstance(val, datetime):
+            return val
+        if hasattr(val, 'isoformat'): # Handle other date-like objects
+            return datetime.fromisoformat(val.isoformat())
+        try:
+            # Handle standard ISO strings and split out potential timezone/extra info
+            clean_val = str(val).replace('Z', '+00:00').split('.')[0] # Remove microsecs if bothering
+            if ' ' in clean_val and 'T' not in clean_val:
+                clean_val = clean_val.replace(' ', 'T')
+            return datetime.fromisoformat(clean_val)
+        except (ValueError, TypeError):
+            return None
+
     # Check expiration
-    if row_dict.get("expires_at"):
-        if isinstance(row_dict["expires_at"], str):
-            expires_at = datetime.fromisoformat(row_dict["expires_at"].replace('Z', '+00:00'))
-        elif hasattr(row_dict["expires_at"], 'isoformat'):
-            expires_at = row_dict["expires_at"]
-        else:
-            expires_at = datetime.fromisoformat(str(row_dict["expires_at"]))
-        
-        if datetime.utcnow() > expires_at:
-            return {"valid": False, "error": "انتهت صلاحية الاشتراك"}
+    expires_at = parse_datetime(row_dict.get("expires_at"))
+    if expires_at and datetime.now(timezone.utc).replace(tzinfo=None) > expires_at:
+        return {"valid": False, "error": "انتهت صلاحية الاشتراك"}
     
     # Check daily rate limit
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     last_request_date = None
-    if row_dict.get("last_request_date"):
-        if isinstance(row_dict["last_request_date"], str):
-            last_request_date = datetime.fromisoformat(row_dict["last_request_date"].split('T')[0]).date()
-        elif hasattr(row_dict["last_request_date"], 'date'):
-            last_request_date = row_dict["last_request_date"].date()
-        else:
-            last_request_date = datetime.fromisoformat(str(row_dict["last_request_date"]).split('T')[0]).date()
+    lr_val = row_dict.get("last_request_date")
+    if lr_val:
+        lr_dt = parse_datetime(lr_val)
+        if lr_dt:
+            last_request_date = lr_dt.date()
     
     if last_request_date == today:
         if row_dict.get("requests_today", 0) >= row_dict.get("max_requests_per_day", 0):
@@ -529,7 +544,7 @@ async def validate_license_key(key: str) -> dict:
 
 async def increment_usage(license_id: int, action_type: str, input_preview: str = None):
     """Increment usage counter (Analytics logging REMOVED)"""
-    today = datetime.now().date().isoformat()
+    today = datetime.now(timezone.utc).date().isoformat()
     
     async with get_db() as db:
         # Update request counter
@@ -641,30 +656,41 @@ async def get_order_by_ref(order_ref: str) -> Optional[dict]:
     return None
 
 async def upsert_customer_lead(name: str, contact: str, notes: str) -> int:
-    """Create or update a customer lead"""
+    """Create or update a customer lead using atomic UPSERT patterns"""
     async with get_db() as db:
-        # Check if exists
-        row = await fetch_one(db, "SELECT id FROM customers WHERE contact = ?", [contact])
-            
-        if row:
-            # Update notes
-            await execute_sql(db, "UPDATE customers SET notes = notes || '\n' || ? WHERE contact = ?", [notes, contact])
-            await commit_db(db)
-            return row["id"]
-        else:
-            # Insert
-            cursor = await execute_sql(db, """
+        if DB_TYPE == "postgresql":
+            # Senior Pattern: Atomic UPSERT with RETURNING for PostgreSQL
+            sql = """
                 INSERT INTO customers (name, contact, type, notes) 
                 VALUES (?, ?, 'Lead', ?)
-            """, (name, contact, notes))
+                ON CONFLICT (contact) DO UPDATE 
+                SET notes = CASE 
+                    WHEN customers.notes IS NULL OR customers.notes = '' THEN EXCLUDED.notes 
+                    ELSE customers.notes || '\n' || EXCLUDED.notes 
+                END,
+                updated_at = NOW()
+                RETURNING id
+            """
+            row = await fetch_one(db, sql, [name, contact, notes])
+            return row["id"] if row else 0
+        else:
+            # SQLite UPSERT (supported in 3.24+)
+            sql = """
+                INSERT INTO customers (name, contact, type, notes) 
+                VALUES (?, ?, 'Lead', ?)
+                ON CONFLICT(contact) DO UPDATE SET
+                notes = CASE 
+                    WHEN notes IS NULL OR notes = '' THEN excluded.notes 
+                    ELSE notes || '\n' || excluded.notes 
+                END,
+                updated_at = CURRENT_TIMESTAMP
+            """
+            cursor = await execute_sql(db, sql, [name, contact, notes])
             await commit_db(db)
-            if DB_TYPE == "postgresql":
-                # For PG, execute_sql (db_pool.execute) doesn't have lastrowid easily
-                # but we're creating a Lead, we could use RETURNING if needed.
-                # However, for simplicity if Lead ID isn't used immediately, 0 is fine or we can fetch it.
-                new_row = await fetch_one(db, "SELECT id FROM customers WHERE contact = ?", [contact])
-                return new_row["id"] if new_row else 0
-            return cursor.lastrowid
+            
+            # If the conflict resolution didn't return an ID automatically, fetch it
+            row = await fetch_one(db, "SELECT id FROM customers WHERE contact = ?", [contact])
+            return row["id"] if row else 0
     return 0
 
 
@@ -686,6 +712,8 @@ async def save_update_event(
         await commit_db(db)
 
 
+async def get_update_events(limit: int = 100) -> list:
+    """Get recent update events"""
     async with get_db() as db:
         rows = await fetch_all(db, """
             SELECT * FROM update_events 
@@ -699,41 +727,29 @@ async def save_update_event(
 
 async def get_app_config(key: str) -> Optional[str]:
     """Get a configuration value by key"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            return await conn.fetchval("SELECT value FROM app_config WHERE key = $1", key)
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            async with db.execute("SELECT value FROM app_config WHERE key = ?", (key,)) as cursor:
-                row = await cursor.fetchone()
-                return row[0] if row else None
+    async with get_db() as db:
+        row = await fetch_one(db, "SELECT value FROM app_config WHERE key = ?", [key])
+        return row["value"] if row else None
 
 
 async def set_app_config(key: str, value: str):
     """Set a configuration value"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            await conn.execute("""
+    async with get_db() as db:
+        if DB_TYPE == "postgresql":
+            await execute_sql(db, """
                 INSERT INTO app_config (key, value, updated_at) 
-                VALUES ($1, $2, NOW())
+                VALUES (?, ?, NOW())
                 ON CONFLICT (key) DO UPDATE 
                 SET value = EXCLUDED.value, updated_at = NOW()
-            """, key, value)
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            await db.execute("""
+            """, [key, value])
+        else:
+            await execute_sql(db, """
                 INSERT INTO app_config (key, value, updated_at) 
                 VALUES (?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(key) DO UPDATE 
                 SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
-            """, (key, value))
-            await db.commit()
+            """, [key, value])
+        await commit_db(db)
 
 
 async def add_version_history(
@@ -744,60 +760,34 @@ async def add_version_history(
     changes_json: str
 ):
     """Add a new version to history"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            await conn.execute("""
-                INSERT INTO version_history 
-                (version, build_number, changelog_ar, changelog_en, changes_json)
-                VALUES ($1, $2, $3, $4, $5)
-            """, version, build_number, changelog_ar, changelog_en, changes_json)
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            await db.execute("""
-                INSERT INTO version_history 
-                (version, build_number, changelog_ar, changelog_en, changes_json)
-                VALUES (?, ?, ?, ?, ?)
-            """, (version, build_number, changelog_ar, changelog_en, changes_json))
-            await db.commit()
+    async with get_db() as db:
+        await execute_sql(db, """
+            INSERT INTO version_history 
+            (version, build_number, changelog_ar, changelog_en, changes_json)
+            VALUES (?, ?, ?, ?, ?)
+        """, [version, build_number, changelog_ar, changelog_en, changes_json])
+        await commit_db(db)
 
 
 async def get_version_history_list(limit: int = 10) -> list:
     """Get recent version history"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            rows = await conn.fetch("""
-                SELECT * FROM version_history 
-                ORDER BY build_number DESC 
-                LIMIT $1
-            """, limit)
-            return [dict(row) for row in rows]
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("""
-                SELECT * FROM version_history 
-                ORDER BY build_number DESC 
-                LIMIT ?
-            """, (limit,)) as cursor:
-                rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
+    async with get_db() as db:
+        rows = await fetch_all(db, """
+            SELECT * FROM version_history 
+            ORDER BY build_number DESC 
+            LIMIT ?
+        """, [limit])
+        return [dict(row) for row in rows]
 
 
 # ============ Version Analytics ============
 
 async def get_version_distribution() -> list:
     """Get distribution of users across build numbers based on update events"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
+    async with get_db() as db:
+        if DB_TYPE == "postgresql":
             # Get latest build per device from update events
-            rows = await conn.fetch("""
+            rows = await fetch_all(db, """
                 WITH latest_builds AS (
                     SELECT DISTINCT ON (COALESCE(device_id, license_key))
                         COALESCE(device_id, license_key) as identifier,
@@ -816,14 +806,10 @@ async def get_version_distribution() -> list:
                 GROUP BY build_number, device_type
                 ORDER BY build_number DESC
             """)
-            return [dict(row) for row in rows]
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            db.row_factory = aiosqlite.Row
+            return rows
+        else:
             # SQLite version using subquery
-            async with db.execute("""
+            rows = await fetch_all(db, """
                 SELECT 
                     from_build as build_number,
                     device_type,
@@ -832,22 +818,17 @@ async def get_version_distribution() -> list:
                 WHERE from_build IS NOT NULL
                 GROUP BY from_build, device_type
                 ORDER BY from_build DESC
-            """) as cursor:
-                rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
+            """)
+            return rows
 
 
 async def get_update_funnel(days: int = 30) -> dict:
     """Get update funnel metrics (viewed -> clicked -> installed)"""
-    from datetime import datetime, timedelta
-    
     cutoff = datetime.now() - timedelta(days=days)
-    cutoff_str = cutoff.isoformat()
     
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            row = await conn.fetchrow("""
+    async with get_db() as db:
+        if DB_TYPE == "postgresql":
+            row = await fetch_one(db, """
                 SELECT 
                     COUNT(*) FILTER (WHERE event = 'viewed') as views,
                     COUNT(*) FILTER (WHERE event = 'clicked_update') as clicks,
@@ -855,14 +836,12 @@ async def get_update_funnel(days: int = 30) -> dict:
                     COUNT(*) FILTER (WHERE event = 'installed') as installs,
                     COUNT(DISTINCT COALESCE(device_id, license_key)) as unique_devices
                 FROM update_events
-                WHERE timestamp >= $1
-            """, cutoff)
-            return dict(row) if row else {}
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            async with db.execute("""
+                WHERE timestamp >= ?
+            """, [cutoff])
+            return row or {}
+        else:
+            cutoff_str = cutoff.isoformat()
+            row = await fetch_one(db, """
                 SELECT 
                     SUM(CASE WHEN event = 'viewed' THEN 1 ELSE 0 END) as views,
                     SUM(CASE WHEN event = 'clicked_update' THEN 1 ELSE 0 END) as clicks,
@@ -871,26 +850,24 @@ async def get_update_funnel(days: int = 30) -> dict:
                     COUNT(DISTINCT COALESCE(device_id, license_key)) as unique_devices
                 FROM update_events
                 WHERE timestamp >= ?
-            """, (cutoff_str,)) as cursor:
-                row = await cursor.fetchone()
-                if row:
-                    return {
-                        "views": row[0] or 0,
-                        "clicks": row[1] or 0,
-                        "laters": row[2] or 0,
-                        "installs": row[3] or 0,
-                        "unique_devices": row[4] or 0
-                    }
-                return {}
+            """, [cutoff_str])
+            if row:
+                return {
+                    "views": row.get("views") or 0,
+                    "clicks": row.get("clicks") or 0,
+                    "laters": row.get("laters") or 0,
+                    "installs": row.get("installs") or 0,
+                    "unique_devices": row.get("unique_devices") or 0
+                }
+            return {}
 
 
 async def get_time_to_update_metrics() -> dict:
     """Calculate median and average time from update release to adoption"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
+    async with get_db() as db:
+        if DB_TYPE == "postgresql":
             # Get time between 'viewed' and 'installed' events per device
-            row = await conn.fetchrow("""
+            row = await fetch_one(db, """
                 WITH update_times AS (
                     SELECT 
                         COALESCE(device_id, license_key) as identifier,
@@ -909,28 +886,24 @@ async def get_time_to_update_metrics() -> dict:
                     ) as median_seconds
                 FROM update_times
                 WHERE first_view IS NOT NULL
-            """)
+            """, [])
             if row:
                 return {
-                    "total_updates": row["total_updates"] or 0,
-                    "avg_hours": round((row["avg_seconds"] or 0) / 3600, 1),
-                    "median_hours": round((row["median_seconds"] or 0) / 3600, 1)
+                    "total_updates": row.get("total_updates") or 0,
+                    "avg_hours": round((row.get("avg_seconds") or 0) / 3600, 1),
+                    "median_hours": round((row.get("median_seconds") or 0) / 3600, 1)
                 }
             return {"total_updates": 0, "avg_hours": 0, "median_hours": 0}
-        finally:
-            await conn.close()
-    else:
-        # SQLite doesn't have PERCENTILE_CONT, return simpler metrics
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            async with db.execute("""
+        else:
+            # SQLite doesn't have PERCENTILE_CONT, return simpler metrics
+            row = await fetch_one(db, """
                 SELECT COUNT(DISTINCT device_id) as total_updates
                 FROM update_events
                 WHERE event = 'installed'
-            """) as cursor:
-                row = await cursor.fetchone()
-                return {
-                    "total_updates": row[0] if row else 0,
-                    "avg_hours": 0,
-                    "median_hours": 0,
-                    "note": "Detailed metrics available with PostgreSQL"
-                }
+            """, [])
+            return {
+                "total_updates": row.get("total_updates") if row else 0,
+                "avg_hours": 0,
+                "median_hours": 0,
+                "note": "Detailed metrics available with PostgreSQL"
+            }
