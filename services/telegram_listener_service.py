@@ -126,8 +126,9 @@ class TelegramListenerService:
                     WHERE is_active = TRUE
                 """
                 rows = await fetch_all(db, query)
+                logger.info(f"Syncing {len(rows)} active Telegram sessions...")
             except Exception as e:
-                logger.error(f"DB Error fetching sessions: {e}")
+                logger.error(f"DB Error fetching sessions: {e}", exc_info=True)
                 return
 
         active_license_ids = set()

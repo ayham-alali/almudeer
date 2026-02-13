@@ -9,33 +9,8 @@ from typing import Optional
 import hashlib
 import secrets
 
-# Database configuration
-DB_TYPE = os.getenv("DB_TYPE", "sqlite").lower()
-DATABASE_PATH = os.getenv("DATABASE_PATH", "almudeer.db")
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-# Import appropriate database driver
-if DB_TYPE == "postgresql":
-    try:
-        import asyncpg
-        POSTGRES_AVAILABLE = True
-    except ImportError:
-        raise ImportError(
-            "PostgreSQL selected but asyncpg not installed. "
-            "Install with: pip install asyncpg"
-        )
-else:
-    import aiosqlite
-    POSTGRES_AVAILABLE = False
-
-
-def _adapt_sql_for_db(sql: str) -> str:
-    """Adapt SQL syntax for current database type"""
-    if DB_TYPE == "postgresql":
-        sql = sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
-        sql = sql.replace("AUTOINCREMENT", "")
-        sql = sql.replace("TIMESTAMP DEFAULT CURRENT_TIMESTAMP", "TIMESTAMP DEFAULT NOW()")
-    return sql
+from db_pool import DB_TYPE, adapt_sql_for_db as _adapt_sql_for_db
+from db_helper import get_db, execute_sql, fetch_one, fetch_all, commit_db
 
 
 async def init_database():
@@ -396,38 +371,36 @@ async def generate_license_key(
     
     expires_at = datetime.now() + timedelta(days=days_valid)
     
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
+    from db_helper import get_db, execute_sql, fetch_one, commit_db
+    
+    async with get_db() as db:
+        if DB_TYPE == "postgresql":
             # Get the next ID manually to avoid sequence issues
-            max_id = await conn.fetchval("SELECT COALESCE(MAX(id), 0) FROM license_keys")
-            next_id = max_id + 1
+            max_id_row = await fetch_one(db, "SELECT COALESCE(MAX(id), 0) as max_id FROM license_keys")
+            next_id = (max_id_row["max_id"] if max_id_row else 0) + 1
             
             # Reset sequence if needed
-            await conn.execute(f"SELECT setval('license_keys_id_seq', {next_id}, false)")
+            await execute_sql(db, f"SELECT setval('license_keys_id_seq', {next_id}, false)")
             
-            await conn.execute("""
+            await execute_sql(db, """
                 INSERT INTO license_keys (id, key_hash, license_key_encrypted, company_name, expires_at, max_requests_per_day, is_trial, referred_by_id, referral_code, username)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            """, next_id, key_hash, encrypted_key, company_name, expires_at, max_requests, is_trial, referred_by_id, referral_code, username)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, [next_id, key_hash, encrypted_key, company_name, expires_at, max_requests, is_trial, referred_by_id, referral_code, username])
             
             # If referred, increment referrer's count
             if referred_by_id:
-                await conn.execute("UPDATE license_keys SET referral_count = referral_count + 1 WHERE id = $1", referred_by_id)
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            cursor = await db.execute("""
+                await execute_sql(db, "UPDATE license_keys SET referral_count = referral_count + 1 WHERE id = ?", [referred_by_id])
+        else:
+            await execute_sql(db, """
                 INSERT INTO license_keys (key_hash, license_key_encrypted, company_name, expires_at, max_requests_per_day, is_trial, referred_by_id, referral_code, username)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (key_hash, encrypted_key, company_name, expires_at.isoformat(), max_requests, is_trial, referred_by_id, referral_code, username))
             
             # If referred, increment referrer's count
             if referred_by_id:
-                await db.execute("UPDATE license_keys SET referral_count = referral_count + 1 WHERE id = ?", (referred_by_id,))
+                await execute_sql(db, "UPDATE license_keys SET referral_count = referral_count + 1 WHERE id = ?", [referred_by_id])
             
-            await db.commit()
+            await commit_db(db)
     
     return raw_key
 
@@ -439,53 +412,28 @@ async def get_license_key_by_id(license_id: int) -> Optional[str]:
     
     logger = get_logger(__name__)
     
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        conn = await asyncpg.connect(DATABASE_URL)
+    from db_helper import get_db, fetch_one
+    
+    async with get_db() as db:
+        row = await fetch_one(db, """
+            SELECT license_key_encrypted FROM license_keys WHERE id = ?
+        """, [license_id])
+        
+        if not row:
+            logger.warning(f"Subscription {license_id} not found")
+            return None
+        
+        if not row.get('license_key_encrypted'):
+            logger.warning(f"License key encrypted field is NULL for subscription {license_id} - this is an old subscription created before encryption was added")
+            return None
+        
+        encrypted_key = row['license_key_encrypted']
         try:
-            row = await conn.fetchrow("""
-                SELECT license_key_encrypted FROM license_keys WHERE id = $1
-            """, license_id)
-            
-            if not row:
-                logger.warning(f"Subscription {license_id} not found")
-                return None
-            
-            if not row.get('license_key_encrypted'):
-                logger.warning(f"License key encrypted field is NULL for subscription {license_id} - this is an old subscription created before encryption was added")
-                return None
-            
-            encrypted_key = row['license_key_encrypted']
-            try:
-                decrypted = decrypt_sensitive_data(encrypted_key)
-                return decrypted
-            except Exception as e:
-                logger.error(f"Failed to decrypt license key for subscription {license_id}: {e}")
-                return None
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("""
-                SELECT license_key_encrypted FROM license_keys WHERE id = ?
-            """, (license_id,)) as cursor:
-                row = await cursor.fetchone()
-                
-                if not row:
-                    logger.warning(f"Subscription {license_id} not found")
-                    return None
-                
-                if not row.get('license_key_encrypted'):
-                    logger.warning(f"License key encrypted field is NULL for subscription {license_id} - this is an old subscription created before encryption was added")
-                    return None
-                
-                encrypted_key = row['license_key_encrypted']
-                try:
-                    decrypted = decrypt_sensitive_data(encrypted_key)
-                    return decrypted
-                except Exception as e:
-                    logger.error(f"Failed to decrypt license key for subscription {license_id}: {e}")
-                    return None
+            decrypted = decrypt_sensitive_data(encrypted_key)
+            return decrypted
+        except Exception as e:
+            logger.error(f"Failed to decrypt license key for subscription {license_id}: {e}")
+            return None
 
 
 async def validate_license_key(key: str) -> dict:
@@ -502,31 +450,16 @@ async def validate_license_key(key: str) -> dict:
     
     key_hash = hash_license_key(key)
     
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            row = await conn.fetchrow("""
-                SELECT * FROM license_keys WHERE key_hash = $1
-            """, key_hash)
-            
-            if not row:
-                return {"valid": False, "error": "مفتاح الاشتراك غير صالح"}
-            
-            row_dict = dict(row)
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("""
-                SELECT * FROM license_keys WHERE key_hash = ?
-            """, (key_hash,)) as cursor:
-                row = await cursor.fetchone()
-                
-                if not row:
-                    return {"valid": False, "error": "مفتاح الاشتراك غير صالح"}
-                
-                row_dict = dict(row)
+    from db_helper import get_db, fetch_one
+    async with get_db() as db:
+        row = await fetch_one(db, """
+            SELECT * FROM license_keys WHERE key_hash = ?
+        """, [key_hash])
+        
+        if not row:
+            return {"valid": False, "error": "مفتاح الاشتراك غير صالح"}
+        
+        row_dict = dict(row)
     
     # Check if active
     if not row_dict["is_active"]:
@@ -598,34 +531,18 @@ async def increment_usage(license_id: int, action_type: str, input_preview: str 
     """Increment usage counter (Analytics logging REMOVED)"""
     today = datetime.now().date().isoformat()
     
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            # Update request counter
-            await conn.execute("""
-                UPDATE license_keys 
-                SET requests_today = CASE 
-                    WHEN last_request_date = $1 THEN requests_today + 1 
-                    ELSE 1 
-                END,
-                last_request_date = $1
-                WHERE id = $2
-            """, today, license_id)
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            # Update request counter
-            await db.execute("""
-                UPDATE license_keys 
-                SET requests_today = CASE 
-                    WHEN last_request_date = ? THEN requests_today + 1 
-                    ELSE 1 
-                END,
-                last_request_date = ?
-                WHERE id = ?
-            """, (today, today, license_id))
-            await db.commit()
+    async with get_db() as db:
+        # Update request counter
+        await execute_sql(db, """
+            UPDATE license_keys 
+            SET requests_today = CASE 
+                WHEN last_request_date = ? THEN requests_today + 1 
+                ELSE 1 
+            END,
+            last_request_date = ?
+            WHERE id = ?
+        """, [today, today, license_id])
+        await commit_db(db)
 
 
 async def save_crm_entry(
@@ -639,96 +556,62 @@ async def save_crm_entry(
     draft_response: str
 ) -> int:
     """Save a CRM entry and return its ID"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            result = await conn.fetchval("""
-                INSERT INTO crm_entries 
-                (license_key_id, sender_name, sender_contact, message_type, intent, 
-                 extracted_data, original_message, draft_response)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                RETURNING id
-            """, license_id, sender_name, sender_contact, message_type, intent,
-                  extracted_data, original_message, draft_response)
-            return result
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            cursor = await db.execute("""
-                INSERT INTO crm_entries 
-                (license_key_id, sender_name, sender_contact, message_type, intent, 
-                 extracted_data, original_message, draft_response)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (license_id, sender_name, sender_contact, message_type, intent,
-                  extracted_data, original_message, draft_response))
-            await db.commit()
+    async with get_db() as db:
+        # Note: adapt_sql_for_db in execute_sql handles PostgreSQL placeholder conversion
+        # but RETURNING is PG specific. db_helper handles this via the centralized adapt_sql.
+        
+        # Actually for INSERT RETURNING, we might need a custom approach if it's not handled automatically.
+        # But execute_sql uses db_pool.execute, which returns the result. For PG it's the result of conn.execute.
+        # For SQLite it returns the cursor.
+        
+        sql = """
+            INSERT INTO crm_entries 
+            (license_key_id, sender_name, sender_contact, message_type, intent, 
+             extracted_data, original_message, draft_response)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        params = [license_id, sender_name, sender_contact, message_type, intent,
+                  extracted_data, original_message, draft_response]
+        
+        if DB_TYPE == "postgresql":
+            sql += " RETURNING id"
+            row = await fetch_one(db, sql, params)
+            return row["id"] if row else 0
+        else:
+            # For SQLite, execute_sql returns the cursor (standard behavior in my update to db_pool)
+            cursor = await execute_sql(db, sql, params)
+            await commit_db(db)
             return cursor.lastrowid
 
 
 async def get_crm_entries(license_id: int, limit: int = 50) -> list:
     """Get CRM entries for a license"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            rows = await conn.fetch("""
-                SELECT * FROM crm_entries 
-                WHERE license_key_id = $1 
-                ORDER BY created_at DESC 
-                LIMIT $2
-            """, license_id, limit)
-            return [dict(row) for row in rows]
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("""
-                SELECT * FROM crm_entries 
-                WHERE license_key_id = ? 
-                ORDER BY created_at DESC 
-                LIMIT ?
-            """, (license_id, limit)) as cursor:
-                rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
+    async with get_db() as db:
+        rows = await fetch_all(db, """
+            SELECT * FROM crm_entries 
+            WHERE license_key_id = ? 
+            ORDER BY created_at DESC 
+            LIMIT ?
+        """, [license_id, limit])
+        return [dict(row) for row in rows]
 
 
 async def get_entry_by_id(entry_id: int, license_id: int) -> Optional[dict]:
     """Get a specific CRM entry"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            row = await conn.fetchrow("""
-                SELECT * FROM crm_entries 
-                WHERE id = $1 AND license_key_id = $2
-            """, entry_id, license_id)
-            return dict(row) if row else None
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("""
-                SELECT * FROM crm_entries 
-                WHERE id = ? AND license_key_id = ?
-            """, (entry_id, license_id)) as cursor:
-                row = await cursor.fetchone()
-                return dict(row) if row else None
+    async with get_db() as db:
+        row = await fetch_one(db, """
+            SELECT * FROM crm_entries 
+            WHERE id = ? AND license_key_id = ?
+        """, [entry_id, license_id])
+        return dict(row) if row else None
 
 
 # Initialize demo license key for testing
 async def create_demo_license():
     """Create a demo license key if none exists"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            count = await conn.fetchval("SELECT COUNT(*) FROM license_keys")
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            async with db.execute("SELECT COUNT(*) FROM license_keys") as cursor:
-                count = (await cursor.fetchone())[0]
+    async with get_db() as db:
+        row = await fetch_one(db, "SELECT COUNT(*) as count FROM license_keys")
+        count = row["count"] if row else 0
     
     if count == 0:
         # Create demo license
@@ -745,45 +628,43 @@ async def create_demo_license():
 async def get_customer(contact: str) -> Optional[dict]:
     """Get customer details by contact (SQLite only for now for simplicity)"""
     # Assuming SQLite for tools MVP
-    if DB_TYPE != "postgresql":
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("SELECT * FROM customers WHERE contact = ?", (contact,)) as cursor:
-                row = await cursor.fetchone()
-                return dict(row) if row else None
+    async with get_db() as db:
+        row = await fetch_one(db, "SELECT * FROM customers WHERE contact = ?", [contact])
+        return dict(row) if row else None
     return None
 
 async def get_order_by_ref(order_ref: str) -> Optional[dict]:
     """Get order details by reference"""
-    if DB_TYPE != "postgresql":
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("SELECT * FROM orders WHERE order_ref = ?", (order_ref,)) as cursor:
-                row = await cursor.fetchone()
-                return dict(row) if row else None
+    async with get_db() as db:
+        row = await fetch_one(db, "SELECT * FROM orders WHERE order_ref = ?", [order_ref])
+        return dict(row) if row else None
     return None
 
 async def upsert_customer_lead(name: str, contact: str, notes: str) -> int:
     """Create or update a customer lead"""
-    if DB_TYPE != "postgresql":
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            # Check if exists
-            async with db.execute("SELECT id FROM customers WHERE contact = ?", (contact,)) as cursor:
-                row = await cursor.fetchone()
-                
-            if row:
-                # Update notes
-                await db.execute("UPDATE customers SET notes = notes || '\n' || ? WHERE contact = ?", (notes, contact))
-                await db.commit()
-                return row[0]
-            else:
-                # Insert
-                cursor = await db.execute("""
-                    INSERT INTO customers (name, contact, type, notes) 
-                    VALUES (?, ?, 'Lead', ?)
-                """, (name, contact, notes))
-                await db.commit()
-                return cursor.lastrowid
+    async with get_db() as db:
+        # Check if exists
+        row = await fetch_one(db, "SELECT id FROM customers WHERE contact = ?", [contact])
+            
+        if row:
+            # Update notes
+            await execute_sql(db, "UPDATE customers SET notes = notes || '\n' || ? WHERE contact = ?", [notes, contact])
+            await commit_db(db)
+            return row["id"]
+        else:
+            # Insert
+            cursor = await execute_sql(db, """
+                INSERT INTO customers (name, contact, type, notes) 
+                VALUES (?, ?, 'Lead', ?)
+            """, (name, contact, notes))
+            await commit_db(db)
+            if DB_TYPE == "postgresql":
+                # For PG, execute_sql (db_pool.execute) doesn't have lastrowid easily
+                # but we're creating a Lead, we could use RETURNING if needed.
+                # However, for simplicity if Lead ID isn't used immediately, 0 is fine or we can fetch it.
+                new_row = await fetch_one(db, "SELECT id FROM customers WHERE contact = ?", [contact])
+                return new_row["id"] if new_row else 0
+            return cursor.lastrowid
     return 0
 
 
@@ -796,49 +677,22 @@ async def save_update_event(
     license_key: Optional[str] = None
 ):
     """Save an update event to the database"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            await conn.execute("""
-                INSERT INTO update_events 
-                (event, from_build, to_build, device_id, device_type, license_key)
-                VALUES ($1, $2, $3, $4, $5, $6)
-            """, event, from_build, to_build, device_id, device_type, license_key)
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            await db.execute("""
-                INSERT INTO update_events 
-                (event, from_build, to_build, device_id, device_type, license_key)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (event, from_build, to_build, device_id, device_type, license_key))
-            await db.commit()
+    async with get_db() as db:
+        await execute_sql(db, """
+            INSERT INTO update_events 
+            (event, from_build, to_build, device_id, device_type, license_key)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, [event, from_build, to_build, device_id, device_type, license_key])
+        await commit_db(db)
 
 
-async def get_update_events(limit: int = 100) -> list:
-    """Get recent update events"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            rows = await conn.fetch("""
-                SELECT * FROM update_events 
-                ORDER BY timestamp DESC 
-                LIMIT $1
-            """, limit)
-            return [dict(row) for row in rows]
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("""
-                SELECT * FROM update_events 
-                ORDER BY timestamp DESC 
-                LIMIT ?
-            """, (limit,)) as cursor:
-                rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
+    async with get_db() as db:
+        rows = await fetch_all(db, """
+            SELECT * FROM update_events 
+            ORDER BY timestamp DESC 
+            LIMIT ?
+        """, [limit])
+        return [dict(row) for row in rows]
 
 
 # ============ App Config & Versioning ============

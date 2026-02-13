@@ -28,14 +28,14 @@ async def init_stories_tables():
             f"""
             CREATE TABLE IF NOT EXISTS stories (
                 id {ID_PK},
-                license_key_id {INT_TYPE} NOT NULL,
-                user_id {TEXT_TYPE},
-                type {TEXT_TYPE} NOT NULL, -- text, image, video, voice, audio, file
-                title {TEXT_TYPE},
-                content {TEXT_TYPE},
-                media_path {TEXT_TYPE},
-                thumbnail_path {TEXT_TYPE},
-                duration_ms {INT_TYPE} DEFAULT 0,
+                license_key_id INTEGER NOT NULL,
+                user_id TEXT,
+                type TEXT NOT NULL, -- text, image, video, voice, audio, file
+                title TEXT,
+                content TEXT,
+                media_path TEXT,
+                thumbnail_path TEXT,
+                duration_ms INTEGER DEFAULT 0,
                 created_at {TIMESTAMP_NOW},
                 deleted_at TIMESTAMP,
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
@@ -49,9 +49,9 @@ async def init_stories_tables():
             f"""
             CREATE TABLE IF NOT EXISTS story_views (
                 id {ID_PK},
-                story_id {INT_TYPE} NOT NULL,
-                viewer_contact {TEXT_TYPE} NOT NULL, -- phone number or contact unique ID
-                viewer_name {TEXT_TYPE},
+                story_id INTEGER NOT NULL,
+                viewer_contact TEXT NOT NULL, -- phone number or contact unique ID
+                viewer_name TEXT,
                 viewed_at {TIMESTAMP_NOW},
                 UNIQUE(story_id, viewer_contact),
                 FOREIGN KEY (story_id) REFERENCES stories(id) ON DELETE CASCADE

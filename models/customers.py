@@ -472,8 +472,8 @@ async def delete_old_notifications(days: int = 30):
     """Delete notifications older than specified days"""
     async with get_db() as db:
         if DB_TYPE == "postgresql":
-            sql = f"DELETE FROM notifications WHERE created_at < CURRENT_TIMESTAMP - INTERVAL '%s days'"
-            await execute_sql(db, sql, [days])
+            sql = f"DELETE FROM notifications WHERE created_at < NOW() - INTERVAL '{days} days'"
+            await execute_sql(db, sql)
         else:
             await execute_sql(
                 db,

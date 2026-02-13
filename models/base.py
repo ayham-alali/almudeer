@@ -32,12 +32,8 @@ else:
     asyncpg = None
 
 
+from db_pool import DB_TYPE, ID_PK, TIMESTAMP_NOW, INT_TYPE, TEXT_TYPE
 from db_helper import get_db, execute_sql, fetch_all, fetch_one, commit_db
-
-
-# Helpers to generate SQL that works on both SQLite and PostgreSQL
-ID_PK = "SERIAL PRIMARY KEY" if DB_TYPE == "postgresql" else "INTEGER PRIMARY KEY AUTOINCREMENT"
-TIMESTAMP_NOW = "TIMESTAMP DEFAULT NOW()" if DB_TYPE == "postgresql" else "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
 
 
 async def init_enhanced_tables():
@@ -45,9 +41,9 @@ async def init_enhanced_tables():
     async with get_db() as db:
         
         # Email Configuration per license (OAuth 2.0 for Gmail)
-        await execute_sql(db, """
+        await execute_sql(db, f"""
             CREATE TABLE IF NOT EXISTS email_configs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {ID_PK},
                 license_key_id INTEGER UNIQUE NOT NULL,
                 email_address TEXT NOT NULL,
                 imap_server TEXT NOT NULL,
@@ -63,7 +59,7 @@ async def init_enhanced_tables():
                 is_active BOOLEAN DEFAULT TRUE,
                 check_interval_minutes INTEGER DEFAULT 5,
                 last_checked_at TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at {TIMESTAMP_NOW},
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
         """)
@@ -91,23 +87,23 @@ async def init_enhanced_tables():
             pass  # Column already exists
         
         # Telegram Bot Configuration per license
-        await execute_sql(db, """
+        await execute_sql(db, f"""
             CREATE TABLE IF NOT EXISTS telegram_configs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {ID_PK},
                 license_key_id INTEGER UNIQUE NOT NULL,
                 bot_token TEXT NOT NULL,
                 bot_username TEXT,
                 webhook_secret TEXT,
                 is_active BOOLEAN DEFAULT TRUE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at {TIMESTAMP_NOW},
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
         """)
         
         # Unified Inbox - All incoming messages
-        await execute_sql(db, """
+        await execute_sql(db, f"""
             CREATE TABLE IF NOT EXISTS inbox_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {ID_PK},
                 license_key_id INTEGER NOT NULL,
                 channel TEXT NOT NULL,
                 channel_message_id TEXT,
@@ -133,15 +129,15 @@ async def init_enhanced_tables():
                 reply_to_id INTEGER,
                 attachments TEXT,
                 is_forwarded BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at {TIMESTAMP_NOW},
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
         """)
         
         # Outbox - Approved/Sent messages
-        await execute_sql(db, """
+        await execute_sql(db, f"""
             CREATE TABLE IF NOT EXISTS outbox_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {ID_PK},
                 inbox_message_id INTEGER,
                 license_key_id INTEGER NOT NULL,
                 channel TEXT NOT NULL,
@@ -160,16 +156,16 @@ async def init_enhanced_tables():
                 reply_to_id INTEGER,
                 reply_to_sender_name TEXT,
                 is_forwarded BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at {TIMESTAMP_NOW},
                 FOREIGN KEY (inbox_message_id) REFERENCES inbox_messages(id),
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
         """)
         
         # Telegram Phone Sessions (MTProto for user accounts)
-        await execute_sql(db, """
+        await execute_sql(db, f"""
             CREATE TABLE IF NOT EXISTS telegram_phone_sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {ID_PK},
                 license_key_id INTEGER UNIQUE NOT NULL,
                 phone_number TEXT NOT NULL,
                 session_data_encrypted TEXT NOT NULL,
@@ -179,32 +175,32 @@ async def init_enhanced_tables():
                 user_username TEXT,
                 is_active BOOLEAN DEFAULT TRUE,
                 last_synced_at TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at {TIMESTAMP_NOW},
+                updated_at {TIMESTAMP_NOW},
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
         """)
-
+ 
         # Telegram Entities (Persistent memory for peer resolution)
-        await execute_sql(db, """
+        await execute_sql(db, f"""
             CREATE TABLE IF NOT EXISTS telegram_entities (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {ID_PK},
                 license_key_id INTEGER NOT NULL,
                 entity_id TEXT NOT NULL,
                 access_hash TEXT NOT NULL,
                 entity_type TEXT DEFAULT 'user',
                 username TEXT,
                 phone TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at {TIMESTAMP_NOW},
                 UNIQUE(license_key_id, entity_id),
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
         """)
         
         # Telegram Chat Sessions
-        await execute_sql(db, """
+        await execute_sql(db, f"""
             CREATE TABLE IF NOT EXISTS telegram_chats (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {ID_PK},
                 license_key_id INTEGER NOT NULL,
                 chat_id TEXT NOT NULL,
                 chat_type TEXT,
@@ -212,7 +208,7 @@ async def init_enhanced_tables():
                 first_name TEXT,
                 last_name TEXT,
                 is_blocked BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at {TIMESTAMP_NOW},
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id),
                 UNIQUE(license_key_id, chat_id)
             )

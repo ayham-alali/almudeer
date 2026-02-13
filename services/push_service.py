@@ -81,24 +81,19 @@ def log_vapid_status():
 
 async def ensure_push_subscription_table():
     """Ensure push_subscriptions table exists."""
-    from db_helper import get_db, execute_sql, commit_db, DB_TYPE
-    
-    # Common schema for both DBs (syntax compatible)
-    # Using specific type for ID based on DB_TYPE
-    id_type = "SERIAL PRIMARY KEY" if DB_TYPE == "postgresql" else "INTEGER PRIMARY KEY AUTOINCREMENT"
-    ts_default = "TIMESTAMP DEFAULT NOW()" if DB_TYPE == "postgresql" else "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+    from db_pool import get_db, execute_sql, commit_db, DB_TYPE, ID_PK, TIMESTAMP_NOW
     
     async with get_db() as db:
         try:
             await execute_sql(db, f"""
                 CREATE TABLE IF NOT EXISTS push_subscriptions (
-                    id {id_type},
+                    id {ID_PK},
                     license_key_id INTEGER NOT NULL,
                     endpoint TEXT NOT NULL UNIQUE,
                     subscription_info TEXT NOT NULL,
                     user_agent TEXT,
                     is_active BOOLEAN DEFAULT TRUE,
-                    created_at {ts_default},
+                    created_at {TIMESTAMP_NOW},
                     updated_at TIMESTAMP,
                     FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
                 )

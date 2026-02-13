@@ -13,13 +13,13 @@ from enum import Enum
 import httpx
 
 # Unified DB helper (works for both SQLite and PostgreSQL)
+from db_pool import db_pool, DB_TYPE, ID_PK, TIMESTAMP_NOW
 from db_helper import (
     get_db,
     execute_sql,
     fetch_one,
     fetch_all,
-    commit_db,
-    DB_TYPE,
+    commit_db
 )
 
 # Webhook URLs from environment
@@ -74,16 +74,16 @@ async def init_notification_tables():
         # Notification rules table
         await execute_sql(
             db,
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS notification_rules (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {ID_PK},
                 license_key_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
                 condition_type TEXT NOT NULL,
                 condition_value TEXT NOT NULL,
                 channels TEXT NOT NULL,
                 is_active BOOLEAN DEFAULT TRUE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at {TIMESTAMP_NOW},
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
             """,
@@ -92,15 +92,15 @@ async def init_notification_tables():
         # External integrations (Slack, Discord, generic webhooks)
         await execute_sql(
             db,
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS notification_integrations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {ID_PK},
                 license_key_id INTEGER NOT NULL,
                 channel_type TEXT NOT NULL,
                 webhook_url TEXT NOT NULL,
                 channel_name TEXT,
                 is_active BOOLEAN DEFAULT TRUE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at {TIMESTAMP_NOW},
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id),
                 UNIQUE(license_key_id, channel_type)
             )
@@ -110,9 +110,9 @@ async def init_notification_tables():
         # Notification log
         await execute_sql(
             db,
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS notification_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {ID_PK},
                 license_key_id INTEGER NOT NULL,
                 channel TEXT NOT NULL,
                 priority TEXT NOT NULL,
@@ -120,7 +120,7 @@ async def init_notification_tables():
                 message TEXT NOT NULL,
                 status TEXT DEFAULT 'sent',
                 error_message TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at {TIMESTAMP_NOW},
                 message_id INTEGER,
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
@@ -161,13 +161,13 @@ async def init_notification_tables():
         # Notification analytics table for delivery/open tracking
         await execute_sql(
             db,
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS notification_analytics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {ID_PK},
                 notification_id INTEGER,
                 license_key_id INTEGER NOT NULL,
                 platform TEXT DEFAULT 'unknown',
-                delivered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                delivered_at {TIMESTAMP_NOW},
                 opened_at TIMESTAMP,
                 notification_type TEXT,
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)

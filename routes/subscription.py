@@ -191,67 +191,39 @@ async def list_subscriptions(
     try:
         subscriptions = []
         
-        if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-            import asyncpg
-            if not DATABASE_URL:
-                raise ValueError("DATABASE_URL is required for PostgreSQL")
-            conn = await asyncpg.connect(DATABASE_URL)
-            try:
-                query = "SELECT id, company_name, contact_email, username, is_active, created_at, expires_at, max_requests_per_day, requests_today, last_request_date, is_trial, referral_code, referral_count FROM license_keys"
-                params = []
-                
-                if active_only:
+        from db_helper import get_db, fetch_all
+        async with get_db() as db:
+            query = "SELECT id, company_name, contact_email, username, is_active, created_at, expires_at, max_requests_per_day, requests_today, last_request_date, is_trial, referral_code, referral_count FROM license_keys"
+            params = []
+            
+            if active_only:
+                if DB_TYPE == "postgresql":
                     query += " WHERE is_active = TRUE"
-                
-                query += " ORDER BY created_at DESC LIMIT $1"
-                params.append(limit)
-                
-                rows = await conn.fetch(query, *params)
-                
-                for row in rows:
-                    row_dict = dict(row)
-                    # Calculate days remaining
-                    if row_dict.get("expires_at"):
-                        if isinstance(row_dict["expires_at"], str):
-                            expires = datetime.fromisoformat(row_dict["expires_at"])
-                        else:
-                            expires = row_dict["expires_at"]
-                        days_remaining = (expires - datetime.now()).days
-                        row_dict["days_remaining"] = max(0, days_remaining)
-                    else:
-                        row_dict["days_remaining"] = None
-                    
-                    subscriptions.append(row_dict)
-            finally:
-                await conn.close()
-        else:
-            import aiosqlite
-            async with aiosqlite.connect(DATABASE_PATH) as db:
-                db.row_factory = aiosqlite.Row
-                
-                query = "SELECT id, company_name, contact_email, username, is_active, created_at, expires_at, max_requests_per_day, requests_today, last_request_date, is_trial, referral_code, referral_count FROM license_keys"
-                params = []
-                
-                if active_only:
+                else:
                     query += " WHERE is_active = 1"
+            
+            query += " ORDER BY created_at DESC LIMIT ?"
+            params.append(limit)
+            
+            rows = await fetch_all(db, query, params)
+            
+            for row in rows:
+                row_dict = dict(row)
+                # Calculate days remaining
+                if row_dict.get("expires_at"):
+                    if isinstance(row_dict["expires_at"], str):
+                        try:
+                            expires = datetime.fromisoformat(row_dict["expires_at"].replace('Z', '+00:00'))
+                        except ValueError:
+                            expires = datetime.now() # Fallback
+                    else:
+                        expires = row_dict["expires_at"]
+                    days_remaining = (expires - datetime.now()).days
+                    row_dict["days_remaining"] = max(0, days_remaining)
+                else:
+                    row_dict["days_remaining"] = None
                 
-                query += " ORDER BY created_at DESC LIMIT ?"
-                params.append(limit)
-                
-                async with db.execute(query, params) as cursor:
-                    rows = await cursor.fetchall()
-                    
-                    for row in rows:
-                        row_dict = dict(row)
-                        # Calculate days remaining
-                        if row_dict.get("expires_at"):
-                            expires = datetime.fromisoformat(row_dict["expires_at"])
-                            days_remaining = (expires - datetime.now()).days
-                            row_dict["days_remaining"] = max(0, days_remaining)
-                        else:
-                            row_dict["days_remaining"] = None
-                        
-                        subscriptions.append(row_dict)
+                subscriptions.append(row_dict)
         
         # Filter for non-admin users: only show their own subscription
         if not auth["is_admin"]:

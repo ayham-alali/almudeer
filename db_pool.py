@@ -15,6 +15,53 @@ except ImportError:
     POSTGRES_AVAILABLE = False
     asyncpg = None
 
+# Global Constants for Database Compatibility
+DB_TYPE = os.getenv("DB_TYPE", "sqlite").lower()
+ID_PK = "SERIAL PRIMARY KEY" if DB_TYPE == "postgresql" else "INTEGER PRIMARY KEY AUTOINCREMENT"
+TIMESTAMP_NOW = "TIMESTAMP DEFAULT NOW()" if DB_TYPE == "postgresql" else "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+INT_TYPE = "INTEGER"
+TEXT_TYPE = "TEXT"
+
+def adapt_sql_for_db(sql: str) -> str:
+    """Adapt SQL syntax for current database type"""
+    if DB_TYPE == "postgresql":
+        sql = sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+        sql = sql.replace("AUTOINCREMENT", "")
+        sql = sql.replace("TIMESTAMP DEFAULT CURRENT_TIMESTAMP", "TIMESTAMP DEFAULT NOW()")
+    return sql
+
+def _convert_sql_params(sql: str, params: list) -> str:
+    """Convert SQLite ? placeholders to PostgreSQL $1, $2, etc."""
+    if DB_TYPE == "postgresql" and params:
+        param_index = 1
+        result = ""
+        i = 0
+        while i < len(sql):
+            if sql[i] == '?' and (i == 0 or sql[i-1] != "'"):
+                result += f"${param_index}"
+                param_index += 1
+            else:
+                result += sql[i]
+            i += 1
+        return result
+    return sql
+
+def _normalize_params(params: Any) -> list:
+    """Normalize parameters for PostgreSQL/SQLite"""
+    if params is None:
+        return []
+    if isinstance(params, (tuple, list)):
+        params_list = list(params)
+    else:
+        params_list = [params]
+    
+    import datetime
+    for i, p in enumerate(params_list):
+        if isinstance(p, datetime.datetime):
+            if DB_TYPE == "postgresql":
+                if p.tzinfo:
+                    params_list[i] = p.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    return params_list
 
 class DatabasePool:
     """Unified database connection pool manager"""
@@ -77,54 +124,66 @@ class DatabasePool:
         elif self.db_type == "sqlite":
             await conn.close()
     
-    async def execute(self, query: str, params: tuple = None):
+    async def execute(self, query: str, params: Any = None):
         """Execute a query (convenience method)"""
+        query = adapt_sql_for_db(query)
+        params_list = _normalize_params(params)
+        
         conn = await self.acquire()
         try:
             if self.db_type == "postgresql":
-                if params:
-                    result = await conn.execute(query, *params)
+                pg_query = _convert_sql_params(query, params_list)
+                if params_list:
+                    result = await conn.execute(pg_query, *params_list)
                 else:
-                    result = await conn.execute(query)
+                    result = await conn.execute(pg_query)
             else:
-                cursor = await conn.execute(query, params or ())
+                cursor = await conn.execute(query, params_list or ())
                 await conn.commit()
                 result = cursor
             return result
         finally:
             await self.release(conn)
     
-    async def fetch(self, query: str, params: tuple = None):
+    async def fetch(self, query: str, params: Any = None):
         """Fetch rows from database"""
+        query = adapt_sql_for_db(query)
+        params_list = _normalize_params(params)
+        
         conn = await self.acquire()
         try:
             if self.db_type == "postgresql":
-                if params:
-                    rows = await conn.fetch(query, *params)
+                pg_query = _convert_sql_params(query, params_list)
+                if params_list:
+                    rows = await conn.fetch(pg_query, *params_list)
                 else:
-                    rows = await conn.fetch(query)
+                    rows = await conn.fetch(pg_query)
                 return [dict(row) for row in rows]
             else:
                 conn.row_factory = aiosqlite.Row
-                cursor = await conn.execute(query, params or ())
+                cursor = await conn.execute(query, params_list or ())
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
         finally:
             await self.release(conn)
     
-    async def fetchone(self, query: str, params: tuple = None):
+    async def fetchone(self, query: str, params: Any = None):
         """Fetch a single row"""
+        query = adapt_sql_for_db(query)
+        params_list = _normalize_params(params)
+        
         conn = await self.acquire()
         try:
             if self.db_type == "postgresql":
-                if params:
-                    row = await conn.fetchrow(query, *params)
+                pg_query = _convert_sql_params(query, params_list)
+                if params_list:
+                    row = await conn.fetchrow(pg_query, *params_list)
                 else:
-                    row = await conn.fetchrow(query)
+                    row = await conn.fetchrow(pg_query)
                 return dict(row) if row else None
             else:
                 conn.row_factory = aiosqlite.Row
-                cursor = await conn.execute(query, params or ())
+                cursor = await conn.execute(query, params_list or ())
                 row = await cursor.fetchone()
                 return dict(row) if row else None
         finally:

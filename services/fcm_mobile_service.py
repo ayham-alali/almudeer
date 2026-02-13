@@ -136,22 +136,19 @@ def _get_access_token() -> Optional[str]:
 
 async def ensure_fcm_tokens_table():
     """Ensure fcm_tokens table exists."""
-    from db_helper import get_db, execute_sql, commit_db, DB_TYPE
-    
-    id_type = "SERIAL PRIMARY KEY" if DB_TYPE == "postgresql" else "INTEGER PRIMARY KEY AUTOINCREMENT"
-    ts_default = "TIMESTAMP DEFAULT NOW()" if DB_TYPE == "postgresql" else "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+    from db_pool import get_db, execute_sql, commit_db, DB_TYPE, ID_PK, TIMESTAMP_NOW
     
     async with get_db() as db:
         try:
             await execute_sql(db, f"""
                 CREATE TABLE IF NOT EXISTS fcm_tokens (
-                    id {id_type},
+                    id {ID_PK},
                     license_key_id INTEGER NOT NULL,
                     token TEXT NOT NULL,
                     device_id TEXT,
                     platform TEXT DEFAULT 'android',
                     is_active BOOLEAN DEFAULT TRUE,
-                    created_at {ts_default},
+                    created_at {TIMESTAMP_NOW},
                     updated_at TIMESTAMP,
                     FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
                 )

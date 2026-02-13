@@ -7,25 +7,18 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Iterable, List, Any
 
-DB_TYPE = os.getenv("DB_TYPE", "sqlite").lower()
-DATABASE_PATH = os.getenv("DATABASE_PATH", "almudeer.db")
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-if DB_TYPE == "postgresql":
-    try:
-        import asyncpg
-        POSTGRES_AVAILABLE = True
-    except ImportError:
-        raise ImportError("PostgreSQL selected but asyncpg not installed. Install with: pip install asyncpg")
-else:
-    import aiosqlite
-    POSTGRES_AVAILABLE = False
+from db_pool import (
+    db_pool, 
+    DB_TYPE, 
+    adapt_sql_for_db,
+    _convert_sql_params,
+    _normalize_params
+)
 
 
 @asynccontextmanager
 async def get_db():
     """Get database connection context manager using global pool"""
-    from db_pool import db_pool
     
     conn = await db_pool.acquire()
     try:
@@ -35,42 +28,6 @@ async def get_db():
         yield conn
     finally:
         await db_pool.release(conn)
-
-
-def adapt_sql_for_db(sql: str) -> str:
-    """Adapt SQL syntax for current database type"""
-    if DB_TYPE == "postgresql":
-        sql = sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
-        sql = sql.replace("AUTOINCREMENT", "")
-        sql = sql.replace("TIMESTAMP DEFAULT CURRENT_TIMESTAMP", "TIMESTAMP DEFAULT NOW()")
-    return sql
-
-
-def _normalize_params(params: Iterable[Any] | None):
-    """
-    Normalize parameters before sending to the database.
-
-    For PostgreSQL, asyncpg expects naive datetimes in UTC. To avoid
-    'can't subtract offset-naive and offset-aware datetimes' errors,
-    we always convert aware datetimes to naive UTC and leave naive
-    datetimes as-is (assuming they are already UTC).
-    """
-    if DB_TYPE != "postgresql" or not params:
-        return params
-
-    normalized: List[Any] = []
-    for p in params:
-        if isinstance(p, datetime):
-            if p.tzinfo is not None:
-                # Convert to UTC and drop tzinfo (naive UTC)
-                p_utc = p.astimezone(timezone.utc).replace(tzinfo=None)
-                normalized.append(p_utc)
-            else:
-                # Assume already UTC naive
-                normalized.append(p)
-        else:
-            normalized.append(p)
-    return normalized
 
 
 async def execute_sql(db, sql: str, params=None):
@@ -89,24 +46,6 @@ async def execute_sql(db, sql: str, params=None):
             return await db.execute(sql, params)
         else:
             return await db.execute(sql)
-
-
-def _convert_sql_params(sql: str, params: list) -> str:
-    """Convert SQLite ? placeholders to PostgreSQL $1, $2, etc."""
-    if DB_TYPE == "postgresql" and params:
-        # Replace ? with $1, $2, etc.
-        param_index = 1
-        result = ""
-        i = 0
-        while i < len(sql):
-            if sql[i] == '?' and (i == 0 or sql[i-1] != "'"):
-                result += f"${param_index}"
-                param_index += 1
-            else:
-                result += sql[i]
-            i += 1
-        return result
-    return sql
 
 
 async def fetch_all(db, sql: str, params=None):
@@ -147,7 +86,7 @@ async def fetch_one(db, sql: str, params=None):
         if params:
             cursor = await db.execute(sql, params)
         else:
-            cursor = await db.execute(sql, params)
+            cursor = await db.execute(sql)
         row = await cursor.fetchone()
         if row and cursor.description:
             columns = [desc[0] for desc in cursor.description]

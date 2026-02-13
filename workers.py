@@ -1740,5 +1740,6 @@ class TaskWorker:
                      await fail_task(task_id, str(e))
                      
              except Exception as outer_e:
-                 logger.error(f"Worker loop error: {outer_e}")
+                 import traceback
+                 logger.error(f"Worker loop CRITICAL error (will restart in 5s): {outer_e}\n{traceback.format_exc()}")
                  await asyncio.sleep(5.0)
