@@ -4,7 +4,7 @@ Shared Pydantic models for integration routes
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 
 
 class EmailConfigRequest(BaseModel):
@@ -48,6 +48,7 @@ class InboxMessageResponse(BaseModel):
     ai_draft_response: Optional[str]
     status: str
     created_at: str
+    attachments: Optional[List[dict]] = None
 
 
 class WorkerStatusResponse(BaseModel):
