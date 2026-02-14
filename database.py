@@ -741,6 +741,13 @@ async def get_app_config(key: str) -> Optional[str]:
         return row["value"] if row else None
 
 
+async def get_all_app_config() -> dict:
+    """Get all configuration values as a dictionary"""
+    async with get_db() as db:
+        rows = await fetch_all(db, "SELECT key, value FROM app_config")
+        return {row["key"]: row["value"] for row in rows}
+
+
 async def set_app_config(key: str, value: str):
     """Set a configuration value"""
     async with get_db() as db:

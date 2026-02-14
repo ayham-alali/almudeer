@@ -32,6 +32,7 @@ from database import (
     save_update_event, 
     get_update_events,
     get_app_config,
+    get_all_app_config,
     set_app_config,
     add_version_history,
     get_version_history_list
@@ -400,7 +401,7 @@ async def check_app_version(request: Request, current_version: str = Query(None)
     return await _get_app_version_logic(current_version, platform, client_ip)
 
 async def _get_app_version_logic(current_version: str, platform: str = "android", client_ip: str = "unknown"):
-    config = await get_app_config()
+    config = await get_all_app_config()
     min_version = config.get(f"min_{platform}_version", "1.0.0")
     latest_version = config.get(f"latest_{platform}_version", "1.0.0")
     
