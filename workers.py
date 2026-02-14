@@ -1698,7 +1698,7 @@ class TaskWorker:
                  task = await fetch_next_task(self.worker_id)
                  
                  if not task:
-                     await asyncio.sleep(1.0) # Idle wait
+                     await asyncio.sleep(1.0 + random.uniform(0.1, 0.5)) # Idle wait with jitter
                      continue
                  
                  task_id = task["id"]

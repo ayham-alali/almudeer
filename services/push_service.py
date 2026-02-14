@@ -81,7 +81,8 @@ def log_vapid_status():
 
 async def ensure_push_subscription_table():
     """Ensure push_subscriptions table exists."""
-    from db_pool import get_db, execute_sql, commit_db, DB_TYPE, ID_PK, TIMESTAMP_NOW
+    from db_helper import get_db, execute_sql, commit_db, DB_TYPE
+    from db_pool import ID_PK, TIMESTAMP_NOW
     
     async with get_db() as db:
         try:

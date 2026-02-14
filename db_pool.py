@@ -97,11 +97,11 @@ class DatabasePool:
             raise ValueError("DATABASE_URL environment variable required for PostgreSQL")
         
         # Create connection pool with optimized settings for scalability
-        query_timeout = int(os.getenv("DB_QUERY_TIMEOUT", "30"))  # Configurable timeout
+        query_timeout = int(os.getenv("DB_QUERY_TIMEOUT", "60"))  # Configurable timeout (bumped to 60s)
         self.pool = await asyncpg.create_pool(
             self.postgres_url,
-            min_size=5,  # Keep 5 connections warm (was 2)
-            max_size=20,  # Allow up to 20 concurrent (was 10)
+            min_size=5,  # Keep 5 connections warm
+            max_size=30,  # Allow up to 30 concurrent (bumped from 20)
             command_timeout=query_timeout,  # Configurable query timeout
             statement_cache_size=100,  # Cache prepared statements
         )

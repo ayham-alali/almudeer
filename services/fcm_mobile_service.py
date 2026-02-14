@@ -136,7 +136,8 @@ def _get_access_token() -> Optional[str]:
 
 async def ensure_fcm_tokens_table():
     """Ensure fcm_tokens table exists."""
-    from db_pool import get_db, execute_sql, commit_db, DB_TYPE, ID_PK, TIMESTAMP_NOW
+    from db_helper import get_db, execute_sql, commit_db, DB_TYPE
+    from db_pool import ID_PK, TIMESTAMP_NOW
     
     async with get_db() as db:
         try:
