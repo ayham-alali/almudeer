@@ -315,7 +315,6 @@ class ConnectionManager:
         logger.info(f"WebSocket connected: license {license_id} (total: {self.connection_count})")
     
     async def refresh_last_seen(self, license_id: int):
-        """Update last_seen_at timestamp for a license without changing online status"""
         if self._pubsub.is_available:
             try:
                 from db_helper import get_db, execute_sql, commit_db
@@ -326,6 +325,23 @@ class ConnectionManager:
                     await commit_db(db)
             except Exception as e:
                 logger.error(f"Error in refresh_last_seen: {e}")
+
+    async def refresh_last_seen_by_key(self, license_key: str):
+        """Update last_seen_at using the raw license key (for multi-presence heartbeats)"""
+        if self._pubsub.is_available:
+            try:
+                from database import hash_license_key
+                from db_helper import get_db, execute_sql, fetch_one, commit_db
+                from datetime import datetime
+                key_hash = hash_license_key(license_key)
+                async with get_db() as db:
+                    # First find the ID
+                    row = await fetch_one(db, "SELECT id FROM license_keys WHERE key_hash = ?", [key_hash])
+                    if row:
+                        await execute_sql(db, "UPDATE license_keys SET last_seen_at = ? WHERE id = ?", (datetime.utcnow(), row["id"]))
+                        await commit_db(db)
+            except Exception as e:
+                logger.error(f"Error in refresh_last_seen_by_key: {e}")
 
     async def disconnect(self, websocket: WebSocket, license_id: int):
         """Remove a WebSocket connection"""
