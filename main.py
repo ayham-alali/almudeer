@@ -601,7 +601,6 @@ async def handle_websocket_connection(websocket: WebSocket, license_key: str):
             
             # Handle both simple "ping" string and JSON ping object
             is_ping = False
-            companions = []
             
             if data == "ping":
                 is_ping = True
@@ -611,7 +610,6 @@ async def handle_websocket_connection(websocket: WebSocket, license_key: str):
                     ping_data = json.loads(data)
                     if ping_data.get("event") == "ping":
                         is_ping = True
-                        companions = ping_data.get("companions", [])
                 except Exception:
                     pass
 
@@ -621,11 +619,6 @@ async def handle_websocket_connection(websocket: WebSocket, license_key: str):
                 # Refresh presence for primary account
                 await manager.refresh_last_seen(license_id)
                 
-                # Refresh presence for companion accounts (secondary signed-in users)
-                for comp_key in companions:
-                    if comp_key:
-                        await manager.refresh_last_seen_by_key(comp_key)
-
                 if manager.redis_enabled:
                     try:
                         key = f"almudeer:presence:count:{license_id}"
