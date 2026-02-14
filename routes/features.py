@@ -22,12 +22,7 @@ from models import (
     mark_all_notifications_read,
     create_notification,
 )
-from services.voice_service import (
-    transcribe_voice_message,
-    transcribe_from_base64,
-    transcribe_from_url,
-    estimate_time_saved
-)
+# from services.voice_service import ... (Removed)
 # from services.auto_categorization import categorize_message_dict, categorize_messages_batch (AI removed)
 from security import sanitize_email, sanitize_phone, sanitize_string
 from dependencies import get_license_from_header, get_optional_license_from_header
@@ -196,6 +191,8 @@ class PreferencesUpdate(BaseModel):
 
 # ============ Preferences Routes ============
 
+# ============ Preferences Routes ============
+
 @router.get("/preferences")
 async def get_user_preferences(license: dict = Depends(get_license_from_header)):
     """Get user preferences"""
@@ -216,114 +213,13 @@ async def update_user_preferences(
     return {"success": True, "message": "تم حفظ التفضيلات"}
 
 
-# ============ Voice Transcription Schemas ============
-
-class VoiceBase64Request(BaseModel):
-    audio_base64: str = Field(..., description="Base64 encoded audio data")
+# ============ Voice Transcription Schemas Removed ============
 
 
-class VoiceURLRequest(BaseModel):
-    audio_url: str = Field(..., description="URL to audio file")
+# ============ Voice Transcription Routes Removed ============
 
-
-# ============ Voice Transcription Routes ============
-
-@router.post("/voice/transcribe")
-async def transcribe_voice_upload(
-    file: UploadFile = File(...),
-    license: dict = Depends(get_license_from_header)
-):
-    """
-    Transcribe uploaded voice message (Arabic)
-    Supported formats: mp3, mp4, mpeg, mpga, m4a, wav, webm, ogg
-    """
-    # Validate file type
-    allowed_types = ["audio/ogg", "audio/mpeg", "audio/mp3", "audio/wav", 
-                     "audio/webm", "audio/m4a", "video/mp4", "audio/mp4"]
-    
-    if file.content_type and file.content_type not in allowed_types:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"نوع الملف غير مدعوم. الأنواع المدعومة: {', '.join(allowed_types)}"
-        )
-    
-    # Read audio data
-    audio_data = await file.read()
-    
-    # Max 25MB
-    if len(audio_data) > 25 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="حجم الملف كبير جداً (الحد الأقصى 25MB)")
-    
-    # Transcribe
-    result = await transcribe_voice_message(audio_data, file.filename or "audio.ogg")
-    
-    if not result["success"]:
-        raise HTTPException(status_code=500, detail=result["error"])
-    
-    # Track time saved
-    duration = result.get("duration", 60)  # Default 60 seconds if unknown
-    time_saved = estimate_time_saved(duration)
-    
-    return {
-        "success": True,
-        "transcription": result["text"],
-        "language": result.get("language", "ar"),
-        "duration_seconds": duration,
-        "time_saved_seconds": time_saved,
-        "message": "تم تحويل الرسالة الصوتية إلى نص بنجاح"
-    }
-
-
-@router.post("/voice/transcribe-base64")
-async def transcribe_voice_base64(
-    request: VoiceBase64Request,
-    license: dict = Depends(get_license_from_header)
-):
-    """Transcribe voice message from base64 encoded audio"""
-    result = await transcribe_from_base64(request.audio_base64)
-    
-    if not result["success"]:
-        raise HTTPException(status_code=500, detail=result["error"])
-    
-    # Track time saved
-    duration = result.get("duration", 60)
-    time_saved = estimate_time_saved(duration)
-    
-    # Analytics removed
-    
-    return {
-        "success": True,
-        "transcription": result["text"],
-        "duration_seconds": duration,
-        "time_saved_seconds": time_saved,
-        "message": "تم تحويل الرسالة الصوتية إلى نص بنجاح"
-    }
-
-
-@router.post("/voice/transcribe-url")
-async def transcribe_voice_url(
-    request: VoiceURLRequest,
-    license: dict = Depends(get_license_from_header)
-):
-    """Transcribe voice message from URL"""
-    result = await transcribe_from_url(request.audio_url)
-    
-    if not result["success"]:
-        raise HTTPException(status_code=500, detail=result["error"])
-    
-    # Track time saved
-    duration = result.get("duration", 60)
-    time_saved = estimate_time_saved(duration)
-    
-    # Analytics removed (time saved tracking deprecated)
-    
-    return {
-        "success": True,
-        "transcription": result["text"],
-        "duration_seconds": duration,
-        "time_saved_seconds": time_saved,
-        "message": "تم تحويل الرسالة الصوتية إلى نص بنجاح"
-    }
+# AI Categorization Check endpoint removed
+# ============ Notifications Routes ============
 
 
 # AI Categorization Check endpoint removed
