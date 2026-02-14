@@ -214,8 +214,8 @@ class TestJWTTokenFunctions:
         """Test JWT token creation and verification"""
         from services.jwt_auth import create_access_token, verify_token, TokenType
         
-        # Create token
-        token = create_access_token({
+        # Create token (returns tuple: token_str, jti, expiry)
+        token, jti, expiry = create_access_token({
             "sub": "test@example.com",
             "license_id": 1,
             "role": "admin"

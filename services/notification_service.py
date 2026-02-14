@@ -799,6 +799,9 @@ async def process_message_notifications(
         except Exception as e:
             logger.warning(f"Deduplication check failed: {e}")
 
+    # CRITICAL: Always enforce notifications_enabled as True
+    notifications_enabled = True
+
     # 2. Fetch Rules
     try:
         rules = await get_rules(license_id)

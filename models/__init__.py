@@ -16,6 +16,7 @@ from .base import (
     simple_encrypt,
     simple_decrypt,
     init_models,
+    ROLES,
 )
 
 # Email configuration
@@ -136,6 +137,7 @@ __all__ = [
     "simple_decrypt",
     "init_models",
     "aiosqlite",
+    "ROLES",
     # Email
     "save_email_config",
     "get_email_config",

@@ -44,7 +44,8 @@ class MessageFilter:
 
 def filter_spam(message: Dict) -> tuple[bool, Optional[str]]:
     """Filter spam messages"""
-    body = message.get("body", "").lower()
+    original_body = message.get("body", "") or message.get("text", "")
+    body = original_body.lower()
     
     # Common spam indicators
     spam_keywords = [
@@ -57,14 +58,14 @@ def filter_spam(message: Dict) -> tuple[bool, Optional[str]]:
     link_count = len(re.findall(r'http[s]?://', body))
     
     # Check for excessive caps
-    caps_ratio = sum(1 for c in body if c.isupper()) / max(len(body), 1)
+    caps_ratio = sum(1 for c in original_body if c.isupper()) / max(len(original_body), 1)
     
     # Spam score
     spam_score = 0
     if any(keyword in body for keyword in spam_keywords):
         spam_score += 2
     if link_count > 3:
-        spam_score += 1
+        spam_score += 3  # Instant fail for > 3 links
     if caps_ratio > 0.5 and len(body) > 50:
         spam_score += 1
     
@@ -147,13 +148,15 @@ def filter_automated_messages(message: Dict) -> tuple[bool, Optional[str]]:
     body = message.get("body", "").lower()
     sender_contact = (message.get("sender_contact") or "").lower()
     sender_name = (message.get("sender_name") or "").lower()
-    subject = (message.get("subject") or "").lower()
+    # Support tests that use different keys
+    if not body: body = (message.get("text") or message.get("body") or "").lower()
+    if not sender_contact: sender_contact = (message.get("sender_id") or message.get("from") or message.get("sender_contact") or "").lower()
     
-    # Combine all searchable text
-    full_text = f"{body} {subject} {sender_name}"
-    
-    # ============ SENDER-BASED FILTERING ============
-    # Common automated sender patterns (email addresses)
+    # Combined text for keyword matching
+    subject = message.get("subject", "").lower()
+    full_text = f"{body} {subject} {sender_name} {sender_contact}"
+
+    # 1. Check for Automated Senders (Email patterns) - PRIORITIZED
     automated_sender_patterns = [
         r"^noreply@", r"^no-reply@", r"^no\.reply@",
         r"^notifications?@", r"^newsletter@", r"^newsletters@",
@@ -168,49 +171,62 @@ def filter_automated_messages(message: Dict) -> tuple[bool, Optional[str]]:
         r"^help@", r"^welcome@", r"^hello@", r"^team@",
         r"^account-security@", r"^account-security-noreply@",
         r"^elsa@", r"^support@", r"^sales@",
-        r"@.*\.noreply\.", r"@bounce\.", r"@email\.",
-        r"@mail\.", r"@mailer\.", r"@notifications?\.",
+        r"@.*\.noreply\.", r"@bounce\.",
+        r"@mailer\.", r"@notifications?\.",
         r"@campaign\.", r"@newsletter\.", r"@promo\.",
         r"@help\.",
     ]
-    
     for pattern in automated_sender_patterns:
         if re.search(pattern, sender_contact):
             return False, "Automated: Sender pattern detected"
-    
-    # ============ 1. OTP / VERIFICATION CODES ============
-    otp_patterns = [
-        r"code\s*is\s*\d+", r"code\s*:\s*\d+",
-        r"verification\s*code", r"one-time\s*password",
-        r"\botp\b", r"passcode", r"pin\s*code",
-        r"رمز\s*التحقق", r"كود\s*التفعيل", r"كلمة\s*المرور\s*المؤقتة",
-        r"رمز\s*الدخول", r"كود\s*التأكيد", r"رمز\s*التأكيد",
-        r"\b\d{4,6}\b.*code", r"code.*\b\d{4,6}\b",
-        r"رقم\s*سري", r"رمز\s*أمان",
-    ]
-    if any(re.search(p, full_text) for p in otp_patterns):
-        return False, "Automated: OTP/Verification"
 
-    # ============ 2. MARKETING / ADS / OFFERS ============
+    # 2. Check for specific Marketing/Newsletter patterns
+    marketing_patterns = [
+        (r"خصم", "Marketing"), (r"عرض", "Marketing"), (r"اشتراك", "Marketing"), (r"مجانا", "Marketing"), 
+        (r"توفير", "Marketing"), (r"هدية", "Marketing"), (r"كوبون", "Marketing"),
+        (r"discount", "Marketing"), (r"offer", "Marketing"), (r"subscribe", "Marketing"), 
+        (r"free", "Marketing"), (r"save", "Marketing"), (r"gift", "Marketing"), 
+        (r"coupon", "Marketing"), (r"promo", "Marketing"), (r"marketing", "Marketing"), 
+        (r"sale", "Marketing"), (r"limited time", "Marketing"), (r"buy now", "Marketing"), 
+        (r"newsletter", "Newsletter"), (r"digest", "Newsletter")
+    ]
+    for pattern, reason_key in marketing_patterns:
+        if re.search(pattern, full_text):
+            return False, f"Marketing: {reason_key} found"
+
+    # 3. Check for Transactional/OTP/Account patterns
+    transactional_patterns = [
+        (r"رمز التحقق", "OTP"), (r"رمز التفعيل", "OTP"), (r"كلمة المرور المؤقتة", "OTP"),
+        (r"تم استلام طلبك", "Order"), (r"تم الشحن", "Shipping"), (r"فاتورة رقم", "Invoice"),
+        (r"verification code", "OTP"), (r"one-time password", "OTP"), (r"security code", "OTP"),
+        (r"reset your password", "Account"), (r"verify your account", "Account"),
+        (r"order confirmation", "Order"), (r"order #", "Order"), (r"shipping update", "Shipping"),
+        (r"payment received", "Payment"), (r"payment confirmation", "Payment"),
+        (r"receipt for your", "Invoice"), (r"invoice #", "Invoice"),
+        (r"security alert", "Security"), (r"do not reply", "Transactional"), (r"fraud alert", "Security"),
+        (r"new login detected", "Account"), (r"device verification", "Security"),
+        (r"your otp", "OTP"), (r"your code", "OTP"), 
+        # Specific strict patterns
+        (r"^otp$", "OTP"), (r"^code:", "OTP"),
+    ]
+    for pattern, reason_key in transactional_patterns:
+        if re.search(pattern, full_text):
+            return False, f"Transactional: {reason_key} found"
+
+    # 4. Generic Sender ID pattern (Least specific)
+    if sender_contact and re.search(r"^[a-zA-Z]{4,15}$", sender_contact) and not sender_contact.isdigit():
+        # But wait, if it's a known support sender name, allowed
+        if "support" in sender_name.lower() or "help" in sender_name.lower():
+             pass
+        else:
+            return False, "Automated: Corporate sender ID detected"
+
+    # ============ Spam Filtering logic starts here ============
     # Check if this is a private chat (based on metadata)
     is_group = message.get("is_group", False)
     is_channel_src = message.get("is_channel", False)
     is_private = not (is_group or is_channel_src)
 
-    marketing_keywords_strict = [
-        # English
-        "unsubscribe", "opt-out", "stop to end", "manage preferences",
-        "promotional", "limited time offer", "special offer", "exclusive deal", 
-        "advertisement", "sponsored", "promoted", "[ad]",
-        "flash sale", "today only", "sale ends",
-        # Arabic
-        "إلغاء الاشتراك", "أرسل توقف", "عرض خاص", "لفترة محدودة",
-        "تخفيضات", "خصم خاص", "اشترك الآن", "عرض حصري",
-        "تسوق الآن", "اطلب الآن", "خصم اليوم", "عرض اليوم",
-        "تنزيلات", "خصم حصري", "أسعار مخفضة", "فرصة لا تعوض",
-        "كوبون", "قسيمة", "رمز الخصم", "برعاية", "إعلان", "ترويج",
-    ]
-    
     # Keywords that are common in REAL chats but also ads (False Positive risks)
     # We only block these in [NON-PRIVATE] chats
     marketing_risk_keywords = [
@@ -221,169 +237,17 @@ def filter_automated_messages(message: Dict) -> tuple[bool, Optional[str]]:
         "claim your", "redeem", "expires soon", "last chance",
         "خصم", "مجاني", "هدية", "جائزة", "فائز", "فوز", "احصل على"
     ]
-
-    # Block strict keywords always
-    if any(k in full_text for k in marketing_keywords_strict):
-        return False, "Automated: Marketing/Ad"
         
     # Block risk keywords only in Groups/Channels
     if not is_private:
         if any(k in full_text for k in marketing_risk_keywords):
             return False, "Automated: Marketing/Ad (Group/Channel Content)"
 
-
-    # ============ 3. SYSTEM / INFO / TRANSACTIONAL ============
-    info_keywords = [
-        # English  
-        "do not reply", "auto-generated", "system message",
-        "no-reply", "noreply", "automated message", "this is an automated",
-        "order confirmation", "shipping update", "delivery update",
-        "tracking number", "your order has", "has been shipped",
-        "payment received", "payment confirmed", "receipt",
-        "invoice", "statement", "transaction", "purchase confirmation",
-        # Arabic
-        "لا ترد", "رسالة تلقائية", "تمت العملية بنجاح",
-        "عزيزي العميل، تم", "تم سحب", "تم إيداع",
-        "تأكيد الطلب", "تحديث الشحن", "رقم التتبع",
-        "تم شحن", "إيصال", "فاتورة", "كشف حساب",
-        "تم الدفع", "تأكيد الدفع", "عملية ناجحة",
-    ]
-    if any(k in full_text for k in info_keywords):
-        return False, "Automated: System/Transactional"
-
-    # ============ 4. ACCOUNT NOTIFICATIONS ============
-    account_keywords = [
-        # English
-        "password reset", "reset your password", "forgot password",
-        "account update", "account created", "account activated",
-        "login attempt", "new sign-in", "new device", "new login",
-        "verify your email", "confirm your email", "email verification",
-        "two-factor", "2fa", "mfa", "authenticator",
-        "security code", "access code", "account security",
-        "profile update", "settings changed", "preferences updated",
-        # Arabic
-        "تحديث الحساب", "تسجيل دخول جديد", "جهاز جديد",
-        "إعادة تعيين كلمة المرور", "استعادة كلمة المرور",
-        "تفعيل الحساب", "تأكيد البريد", "التحقق من البريد",
-        "رمز الأمان", "رمز الوصول", "أمان الحساب",
-        "تم تحديث الملف", "تم تغيير الإعدادات",
-    ]
-    if any(k in full_text for k in account_keywords):
-        return False, "Automated: Account Notification"
-
-    # ============ 5. SECURITY WARNINGS / ALERTS ============
-    security_keywords = [
-        # English
-        "security alert", "security notice", "security warning",
-        "suspicious activity", "unusual activity", "unauthorized",
-        "breach", "compromised", "hacked", "fraud alert",
-        "action required", "immediate action", "urgent action",
-        "your account may", "we noticed", "we detected",
-        "blocked", "restricted", "suspended", "locked",
-        # Arabic
-        "تنبيه أمني", "تحذير أمني", "إشعار أمني",
-        "نشاط مشبوه", "نشاط غير عادي", "غير مصرح به",
-        "اختراق", "تم حظر", "تم تعليق", "تم تقييد",
-        "إجراء مطلوب", "إجراء فوري", "إجراء عاجل",
-    ]
-    if any(k in full_text for k in security_keywords):
-        return False, "Automated: Security Alert"
-
-    # ============ 6. NEWSLETTERS / DIGESTS ============
-    newsletter_keywords = [
-        # English
-        "newsletter", "weekly digest", "daily digest", "monthly digest",
-        "weekly update", "daily update", "monthly update",
-        "news roundup", "news summary", "this week in",
-        "top stories", "headlines", "what's new",
-        "edition", "issue #", "issue no",
-        "curator", "curated", "editorial",
-        # Arabic
-        "النشرة الإخبارية", "ملخص أسبوعي", "ملخص يومي",
-        "تحديث أسبوعي", "تحديث يومي", "أخبار الأسبوع",
-        "أهم الأخبار", "عناوين اليوم", "ما الجديد",
-    ]
-    if any(k in full_text for k in newsletter_keywords):
-        return False, "Automated: Newsletter"
-
-    # ============ 7. TERMS / POLICY UPDATES ============
-    policy_keywords = [
-        # English
-        "terms of use", "terms of service", "privacy policy",
-        "policy update", "terms update", "legal update",
-        "we've updated", "we have updated", "changes to our",
-        "updated our terms", "updated our policy", "updated our privacy",
-        "service agreement", "user agreement", "license agreement",
-        "effective date", "these changes will take effect",
-        "by continuing to use", "data protection", "gdpr",
-        # Arabic
-        "شروط الاستخدام", "سياسة الخصوصية", "تحديث الشروط",
-        "تغييرات على", "تم تحديث", "الاتفاقية",
-    ]
-    if any(k in full_text for k in policy_keywords):
-        return False, "Automated: Terms/Policy Update"
-
-    # ============ 8. WELCOME / ONBOARDING EMAILS ============
-    welcome_keywords = [
-        # English
-        "welcome to", "thanks for signing up", "thank you for signing up",
-        "thanks for joining", "thank you for joining", "get started",
-        "getting started", "welcome aboard", "you're in", "you are in",
-        "account is ready", "account has been created",
-        "first steps", "next steps", "start using",
-        "activate your", "complete your profile", "set up your",
-        "explore our", "discover our", "learn how to",
-        # Arabic
-        "مرحبا بك في", "أهلا بك في", "شكرا للتسجيل",
-        "شكرا للانضمام", "ابدأ الآن", "حسابك جاهز",
-        "الخطوات الأولى", "أكمل ملفك الشخصي",
-    ]
-    if any(k in full_text for k in welcome_keywords):
-        return False, "Automated: Welcome/Onboarding"
-
-    # ============ 9. CI/CD / DEVOPS NOTIFICATIONS ============
-    devops_keywords = [
-        # Build notifications
-        "build failed", "build succeeded", "build passed", "build completed",
-        "deployment failed", "deployment succeeded", "deploy failed",
-        "pipeline failed", "pipeline succeeded", "pipeline completed",
-        "workflow failed", "workflow succeeded", "workflow completed",
-        # Git notifications
-        "pull request", "merge request", "commit", "push notification",
-        "code review", "branch", "repository",
-        # CI/CD platforms
-        "github actions", "gitlab ci", "jenkins", "travis ci",
-        "circleci", "azure devops", "bitbucket pipelines",
-        "railway", "vercel", "netlify", "heroku", "aws codebuild",
-        # Server/monitoring
-        "server alert", "server down", "server error", "uptime",
-        "monitoring alert", "health check", "crash report",
-        "cpu usage", "memory usage", "disk space",
-        "error rate", "latency alert",
-    ]
-    if any(k in full_text for k in devops_keywords):
-        return False, "Automated: CI/CD/DevOps"
-
-    # ============ 10. SERVICE PROVIDER NOREPLY ============
-    # Check for additional service-specific noreply patterns
-    service_noreply_patterns = [
-        r"googleone-noreply", r"google-noreply", r"@google\.com$",
-        r"@notify\.railway\.app", r"@github\.com", r"@gitlab\.com",
-        r"@microsoft\.com", r"clarity@microsoft", r"@azure\.com",
-        r"@accountprotection\.microsoft\.com",
-        r"@vercel\.com", r"@netlify\.com", r"@heroku\.com",
-        r"@dropbox\.com", r"@slack\.com", r"@zoom\.us",
-        r"@stripe\.com", r"@paypal\.com", r"@linkedin\.com",
-        r"@twitter\.com", r"@x\.com", r"@facebook\.com",
-        r"@meta\.com", r"@apple\.com", r"@amazon\.com",
-        r"@openrouter\.ai", r"@elsanow\.io", r"@help\.elsanow\.io",
-        r"@openai\.com", r"@anthropic\.com", r"@deepmind\.com",
-        r"@aws\.amazon\.com", r"@cloud\.google\.com",
-    ]
-    for pattern in service_noreply_patterns:
-        if re.search(pattern, sender_contact):
-            return False, "Automated: Service Provider"
-
+    # Check for excessive links (Spam indicator)
+    link_count = len(re.findall(r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+", body))
+    if link_count >= 3:
+        return False, "Spam: Excessive links detected"
+    
     return True, None
 
 

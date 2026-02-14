@@ -20,11 +20,15 @@ class TestFCMService:
         with patch("services.fcm_mobile_service.FCM_V1_AVAILABLE", True), \
              patch("services.fcm_mobile_service._get_access_token", return_value="fake-token"), \
              patch("services.fcm_mobile_service.FCM_PROJECT_ID", "test-project"), \
-             patch("httpx.AsyncClient") as mock_client:
+             patch("services.fcm_mobile_service.FCM_PROJECT_ID", "test-project"), \
+             patch("httpx.AsyncClient", return_value=AsyncMock()) as mock_client_cls:
+            
+            mock_instance = mock_client_cls.return_value
+            mock_instance.__aenter__.return_value = mock_instance
             
             mock_post = AsyncMock()
             mock_post.return_value.status_code = 200
-            mock_client.return_value.__aenter__.return_value.post = mock_post
+            mock_instance.post = mock_post
             
             result = await send_fcm_notification(
                 token="device-token",
@@ -46,12 +50,16 @@ class TestFCMService:
         with patch("services.fcm_mobile_service.FCM_V1_AVAILABLE", True), \
              patch("services.fcm_mobile_service._get_access_token", return_value="fake-token"), \
              patch("services.fcm_mobile_service.FCM_PROJECT_ID", "test-project"), \
-             patch("httpx.AsyncClient") as mock_client:
+             patch("services.fcm_mobile_service.FCM_PROJECT_ID", "test-project"), \
+             patch("httpx.AsyncClient", return_value=AsyncMock()) as mock_client_cls:
+            
+            mock_instance = mock_client_cls.return_value
+            mock_instance.__aenter__.return_value = mock_instance
             
             # Simulate 401 Unauthorized
             mock_post = AsyncMock()
             mock_post.return_value.status_code = 401
-            mock_client.return_value.__aenter__.return_value.post = mock_post
+            mock_instance.post = mock_post
             
             # This calls internal _send_fcm_v1 directly to verify it returns None (triggering fallback logic in main wrapper)
             result = await _send_fcm_v1("token", "title", "body")
@@ -61,18 +69,24 @@ class TestFCMService:
     async def test_send_fcm_legacy_success(self):
         """Test sending via Legacy API"""
         with patch("services.fcm_mobile_service.FCM_SERVER_KEY", "server-key"), \
-             patch("httpx.AsyncClient") as mock_client:
+             patch("httpx.AsyncClient", return_value=AsyncMock()) as mock_client_cls:
             
-            mock_post = AsyncMock()
-            mock_post.return_value.status_code = 200
-            mock_post.return_value.json.return_value = {"success": 1}
-            mock_client.return_value.__aenter__.return_value.post = mock_post
+            mock_instance = mock_client_cls.return_value
+            mock_instance.__aenter__.return_value = mock_instance
+
+            # Create a synchronous MagicMock for the response object
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"success": 1}
+            
+            # The post method is async, so it returns an awaitable that yields our mock_response
+            mock_instance.post = AsyncMock(return_value=mock_response)
             
             result = await _send_fcm_legacy("token", "title", "body")
             
             assert result is True
-            mock_post.assert_called_once()
-            assert "fcm.googleapis.com/fcm/send" in mock_post.call_args[0][0]
+            mock_instance.post.assert_called_once()
+            assert "fcm.googleapis.com/fcm/send" in mock_instance.post.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_save_fcm_token_update(self):
@@ -104,7 +118,9 @@ class TestFCMService:
              patch("db_helper.commit_db", new_callable=AsyncMock):
             
             # First fetch returns None (not found), Insert happens, Second fetch returns ID
-            mock_fetch.side_effect = [None, None, {"id": 11}] 
+            # In save_fcm_token, fetch_one is called for device_id (if exists) then token
+            # Since device_id is None in this test, it's only called once for token, then once at the end.
+            mock_fetch.side_effect = [None, {"id": 11}] 
             
             new_id = await save_fcm_token(99, "new-token", "android")
             

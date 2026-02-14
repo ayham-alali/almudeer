@@ -25,7 +25,8 @@ from services.file_storage_service import get_file_storage
 
 # MIME type mapping for Telegram media
 def get_mime_type_from_ext(file_ext: str) -> str:
-    ext = file_ext.lower().replace('.', '')
+    """Helper to get mime type from file extension"""
+    ext = file_ext.lower().lstrip(".")
     
     # Images
     if ext in ['jpg', 'jpeg']: return 'image/jpeg'
@@ -94,6 +95,9 @@ def get_mime_type_from_ext(file_ext: str) -> str:
     if ext in ['txt', 'log']: return 'text/plain'
     
     return 'application/octet-stream'
+
+# Alias for tests
+get_mime_type = get_mime_type_from_ext
 
 class TelegramPhoneService:
     """Service for Telegram MTProto client (phone number authentication)"""

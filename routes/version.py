@@ -379,90 +379,45 @@ async def get_version():
     }
 
 
+class UpdateCheckResponse(BaseModel):
+    update_available: bool
+    version: str
+    download_url: Optional[str] = None
+    release_notes: Optional[str] = None
+    is_critical: bool = False
+
+@router.get("/check-update", response_model=UpdateCheckResponse)
+async def check_update(current_version: str, platform: str = "android"):
+    """Internal/Legacy alias for check_app_version"""
+    return await _get_app_version_logic(current_version, platform)
+
 @router.get("/api/app/version-check", summary="Mobile app version check (public)")
 @router.get("/api/v1/app/version-check", summary="Mobile app version check v1 (public)")
-async def check_app_version(request: Request):
-    """
-    Public endpoint for mobile app RELIABLE force update system.
-    No authentication required.
-    
-    Rate Limited: 60 requests per minute per IP
-    """
-    # Rate limiting by client IP
-    client_ip = request.client.host if request.client else "unknown"
-    is_allowed, remaining = _rate_limiter.is_allowed(client_ip)
-    
-    if not is_allowed:
-        raise HTTPException(
-            status_code=429,
-            detail=_MESSAGES["ar"]["rate_limit"],
-            headers={"Retry-After": str(_RATE_LIMIT_WINDOW)}
-        )
-    
-    changelog_data = await _get_changelog()
-    update_config = await _get_update_config()
-    parsed_changelog = _parse_categorized_changelog(changelog_data)
-    
-    # Check if update is currently active
-    is_active, active_reason = _is_update_active(update_config)
-    
-    # Append cache-busting query params to update URL
-    # This prevents the "Update Loop" where users download cached old APKs
-    final_update_url = _APP_DOWNLOAD_URL
-    if "almudeer.apk" in final_update_url:
-        min_build = await _get_min_build_number()
-        ts = int(time.time())
-        separator = "&" if "?" in final_update_url else "?"
-        final_update_url = f"{final_update_url}{separator}v={min_build}&t={ts}"
+@router.get("/check", response_model=UpdateCheckResponse)
+async def check_app_version(request: Request, current_version: str = Query(None), platform: str = Query("android")):
+    """Public endpoint for mobile app version check"""
+    client_ip = request.client.host if request and request.client else "unknown"
+    return await _get_app_version_logic(current_version, platform, client_ip)
 
-    return {
-        # Core version info
-        "min_build_number": await _get_min_build_number(),
-        "current_version": _APP_VERSION,
-        "update_url": final_update_url,
-        
-        # Update behavior
-        "force_update": _FORCE_UPDATE_ENABLED,
-        "is_soft_update": update_config.get("is_soft_update", False),
-        "priority": update_config.get("priority", UPDATE_PRIORITY_NORMAL),
-        "min_soft_update_build": update_config.get("min_soft_update_build", 0),
-        "rollout_percentage": update_config.get("rollout_percentage", 100),
-        
-        # Scheduling
-        "update_active": is_active,
-        "update_active_reason": active_reason,
-        "effective_from": update_config.get("effective_from"),
-        "effective_until": update_config.get("effective_until"),
-        
-        # Deferral logic
-        "max_deferrals": update_config.get("max_deferrals", 0),
-        "deferral_expiry_hours": update_config.get("deferral_expiry_hours", 0),
-        
-        # Changelog (both formats for compatibility)
-        "changelog": parsed_changelog["changelog_ar"],
-        "changelog_en": parsed_changelog["changelog_en"],
-        "changes": parsed_changelog["changes"],  # Categorized format
-        "release_notes_url": changelog_data.get("release_notes_url", ""),
-        
-        # APK info
-        "apk_size_mb": _get_apk_size_mb(),
-        "apk_sha256": _get_apk_sha256(),
-        
-        # Rate limit info
-        "rate_limit_remaining": remaining,
-        
-        # User message
-        "message": _MESSAGES["ar"]["update_message"],
-        
-        # iOS
-        "ios_store_url": update_config.get("ios_store_url") or _IOS_STORE_URL,
-        
-        # Security
-        "apk_signing_fingerprint": await _get_apk_signing_fingerprint(),
-
-        # Clock Sync
-        "server_time": datetime.now(timezone.utc).isoformat(),
-    }
+async def _get_app_version_logic(current_version: str, platform: str = "android", client_ip: str = "unknown"):
+    config = await get_app_config()
+    min_version = config.get(f"min_{platform}_version", "1.0.0")
+    latest_version = config.get(f"latest_{platform}_version", "1.0.0")
+    
+    update_available = False
+    if current_version:
+        try:
+            update_available = latest_version > current_version
+        except Exception:
+            update_available = False
+            
+    return UpdateCheckResponse(
+        update_available=update_available,
+        version=latest_version,
+        download_url=config.get(f"{platform}_download_url"),
+        release_notes=config.get(f"{platform}_release_notes", ""),
+        is_critical=latest_version > min_version
+    )
 
 
 @router.post("/api/app/set-min-build", summary="Set minimum build number (admin only)")

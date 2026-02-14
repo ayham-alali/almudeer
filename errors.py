@@ -123,6 +123,7 @@ class DatabaseError(APIError):
         )
 
 
+
 # Exception handlers for FastAPI
 async def api_error_handler(request: Request, exc: APIError) -> JSONResponse:
     """Handle APIError exceptions"""
@@ -164,18 +165,39 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
 
 async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Handle unexpected exceptions"""
+    # Handle ExceptionGroup (recursive unwrap)
+    if hasattr(exc, "exceptions"):
+        for sub_exc in exc.exceptions:
+            if isinstance(sub_exc, APIError):
+                return await api_error_handler(request, sub_exc)
+            if isinstance(sub_exc, HTTPException):
+                return await http_exception_handler(request, sub_exc)
+    
     error_id = id(exc)
     logger.exception(f"Unhandled exception [{error_id}]: {exc}")
     
+    # Check for DEBUG_ERRORS
+    import os
+    DEBUG_ERRORS = os.getenv("DEBUG_ERRORS", "0") == "1"
+    
+    payload = {
+        "error": True,
+        "error_code": "INTERNAL_ERROR",
+        "message": "An unexpected error occurred",
+        "message_ar": "حدث خطأ غير متوقع",
+        "details": {"error_id": error_id},
+    }
+    
+    if DEBUG_ERRORS:
+        payload["debug"] = {
+            "type": type(exc).__name__,
+            "message": str(exc),
+            "traceback": traceback.format_exc(),
+        }
+        
     return JSONResponse(
         status_code=500,
-        content={
-            "error": True,
-            "error_code": "INTERNAL_ERROR",
-            "message": "An unexpected error occurred",
-            "message_ar": "حدث خطأ غير متوقع",
-            "details": {"error_id": error_id},
-        },
+        content=payload,
     )
 
 
@@ -183,5 +205,4 @@ def register_error_handlers(app):
     """Register all error handlers with the FastAPI app"""
     app.add_exception_handler(APIError, api_error_handler)
     app.add_exception_handler(HTTPException, http_exception_handler)
-    # Only enable generic handler in production
-    # app.add_exception_handler(Exception, generic_exception_handler)
+    app.add_exception_handler(Exception, generic_exception_handler)

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 
+from constants import TeamRoles
 from logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -118,7 +119,7 @@ def create_refresh_token(data: Dict[str, Any]) -> str:
     return jwt.encode(to_encode, config.secret_key, algorithm=config.algorithm)
 
 
-def create_token_pair(user_id: str, license_id: int = None, role: str = "user") -> Dict[str, Any]:
+def create_token_pair(user_id: str, license_id: int = None, role: str = TeamRoles.MEMBER) -> Dict[str, Any]:
     """
     Create both access and refresh tokens.
     
@@ -202,7 +203,7 @@ def refresh_access_token(refresh_token: str) -> Optional[Dict[str, Any]]:
     access_token, jti, expires_at = create_access_token({
         "sub": payload.get("sub"),
         "license_id": payload.get("license_id"),
-        "role": payload.get("role", "user"),
+        "role": payload.get("role", TeamRoles.MEMBER),
     })
     
     return {
@@ -264,7 +265,7 @@ async def get_current_user(
     return {
         "user_id": payload.get("sub"),
         "license_id": payload.get("license_id"),
-        "role": payload.get("role", "user"),
+        "role": payload.get("role", TeamRoles.MEMBER),
     }
 
 
@@ -282,7 +283,7 @@ async def get_current_user_optional(
     return {
         "user_id": payload.get("sub"),
         "license_id": payload.get("license_id"),
-        "role": payload.get("role", "user"),
+        "role": payload.get("role", TeamRoles.MEMBER),
     }
 
 
@@ -292,7 +293,7 @@ def require_role(required_role: str):
     
     Usage:
         @app.get("/admin-only")
-        async def admin_route(user: dict = Depends(require_role("admin"))):
+        async def admin_route(user: dict = Depends(require_role(TeamRoles.ADMIN))):
             return {"access": "granted"}
     """
     async def role_checker(user: dict = Depends(get_current_user)) -> dict:
@@ -306,4 +307,4 @@ def require_role(required_role: str):
 
 
 # Admin shortcut
-require_admin = require_role("admin")
+require_admin = require_role(TeamRoles.ADMIN)

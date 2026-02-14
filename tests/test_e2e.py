@@ -48,12 +48,19 @@ async def test_e2e_health_endpoints():
 async def test_e2e_api_version():
     """E2E: API version endpoint"""
     from main import app
+    from unittest.mock import patch, AsyncMock
     
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/api/v1/version")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "version" in data
+    # Patch get_app_config to avoid DB call
+    with patch("routes.version.get_app_config", new_callable=AsyncMock) as mock_config:
+        mock_config.return_value = {
+            "min_android_version": "1.0.0",
+            "latest_android_version": "1.0.0"
+        }
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/version")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert "min_build_number" in data
 
 
 # ============ E2E: Authentication Flow ============
@@ -81,32 +88,7 @@ async def test_e2e_auth_me_requires_token():
         assert resp.status_code == 401
 
 
-# ============ E2E: Analysis Endpoints ============
-
-@pytest.mark.anyio
-async def test_e2e_analyze_requires_auth():
-    """E2E: Analyze endpoint requires license"""
-    from main import app
-    
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.post(
-            "/api/analyze",
-            json={"message": "Test message"}
-        )
-        assert resp.status_code in [401, 403, 422]
-
-
-@pytest.mark.anyio
-async def test_e2e_analyze_async_requires_auth():
-    """E2E: Async analyze requires license"""
-    from main import app
-    
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.post(
-            "/api/analyze/async",
-            json={"message": "Test message"}
-        )
-        assert resp.status_code in [401, 403, 422]
+# Analyze tests removed (AI removed)
 
 
 # ============ E2E: Paginated Endpoints ============

@@ -7,10 +7,15 @@ import os
 from datetime import datetime, timedelta, date
 from typing import Optional, List
 
-from db_helper import get_db, execute_sql, fetch_all, fetch_one, commit_db, DB_TYPE
-
-# For functions that still use aiosqlite directly (to be migrated)
-DATABASE_PATH = os.getenv("DATABASE_PATH", "almudeer.db")
+from db_helper import (
+    get_db,
+    execute_sql,
+    fetch_all,
+    fetch_one,
+    commit_db,
+    DB_TYPE,
+    DATABASE_PATH
+)
 if DB_TYPE != "postgresql":
     import aiosqlite
 

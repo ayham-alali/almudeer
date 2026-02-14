@@ -46,19 +46,24 @@ async def test_fcm_token_migration_same_device(db_session):
         await ensure_fcm_tokens_table()
         
         # Create License A
+        import uuid
+        unique_suffix = str(uuid.uuid4())[:8]
+        hash_a = f"hash_A_{unique_suffix}"
+        hash_b = f"hash_B_{unique_suffix}"
+        
         await execute_sql(db_session, 
             "INSERT INTO license_keys (key_hash, company_name, is_active) VALUES (?, ?, ?)",
-            ["hash_A", "Company A", 1]
+            [hash_a, "Company A", 1]
         )
-        license_a = await fetch_one(db_session, "SELECT id FROM license_keys WHERE key_hash = ?", ["hash_A"])
+        license_a = await fetch_one(db_session, "SELECT id FROM license_keys WHERE key_hash = ?", [hash_a])
         id_a = license_a["id"]
         
         # Create License B
         await execute_sql(db_session, 
             "INSERT INTO license_keys (key_hash, company_name, is_active) VALUES (?, ?, ?)",
-            ["hash_B", "Company B", 1]
+            [hash_b, "Company B", 1]
         )
-        license_b = await fetch_one(db_session, "SELECT id FROM license_keys WHERE key_hash = ?", ["hash_B"])
+        license_b = await fetch_one(db_session, "SELECT id FROM license_keys WHERE key_hash = ?", [hash_b])
         id_b = license_b["id"]
         await commit_db(db_session)
         
@@ -137,11 +142,15 @@ async def test_logout_cleanup_simulation(db_session):
         await ensure_fcm_tokens_table()
         
         # Setup License
+        import uuid
+        unique_suffix = str(uuid.uuid4())[:8]
+        hash_c = f"hash_C_{unique_suffix}"
+            
         await execute_sql(db_session, 
             "INSERT INTO license_keys (key_hash, company_name, is_active) VALUES (?, ?, ?)",
-            ["hash_C", "Company C", 1]
+            [hash_c, "Company C", 1]
         )
-        license_c = await fetch_one(db_session, "SELECT id FROM license_keys WHERE key_hash = ?", ["hash_C"])
+        license_c = await fetch_one(db_session, "SELECT id FROM license_keys WHERE key_hash = ?", [hash_c])
         id_c = license_c["id"]
         
         fcm_token = "logout_token_123"

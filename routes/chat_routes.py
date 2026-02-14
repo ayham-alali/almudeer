@@ -43,7 +43,8 @@ from services import (
     TelegramService,
     TelegramPhoneService,
 )
-from agent import process_message
+from services.whatsapp_service import WhatsAppService
+# from agent import process_message (AI removed)
 from dependencies import get_license_from_header
 
 router = APIRouter(prefix="/api/integrations", tags=["Chat"])
@@ -382,24 +383,8 @@ async def mark_conversation_read_route(
 
 # --- Internal Background Tasks Implementation (Original core_integrations.py logic) ---
 
-async def analyze_inbox_message(
-    message_id: int,
-    body: str,
-    license_id: int,
-    telegram_chat_id: str = None,
-    attachments: Optional[List[dict]] = None
-):
-    """
-    Queue message for AI analysis.
-    Replaces old direct processing with robust persistent queue.
-    """
-    await enqueue_task("analyze_message", {
-        "message_id": message_id,
-        "body": body,
-        "license_id": license_id,
-        "telegram_chat_id": telegram_chat_id,
-        "attachments": attachments
-    })
+    # AI analysis removed
+    pass
 
 
 async def send_approved_message(outbox_id: int, license_id: int):

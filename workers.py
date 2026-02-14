@@ -22,14 +22,12 @@ from db_helper import (
     fetch_all,
     execute_sql,
     commit_db,
+    DB_TYPE,
+    DATABASE_PATH,
+    DATABASE_URL
 )
 
 logger = get_logger(__name__)
-
-# Database configuration
-DB_TYPE = os.getenv("DB_TYPE", "sqlite").lower()
-DATABASE_PATH = os.getenv("DATABASE_PATH", "almudeer.db")
-DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Import appropriate database driver
 if DB_TYPE == "postgresql":
@@ -76,17 +74,12 @@ from models import (
     update_telegram_phone_session_sync_time,
     deactivate_telegram_phone_session,
 )
-from agent import process_message
+# from agent import process_message (AI removed)
 from message_filters import apply_filters
 
 
 class MessagePoller:
     """Background worker for polling messages from all channels"""
-    
-    # Rate limits per user to protect Gemini free tier (15 RPM, 1500 RPD)
-    # With 3 API calls per message: 500 messages/day total, 50/user for 10 users
-    MAX_MESSAGES_PER_USER_PER_DAY = int(os.getenv("MAX_MESSAGES_PER_USER_DAY", "50"))
-    MAX_MESSAGES_PER_USER_PER_MINUTE = int(os.getenv("MAX_MESSAGES_PER_USER_MINUTE", "1"))
     
     def __init__(self):
         self.running = False
@@ -110,10 +103,6 @@ class MessagePoller:
         # Keep references to background tasks to prevent garbage collection
         self.background_tasks: Set[asyncio.Task] = set()
         
-        # Limit concurrent AI requests to prevent hitting free tier rate limits
-        # Using 1 concurrent request max to be extra safe with Gemini free tier
-        self.ai_semaphore = asyncio.Semaphore(1)
-        
         # Track message retry counts to prevent infinite retry loops
         # Structure: {message_id: retry_count}
         self._retry_counts: Dict[int, int] = {}
@@ -126,49 +115,6 @@ class MessagePoller:
         self._retried_this_cycle: Set[int] = set()
         
         # Per-user rate limiting is now handled via Redis/CacheManager
-    
-    async def _check_user_rate_limit(self, license_id: int) -> tuple[bool, str]:
-        """
-        Check if user is within rate limits using Redis.
-        Returns (allowed, reason) tuple.
-        """
-        daily_key = f"rate_limit:daily:{license_id}"
-        minute_key = f"rate_limit:minute:{license_id}"
-        
-        # Get current counts (default to 0)
-        daily_count = await cache.get(daily_key) or 0
-        minute_count = await cache.get(minute_key) or 0
-        
-        # Check daily limit
-        if int(daily_count) >= self.MAX_MESSAGES_PER_USER_PER_DAY:
-            return False, f"Daily limit reached ({self.MAX_MESSAGES_PER_USER_PER_DAY}/day)"
-        
-        # Check minute limit
-        if int(minute_count) >= self.MAX_MESSAGES_PER_USER_PER_MINUTE:
-            return False, f"Minute limit reached ({self.MAX_MESSAGES_PER_USER_PER_MINUTE}/min)"
-        
-        return True, ""
-    
-    async def _increment_user_rate_limit(self, license_id: int):
-        """Increment rate limit counters for a user in Redis."""
-        daily_key = f"rate_limit:daily:{license_id}"
-        minute_key = f"rate_limit:minute:{license_id}"
-        
-        # Increment daily
-        d_val = await cache.increment(daily_key)
-        if d_val == 1:
-            await cache.expire(daily_key, 86400) # 24 hours
-            
-        # Increment minute
-        m_val = await cache.increment(minute_key)
-        if m_val == 1:
-            await cache.expire(minute_key, 60) # 1 minute
-            
-        logger.debug(
-            f"License {license_id} rate limit: "
-            f"{d_val}/{self.MAX_MESSAGES_PER_USER_PER_DAY} daily, "
-            f"{m_val}/{self.MAX_MESSAGES_PER_USER_PER_MINUTE} per min"
-        )
     
     async def start(self):
         """Start all polling workers"""
@@ -308,16 +254,6 @@ class MessagePoller:
     async def _retry_pending_messages(self, license_id: int):
         """Retry AI analysis for messages with placeholder responses"""
         try:
-            # Check global rate limiter cooldown first
-            # This prevents multiple licenses from queuing up requests when we're already rate limited
-            from services.llm_provider import get_rate_limiter
-            rate_limiter = get_rate_limiter()
-            
-            if rate_limiter.is_in_cooldown():
-                remaining = rate_limiter.get_cooldown_remaining()
-                logger.debug(f"License {license_id}: Global rate limit cooldown active ({remaining:.1f}s), skipping retries")
-                return
-
             # Find messages with pending placeholder response
             placeholder = "⏳ جاري تحليل الرسالة تلقائياً..."
             
@@ -365,12 +301,6 @@ class MessagePoller:
                         logger.debug(f"Skipping message {message_id}: already retried this cycle")
                         continue
                     
-                    # Check rate limit before retrying
-                    allowed, reason = await self._check_user_rate_limit(license_id)
-                    if not allowed:
-                        logger.debug(f"Rate limit for license {license_id}: {reason}. Retry skipped.")
-                        break  # Stop retrying for this license
-                    
                     # Mark as retried this cycle
                     self._retried_this_cycle.add(message_id)
                     
@@ -382,7 +312,6 @@ class MessagePoller:
                         message_id=message_id,
                         body=body,
                         license_id=license_id,
-                        auto_reply=False,  # Don't auto-reply on retry
                         channel=channel,
                         recipient=sender_contact,
                         sender_name=sender_name
@@ -1012,44 +941,6 @@ class MessagePoller:
         except Exception as e:
             logger.error(f"Error polling Telegram phone for license {license_id}: {e}", exc_info=True)
     
-    def _get_message_hash(self, body: str, sender: Optional[str] = None, channel_message_id: Optional[str] = None) -> str:
-        """
-        Create a hash to detect duplicate messages.
-        Uses channel_message_id if available (exact duplicate), otherwise full body + sender.
-        """
-        if channel_message_id:
-            # Exact duplicate detection using platform message ID
-            content = f"msg_id:{channel_message_id}"
-        else:
-            # Fallback to full body hash (for platforms without message IDs)
-            content = f"{sender or 'unknown'}:{body.strip().lower()}"
-        return hashlib.md5(content.encode()).hexdigest()
-    
-    def _is_duplicate_content(self, body: str, sender: Optional[str] = None, channel_message_id: Optional[str] = None) -> bool:
-        """
-        Check if we've recently processed the EXACT same message.
-        Only returns True if channel_message_id matches (same message received twice).
-        Different messages with similar content are NOT considered duplicates.
-        """
-        # Only check for duplicates if we have a channel_message_id
-        # This prevents marking unique messages with similar content as duplicates
-        if not channel_message_id:
-            return False  # Can't determine duplicate without message ID
-        
-        msg_hash = self._get_message_hash(body, sender, channel_message_id)
-        
-        if msg_hash in self._processed_hashes:
-            logger.debug(f"Exact duplicate message detected (same channel_message_id): {channel_message_id}")
-            return True
-        
-        # Add to cache and limit size
-        self._processed_hashes.add(msg_hash)
-        if len(self._processed_hashes) > self._hash_cache_max_size:
-            # Remove oldest entries (convert to list, remove first half)
-            self._processed_hashes = set(list(self._processed_hashes)[self._hash_cache_max_size // 2:])
-        
-        return False
-    
     async def _check_existing_message(self, license_id: int, channel: str, channel_message_id: Optional[str]) -> bool:
         """Check if a message already exists in inbox"""
         if not channel_message_id:
@@ -1118,46 +1009,23 @@ class MessagePoller:
         attachments: Optional[List[dict]] = None
     ):
         """
-        Analyze message with AI and optionally auto-reply.
-        Refactored to use centralized analysis_service to prevent logic duplication.
-        All AI, CRM, Auto-purchase, and Notification logic is now in process_inbox_message_logic.
+        Process new message notifications and basic handling.
+        AI analysis has been removed.
         """
         try:
-            # Check for duplicate content (channel_message_id) 
-            if self._is_duplicate_content(body, sender_name, channel_message_id):
-                logger.info(f"Skipping AI for message {message_id}: exact duplicate")
-                from models import update_inbox_analysis
-                try:
-                    await update_inbox_analysis(
-                        message_id=message_id,
-                        intent="duplicate",
-                        urgency="low",
-                        sentiment="neutral",
-                        language=None,
-                        dialect=None,
-                        summary="تم تخطي التحليل: محتوى مكرر",
-                        draft_response=""
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to update duplicate message status: {e}")
-                return
-
-            async with self.ai_semaphore:
-                try:
-                    from services.analysis_service import process_inbox_message_logic
-                    
-                    # Delegate to the centralized logic
-                    await process_inbox_message_logic(
-                        message_id=message_id,
-                        body=body,
-                        license_id=license_id,
-                        attachments=attachments
-                    )
-                except Exception as e:
-                    logger.error(f"Error during analysis for message {message_id}: {e}", exc_info=True)
+            try:
+                from services.analysis_service import process_inbox_message_logic
+                
+                # Delegate to the centralized logic
+                await process_inbox_message_logic(
+                    message_id=message_id,
+                    body=body,
+                    license_id=license_id,
+                    attachments=attachments
+                )
+            except Exception as e:
+                logger.error(f"Error during processing for message {message_id}: {e}", exc_info=True)
             
-            await self._increment_user_rate_limit(license_id)
-
         except Exception as e:
             logger.error(f"Error analyzing message {message_id}: {e}", exc_info=True)
 

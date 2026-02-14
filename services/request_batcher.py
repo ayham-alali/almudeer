@@ -117,7 +117,7 @@ class RequestBatcher:
     
     async def _process_batch(self, batch_key: str):
         """Process all requests in a batch"""
-        from agent import process_message
+        # from agent import process_message (AI removed)
         
         batch = self._pending.pop(batch_key, [])
         if not batch:

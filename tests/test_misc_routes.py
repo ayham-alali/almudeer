@@ -8,10 +8,8 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 # Mock authentication
 @pytest.fixture
-def mock_admin_auth():
-    with patch("routes.subscription.verify_admin", return_value=True), \
-         patch("routes.version.verify_admin", return_value=True):
-        yield
+def mock_auth_data():
+    return {"is_admin": True, "license_id": 1}
 
 @pytest.fixture
 def mock_license_dependency():
@@ -21,49 +19,46 @@ def mock_license_dependency():
 class TestSubscriptionRoutes:
     
     @pytest.mark.asyncio
-    async def test_create_subscription(self, mock_admin_auth):
+    async def test_create_subscription(self, mock_auth_data):
         from routes.subscription import create_subscription, SubscriptionCreate
         
-        with patch("routes.subscription.generate_license_key", new_callable=AsyncMock) as mock_gen:
+        with patch("routes.subscription.generate_license_key", new_callable=AsyncMock) as mock_gen, \
+             patch("db_helper.get_db") as mock_get_db, \
+             patch("db_helper.fetch_one", new_callable=AsyncMock) as mock_fetch_one:
+            
             mock_gen.return_value = "KEY-123"
+            mock_fetch_one.return_value = None  # Username not taken
+            
+            mock_db = AsyncMock()
+            mock_get_db.return_value.__aenter__.return_value = mock_db
             
             payload = SubscriptionCreate(
                 company_name="Test Company",
                 days_valid=30,
-                max_requests_per_day=100
+                max_requests_per_day=100,
+                username="test_user"
             )
             
-            response = await create_subscription(payload)
+            response = await create_subscription(payload, auth=mock_auth_data)
             
             assert response.success is True
             assert response.subscription_key == "KEY-123"
             assert response.company_name == "Test Company"
 
     @pytest.mark.asyncio
-    async def test_list_subscriptions(self, mock_admin_auth):
+    async def test_list_subscriptions(self, mock_auth_data):
         from routes.subscription import list_subscriptions
         
-        # Mock DB for SQLite path (default)
-        with patch("aiosqlite.connect") as mock_connect:
+        # Mock DB helpers directly
+        with patch("db_helper.get_db") as mock_get_db, \
+             patch("db_helper.fetch_all", new_callable=AsyncMock) as mock_fetch:
+            
             mock_db = AsyncMock()
-            mock_cursor = AsyncMock()
-            mock_connect.return_value.__aenter__.return_value = mock_db
-            mock_db.execute.return_value.__aenter__.return_value = mock_cursor
+            mock_get_db.return_value.__aenter__.return_value = mock_db
             
-            # Mock fetchall rows
-            mock_row = MagicMock()
-            mock_row.keys.return_value = ["id", "company_name", "created_at"]
-            # To make dict(row) work, we need __iter__ or similar behavior if it's not a real Row
-            # Simulating dict behavior:
-            row_data = {"id": 1, "company_name": "Test Co", "created_at": "2023-01-01"}
+            mock_fetch.return_value = [{"id": 1, "company_name": "Test Co", "is_active": 1, "created_at": "2023-01-01"}]
             
-            # If the code does dict(row), it expects an iterable of (key, value) or similar
-            # aiosqlite.Row is dict-like.
-            # Let's just return a dict directly since the code converts it: `row_dict = dict(row)`
-            # Wait, `dict({})` is fine.
-            mock_cursor.fetchall.return_value = [{"id": 1, "company_name": "Test Co", "is_active": 1}]
-            
-            response = await list_subscriptions(limit=10)
+            response = await list_subscriptions(limit=10, auth=mock_auth_data)
             
             assert response.total == 1
             assert response.subscriptions[0]["company_name"] == "Test Co"
@@ -71,28 +66,7 @@ class TestSubscriptionRoutes:
 
 class TestSystemRoutes:
     
-    @pytest.mark.asyncio
-    async def test_llm_health_check(self, mock_license_dependency):
-        from routes.system_routes import check_llm_health
-        
-        with patch("os.getenv") as mock_env, \
-             patch("httpx.AsyncClient") as mock_client:
-             
-            # Configure Env
-            def env_side_effect(key, default=None):
-                if key == "OPENAI_API_KEY": return "test-key"
-                return default
-            mock_env.side_effect = env_side_effect
-            
-            # Mock OpenAI Response
-            mock_post = AsyncMock()
-            mock_post.status_code = 200
-            mock_client.return_value.__aenter__.return_value.post = mock_post
-            
-            result = await check_llm_health()
-            
-            assert "openai" in result["providers"]
-            assert result["providers"]["openai"]["status"] == "healthy"
+
 
     @pytest.mark.asyncio
     async def test_list_integration_accounts(self, mock_license_dependency):
@@ -117,15 +91,29 @@ class TestVersionRoutes:
     
     @pytest.mark.asyncio
     async def test_update_check(self):
+        """Test the version update check endpoint"""
         from routes.version import check_update, UpdateCheckResponse
         
-        # Test basic flow without mocks (assuming no external calls in simple path)
-        # Actually version.py uses 'CURRENT_VERSION' constant.
-        
-        response = await check_update(
-            platform="android",
-            current_version="1.0.0"
-        )
-        # Depending on CURRENT_VERSION in version.py, it might force update or not.
-        # Just checking structure
-        assert isinstance(response, UpdateCheckResponse)
+        # Mock DB logic to prevent OperationalError
+        with patch("routes.version.get_app_config", new_callable=AsyncMock) as mock_config, \
+             patch("routes.version._get_changelog", new_callable=AsyncMock) as mock_changelog:
+            
+            mock_config.return_value = {
+                "min_android_version": "1.0.0",
+                "latest_android_version": "1.1.0",
+                "android_download_url": "https://example.com/app.apk",
+                "android_release_notes": "New features!"
+            }
+            mock_changelog.return_value = {"version": "1.1.0", "notes": "New features!"}
+            
+            response = await check_update(
+                current_version="1.0.0",
+                platform="android"
+            )
+            
+            assert isinstance(response, UpdateCheckResponse)
+            assert response.update_available is True
+            assert response.version == "1.1.0"
+            assert response.download_url == "https://example.com/app.apk"
+
+

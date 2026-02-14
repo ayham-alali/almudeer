@@ -52,18 +52,17 @@ from database import (
     generate_license_key,
 )
 from schemas import (
-    LicenseKeyValidation,
-    LicenseKeyResponse,
-    LicenseKeyCreate,
-    MessageInput,
     ProcessingResponse,
-    AnalysisResult,
     CRMEntryCreate,
     CRMEntry,
     CRMListResponse,
-    HealthCheck
+    CRMListResponse,
+    HealthCheck,
+    LicenseKeyCreate,
+    MessageInput,
+    AnalysisResult
 )
-from agent import process_message
+# from agent import process_message (AI removed)
 from models import (
     init_enhanced_tables,
     init_enhanced_tables,
@@ -81,8 +80,8 @@ try:
         email_router, 
         telegram_router, 
         chat_router, 
-        features_router, 
-        whatsapp_router, 
+        features_router,
+        whatsapp_router,
         export_router, 
         notifications_router, 
         purchases_router, 
@@ -98,7 +97,7 @@ except ImportError as e:
     logger.error(f"Failed to import routes: {e}")
     raise e
 from routes.subscription import router as subscription_router
-from errors import AuthorizationError
+from errors import AuthorizationError, register_error_handlers
 from security_config import SECURITY_HEADERS, ADMIN_KEY
 from security import sanitize_message, sanitize_string
 from workers import start_message_polling, stop_message_polling, start_subscription_reminders, stop_subscription_reminders, start_token_cleanup_worker, stop_token_cleanup_worker, start_story_cleanup_worker, stop_story_cleanup_worker
@@ -108,6 +107,7 @@ from services.pagination import paginate_inbox, paginate_crm, paginate_customers
 from services.request_batcher import get_request_batcher, batch_analyze
 from services.db_indexes import create_indexes
 from services.telegram_listener_service import get_telegram_listener
+from errors import AuthorizationError, register_error_handlers
 
 
 # ============ App Lifecycle ============
@@ -338,22 +338,8 @@ async def lifespan(app: FastAPI):
 # ============ Create App ============
 
 app = FastAPI(
-    title="Al-Mudeer API - المدير",
-    description="""
-    واجهة برمجة تطبيقات المدير الذكي للأعمال
-    
-    ## المميزات
-    
-    * 📧 تحليل الرسائل تلقائياً
-    * 🎯 تصنيف نوايا العملاء
-    * 📝 صياغة ردود احترافية
-    * 💾 إدارة سجلات العملاء (CRM)
-    
-    ## المصادقة
-    
-    جميع الطلبات المحمية تتطلب مفتاح اشتراك في header:
-    `X-License-Key: YOUR_LICENSE_KEY`
-    """,
+    title="Al-Mudeer API",
+    description="B2B AI Agent for Syrian and Arab Market",
     version="1.0.0",
     lifespan=lifespan,
     docs_url="/docs",
@@ -366,6 +352,20 @@ app = FastAPI(
         {"name": "CRM", "description": "Customer relationship management"},
     ]
 )
+
+# Register structured error handlers
+register_error_handlers(app)
+
+# Root endpoint fix
+@app.get("/", tags=["System"])
+async def root():
+    """Root endpoint returning basic system info"""
+    return {
+        "name": "Al-Mudeer API",
+        "status": "online",
+        "version": "1.0.0",
+        "docs": "/docs"
+    }
 
 # Rate Limiting
 limiter = Limiter(key_func=get_remote_address)
@@ -486,12 +486,7 @@ async def list_all_routes(x_admin_key: str = Header(None, alias="X-Admin-Key")):
     logger.info(f"Listing {len(routes)} routes")
     return {"count": len(routes), "routes": routes}
 
-# Style Learning API (adaptive AI) - optional, may require additional setup
-try:
-    from routes.style_learning import router as style_learning_router
-    app.include_router(style_learning_router)
-except Exception as e:
-    logger.warning(f"Style learning router not loaded: {e}")
+# Style learning removed
 
 # API Version 1 routes (new /api/v1/ prefix)
 # These mirror the legacy routes but with versioned prefix for future compatibility
@@ -581,160 +576,7 @@ async def create_license(data: LicenseKeyCreate, _: None = Depends(verify_admin)
 
 # ============ Protected Routes (Require License Key) ============
 
-@app.post("/api/analyze", response_model=ProcessingResponse, tags=["Analysis"])
-@limiter.limit("30/minute")  # Rate limit: 30 requests per minute per IP
-async def analyze_message(
-    request: Request,
-    data: MessageInput,
-    license: dict = Depends(verify_license)
-):
-    """
-    Analyze a message - classify intent, extract information.
-    
-    Requires: X-License-Key header
-    
-    Args:
-        data: Message input with text and metadata
-        
-    Returns:
-        Analysis result with intent, urgency, sentiment, and extracted data
-    """
-    # Sanitize inputs
-    sanitized_message = sanitize_message(data.message)
-    sanitized_sender_name = sanitize_string(data.sender_name) if data.sender_name else None
-    sanitized_sender_contact = sanitize_string(data.sender_contact) if data.sender_contact else None
-    
-    license_id = license["license_id"]
-
-    # Increment usage
-    await increment_usage(
-        license_id,
-        "analyze",
-        sanitized_message[:100]
-    )
-    
-    # Load workspace preferences for tone & business profile
-    prefs = await get_preferences(license_id)
-
-    # Load recent conversation history for this sender (if available)
-    conversation_history = ""
-    if sanitized_sender_contact:
-        # Use new unified history function
-        from models.inbox import get_chat_history_for_llm
-        conversation_history = await get_chat_history_for_llm(
-            license_id=license_id,
-            sender_contact=sanitized_sender_contact,
-            limit=10,
-        )
-
-    # Process the message
-    result = await process_message(
-        message=sanitized_message,
-        message_type=data.message_type,
-        sender_name=sanitized_sender_name,
-        sender_contact=sanitized_sender_contact,
-        preferences=prefs,
-        history=conversation_history,  # CORRECTED
-    )
-    
-    if result["success"]:
-        return ProcessingResponse(
-            success=True,
-            data=AnalysisResult(**result["data"])
-        )
-    else:
-        return ProcessingResponse(
-            success=False,
-            error=result["error"]
-        )
-
-
-# ============ Async Processing (Non-blocking AI) ============
-
-@app.post("/api/analyze/async", tags=["Analysis"])
-@limiter.limit("60/minute")  # Higher limit for async requests
-async def analyze_message_async(
-    request: Request,
-    data: MessageInput,
-    license: dict = Depends(verify_license)
-):
-    """
-    Queue a message for async AI analysis (non-blocking).
-    
-    Returns a task_id immediately. Poll /api/task/{task_id} for results.
-    Better for high-load scenarios where you don't need immediate results.
-    """
-    sanitized_message = sanitize_message(data.message)
-    
-    task_id = await enqueue_ai_task("analyze", {
-        "message": sanitized_message,
-        "message_type": data.message_type,
-        "sender_name": data.sender_name,
-        "sender_contact": data.sender_contact,
-        "license_id": license["license_id"],
-    })
-    
-    return {
-        "success": True,
-        "task_id": task_id,
-        "status": "queued",
-        "message": "Task queued for processing. Poll /api/task/{task_id} for results."
-    }
-
-
-@app.get("/api/task/{task_id}", tags=["Analysis"])
-async def get_task_status_endpoint(
-    task_id: str,
-    license: dict = Depends(verify_license)
-):
-    """
-    Get the status of an async task.
-    
-    Returns:
-        - status: pending, processing, completed, or failed
-        - result: The analysis result if completed
-        - error: Error message if failed
-    """
-    task = await get_ai_task_status(task_id)
-    
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    return {
-        "success": True,
-        "task_id": task_id,
-        "status": task.get("status"),
-        "result": task.get("result"),
-        "error": task.get("error"),
-        "created_at": task.get("created_at"),
-        "completed_at": task.get("completed_at"),
-    }
-
-
-# ============ Batched AI Processing ============
-
-@app.post("/api/analyze/batch", tags=["Analysis"])
-@limiter.limit("20/minute")
-async def analyze_batch(
-    request: Request,
-    data: MessageInput,
-    license: dict = Depends(verify_license)
-):
-    """
-    Analyze a message using request batching.
-    Groups similar requests for more efficient AI processing.
-    """
-    result = await batch_analyze(
-        message=sanitize_message(data.message),
-        message_type=data.message_type,
-        sender_name=data.sender_name,
-        license_id=license["license_id"],
-    )
-    return ProcessingResponse(
-        success=result.get("success", False),
-        data=AnalysisResult(**result["data"]) if result.get("success") else None,
-        error=result.get("error")
-    )
+# AI analysis endpoints removed
 
 
 # ============ WebSocket Real-time Updates ============
@@ -851,69 +693,7 @@ async def get_customers_paginated(
         search=search,
     )
 
-@app.post("/api/draft", response_model=ProcessingResponse, tags=["Analysis"])
-@limiter.limit("30/minute")  # Rate limit: 30 requests per minute per IP
-async def draft_response(
-    request: Request,
-    data: MessageInput,
-    license: dict = Depends(verify_license)
-):
-    """
-    Generate a draft response for a message.
-    
-    Requires: X-License-Key header
-    
-    Args:
-        data: Message input with text and metadata
-        
-    Returns:
-        Draft response with suggested reply text
-    """
-    # Sanitize inputs
-    sanitized_message = sanitize_message(data.message)
-    sanitized_sender_name = sanitize_string(data.sender_name) if data.sender_name else None
-    sanitized_sender_contact = sanitize_string(data.sender_contact) if data.sender_contact else None
-    
-    license_id = license["license_id"]
-
-    await increment_usage(
-        license_id,
-        "draft",
-        sanitized_message[:100]
-    )
-    
-    prefs = await get_preferences(license_id)
-
-    # Load recent conversation history for this sender (if available)
-    conversation_history = ""
-    if sanitized_sender_contact:
-        # Use new unified history function
-        from models.inbox import get_chat_history_for_llm
-        conversation_history = await get_chat_history_for_llm(
-            license_id=license_id,
-            sender_contact=sanitized_sender_contact,
-            limit=10,
-        )
-
-    result = await process_message(
-        message=sanitized_message,
-        message_type=data.message_type,
-        sender_name=sanitized_sender_name,
-        sender_contact=sanitized_sender_contact,
-        preferences=prefs,
-        history=conversation_history,  # CORRECTED
-    )
-    
-    if result["success"]:
-        return ProcessingResponse(
-            success=True,
-            data=AnalysisResult(**result["data"])
-        )
-    else:
-        return ProcessingResponse(
-            success=False,
-            error=result["error"]
-        )
+# Draft response endpoint removed (AI)
 
 
 @app.post("/api/crm/save", tags=["CRM"])
@@ -952,22 +732,7 @@ async def save_to_crm(
     return {"success": True, "entry_id": entry_id, "message": "تم الحفظ بنجاح"}
 
 
-@app.get("/api/ai-usage", tags=["Analytics"])
-async def get_ai_usage_endpoint(
-    license: dict = Depends(verify_license)
-):
-    """
-    Get current AI usage quota for the day.
-    
-    Returns:
-        used: Number of messages processed today
-        limit: Daily limit (50)
-        remaining: Remaining quota
-        percentage: Usage percentage
-    """
-    from models import get_ai_usage_today
-    return await get_ai_usage_today(license["license_id"])
-
+# AI usage endpoint removed
 
 @app.get("/api/crm/entries", response_model=CRMListResponse, tags=["CRM"])
 async def list_crm_entries(

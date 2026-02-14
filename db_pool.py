@@ -17,6 +17,8 @@ except ImportError:
 
 # Global Constants for Database Compatibility
 DB_TYPE = os.getenv("DB_TYPE", "sqlite").lower()
+DATABASE_PATH = os.getenv("DATABASE_PATH", "almudeer.db")
+DATABASE_URL = os.getenv("DATABASE_URL")
 ID_PK = "SERIAL PRIMARY KEY" if DB_TYPE == "postgresql" else "INTEGER PRIMARY KEY AUTOINCREMENT"
 TIMESTAMP_NOW = "TIMESTAMP DEFAULT NOW()" if DB_TYPE == "postgresql" else "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
 INT_TYPE = "INTEGER"
@@ -67,12 +69,12 @@ class DatabasePool:
     """Unified database connection pool manager"""
     
     def __init__(self):
-        self.db_type = os.getenv("DB_TYPE", "sqlite").lower()
+        self.db_type = DB_TYPE
         self.pool: Optional[Any] = None
-        self.sqlite_path = os.getenv("DATABASE_PATH", "almudeer.db")
+        self.sqlite_path = DATABASE_PATH
         
         # PostgreSQL connection string
-        self.postgres_url = os.getenv("DATABASE_URL")
+        self.postgres_url = DATABASE_URL
     
     async def initialize(self):
         """Initialize the appropriate database connection pool"""

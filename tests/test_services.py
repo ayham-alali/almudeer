@@ -5,6 +5,7 @@ Unit tests for individual services
 
 import pytest
 from unittest.mock import AsyncMock, patch
+from datetime import datetime
 
 
 # ============ JWT Auth Service ============
@@ -12,11 +13,20 @@ from unittest.mock import AsyncMock, patch
 class TestJWTAuth:
     """Tests for JWT authentication service"""
     
-    def test_create_access_token(self):
+    @pytest.mark.anyio
+    async def test_create_access_token(self):
         """Test access token creation"""
         from services.jwt_auth import create_access_token, verify_token, TokenType
         
-        token = create_access_token({"sub": "user@test.com", "license_id": 1})
+        data = {"sub": "user@test.com", "license_id": 1}
+        # access_token used to return just the token, now returns (token, jti, expiry)
+        token, jti, expiry = create_access_token(data)
+        
+        assert token is not None
+        assert isinstance(token, str)
+        assert isinstance(jti, str)
+        assert isinstance(expiry, datetime)
+
         payload = verify_token(token, TokenType.ACCESS)
         
         assert payload is not None

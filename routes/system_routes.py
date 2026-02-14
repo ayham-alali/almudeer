@@ -40,115 +40,7 @@ class WorkerStatusResponse(BaseModel):
 def debug_integrations():
     return {"status": "ok", "message": "System & Accounts router is loaded"}
 
-@router.get("/llm-health")
-async def check_llm_health(license: dict = Depends(get_license_from_header)):
-    """
-    Diagnostic endpoint to check LLM API key health.
-    Tests each provider with a minimal request to verify.
-    """
-    import httpx
-    
-    results = {
-        "openai": {"status": "unknown", "error": None, "model": None},
-        "gemini": {"status": "unknown", "error": None, "model": None},
-    }
-    
-    # Test OpenAI
-    openai_key = os.getenv("OPENAI_API_KEY", "")
-    openai_model = os.getenv("OPENAI_MODEL", "gpt-4o")
-    if openai_key:
-        results["openai"]["model"] = openai_model
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {openai_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": openai_model,
-                        "messages": [{"role": "user", "content": "Hi"}],
-                        "max_tokens": 5,
-                    },
-                )
-                if response.status_code == 200:
-                    results["openai"]["status"] = "healthy"
-                elif response.status_code == 429:
-                    results["openai"]["status"] = "rate_limited"
-                    results["openai"]["error"] = "Quota exceeded or rate limited - check billing"
-                elif response.status_code == 401:
-                    results["openai"]["status"] = "invalid_key"
-                    results["openai"]["error"] = "Invalid API key"
-                elif response.status_code == 404:
-                    results["openai"]["status"] = "model_not_found"
-                    results["openai"]["error"] = f"Model {openai_model} not available on this account"
-                else:
-                    results["openai"]["status"] = "error"
-                    results["openai"]["error"] = f"HTTP {response.status_code}: {response.text[:200]}"
-        except Exception as e:
-            results["openai"]["status"] = "error"
-            results["openai"]["error"] = str(e)
-    else:
-        results["openai"]["status"] = "not_configured"
-        results["openai"]["error"] = "OPENAI_API_KEY not set"
-    
-    # Test Gemini
-    google_key = os.getenv("GOOGLE_API_KEY", "")
-    google_model = os.getenv("GOOGLE_MODEL", "gemini-2.0-flash")
-    if google_key:
-        results["gemini"]["model"] = google_model
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{google_model}:generateContent?key={google_key}",
-                    headers={"Content-Type": "application/json"},
-                    json={
-                        "contents": [{"parts": [{"text": "Hi"}]}],
-                        "generationConfig": {"maxOutputTokens": 5}
-                    },
-                )
-                if response.status_code == 200:
-                    results["gemini"]["status"] = "healthy"
-                elif response.status_code == 429:
-                    results["gemini"]["status"] = "rate_limited"
-                    results["gemini"]["error"] = "Quota exceeded - check Google Cloud quotas"
-                elif response.status_code == 400:
-                    error_detail = response.json().get("error", {}).get("message", "")
-                    results["gemini"]["status"] = "error"
-                    results["gemini"]["error"] = error_detail[:200]
-                elif response.status_code == 403:
-                    results["gemini"]["status"] = "permission_denied"
-                    results["gemini"]["error"] = "API key doesn't have access to this model"
-                else:
-                    results["gemini"]["status"] = "error"
-                    results["gemini"]["error"] = f"HTTP {response.status_code}: {response.text[:200]}"
-        except Exception as e:
-            results["gemini"]["status"] = "error"
-            results["gemini"]["error"] = str(e)
-    else:
-        results["gemini"]["status"] = "not_configured"
-        results["gemini"]["error"] = "GOOGLE_API_KEY not set"
-    
-    # Overall health
-    healthy_count = sum(1 for r in results.values() if r["status"] == "healthy")
-    overall = "healthy" if healthy_count > 0 else "unhealthy"
-    
-    return {
-        "overall": overall,
-        "providers": results,
-        "recommendation": (
-            "All providers are working" if healthy_count == 2 else
-            "Check billing/quota for rate-limited providers" if any(r["status"] == "rate_limited" for r in results.values()) else
-            "Configure at least one LLM provider"
-        )
-    }
-
-@router.get("/ai-usage")
-async def get_ai_usage(license: dict = Depends(get_license_from_header)):
-    """Get today's AI usage stats"""
-    from models import get_ai_usage_today
-    return await get_ai_usage_today(license["license_id"])
+# AI endpoints removed
 
 @router.get("/workers/status", response_model=WorkerStatusResponse)
 async def worker_status_v1():
@@ -169,12 +61,12 @@ async def list_integration_accounts(license: dict = Depends(get_license_from_hea
 
     # Email
     email_cfg = await get_email_config(license_id, include_inactive=False)
-    if email_cfg:
+    if email_cfg and isinstance(email_cfg, dict):
         accounts.append(
             IntegrationAccount(
                 id="email",
                 channel_type="email",
-                display_name=email_cfg.get("email_address") or "Gmail",
+                display_name=str(email_cfg.get("email_address") or "Gmail"),
                 is_active=bool(email_cfg.get("is_active")),
                 details="Gmail OAuth"
             )
@@ -182,35 +74,35 @@ async def list_integration_accounts(license: dict = Depends(get_license_from_hea
 
     # Telegram bot
     telegram_cfg = await get_telegram_config(license_id, include_inactive=False)
-    if telegram_cfg:
+    if telegram_cfg and isinstance(telegram_cfg, dict):
         display = telegram_cfg.get("bot_username") or "Telegram Bot"
         accounts.append(
             IntegrationAccount(
                 id="telegram_bot",
                 channel_type="telegram_bot",
-                display_name=display,
+                display_name=str(display),
                 is_active=bool(telegram_cfg.get("is_active")),
-                details=telegram_cfg.get("bot_token_masked")
+                details=str(telegram_cfg.get("bot_token_masked") or "")
             )
         )
 
     # Telegram phone
     phone_cfg = await get_telegram_phone_session(license_id)
-    if phone_cfg:
+    if phone_cfg and isinstance(phone_cfg, dict):
         display = phone_cfg.get("phone_number_masked") or phone_cfg.get("phone_number") or "Telegram Phone"
         accounts.append(
             IntegrationAccount(
                 id="telegram_phone",
                 channel_type="telegram_phone",
-                display_name=display,
+                display_name=str(display),
                 is_active=bool(phone_cfg.get("is_active", True)),
-                details=phone_cfg.get("user_username")
+                details=str(phone_cfg.get("user_username") or "")
             )
         )
 
     # WhatsApp
     whatsapp_cfg = await get_whatsapp_config(license_id)
-    if whatsapp_cfg:
+    if whatsapp_cfg and isinstance(whatsapp_cfg, dict):
         display = whatsapp_cfg.get("phone_number_id") or "WhatsApp Business"
         accounts.append(
             IntegrationAccount(
@@ -218,7 +110,7 @@ async def list_integration_accounts(license: dict = Depends(get_license_from_hea
                 channel_type="whatsapp",
                 display_name=str(display),
                 is_active=bool(whatsapp_cfg.get("is_active")),
-                details=whatsapp_cfg.get("business_account_id")
+                details=str(whatsapp_cfg.get("business_account_id") or "")
             )
         )
 

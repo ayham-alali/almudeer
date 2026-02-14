@@ -14,17 +14,10 @@ watchfiles>=0.21.0
 # Database
 aiosqlite==0.19.0
 
-# LangGraph & LangChain (compatible versions)
-langgraph>=0.0.20
-langchain>=0.1.0
-langchain-core>=0.1.0
-langchain-community>=0.0.10
 
 # For local LLM (Ollama) or free API alternatives
 httpx>=0.26.0
 
-# Google Gemini (Vertex AI) - using lightweight google-genai SDK
-google-genai>=1.0.0
 
 # Gmail OAuth 2.0 and API
 google-auth>=2.30.0
@@ -41,6 +34,7 @@ email-validator==2.1.0
 # Security
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
 cryptography>=43.0.0
 
 # CORS
@@ -75,13 +69,7 @@ ruff==0.1.9
 # Telethon Optimization
 # cryptg (Removed for stability)
 
-# Retrieval Augmented Generation (RAG) & Knowledge Base
-chromadb>=1.0.0
-pypdf>=4.0.0
-beautifulsoup4>=4.12.0
 
-# Tools & Web Search
-duckduckgo-search>=6.0.0
 
 # Text-to-Speech (Google Cloud TTS via Service Account)
 PyJWT>=2.8.0

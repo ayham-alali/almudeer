@@ -12,7 +12,7 @@ from typing import AsyncGenerator, Generator
 # Set test environment
 os.environ["TESTING"] = "1"
 os.environ["DB_TYPE"] = "sqlite"
-os.environ["DATABASE_PATH"] = ":memory:"
+os.environ["DATABASE_PATH"] = "test_almudeer.db"
 os.environ["ADMIN_KEY"] = "test-admin-key"
 os.environ["ENCRYPTION_KEY"] = "test-encryption-key-for-tests"
 
@@ -68,12 +68,15 @@ def auth_headers(sample_license_key) -> dict:
     return {"X-License-Key": sample_license_key}
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 async def db_session():
     """Create a test database session with schema initialized"""
     from db_helper import get_db
+    from models.base import init_enhanced_tables, init_customers_and_analytics
+
+    # 1. Initialize Base Tables (License Keys, Legacy)
     async with get_db() as db:
-        # Initialize Schema (SQLite compatible)
+        # Initialize License Keys (Fundamental)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS license_keys (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,6 +91,7 @@ async def db_session():
                 last_request_date DATE
             )
         """)
+        # Initialize Legacy Tables
         await db.execute("""
             CREATE TABLE IF NOT EXISTS usage_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,4 +118,28 @@ async def db_session():
             )
         """)
         await db.commit()
+
+    # 2. Initialize Enhanced Tables (using model functions)
+    # These functions manage their own DB connections/transactions
+    await init_enhanced_tables()
+    await init_customers_and_analytics()
+    
+    # 3. Seed Data and Yield Session
+    async with get_db() as db:
+        # Seed test license key
+        import hashlib
+        test_key = "MUDEER-TEST-1234-5678"
+        key_hash = hashlib.sha256(test_key.encode()).hexdigest()
+        
+        await db.execute("""
+            INSERT OR IGNORE INTO license_keys (key_hash, company_name, is_active)
+            VALUES (?, ?, ?)
+        """, (key_hash, "Test Company", 1))
+        
+        await db.commit()
         yield db
+
+@pytest.fixture
+async def seeded_license(db_session):
+    """Ensure database has a test license key"""
+    return "MUDEER-TEST-1234-5678"

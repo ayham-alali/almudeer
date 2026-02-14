@@ -28,7 +28,7 @@ from services.voice_service import (
     transcribe_from_url,
     estimate_time_saved
 )
-from services.auto_categorization import categorize_message_dict, categorize_messages_batch
+# from services.auto_categorization import categorize_message_dict, categorize_messages_batch (AI removed)
 from security import sanitize_email, sanitize_phone, sanitize_string
 from dependencies import get_license_from_header, get_optional_license_from_header
 from db_helper import get_db, fetch_all
@@ -326,6 +326,7 @@ async def transcribe_voice_url(
     }
 
 
+# AI Categorization Check endpoint removed
 # ============ Notifications Routes ============
 
 @router.get("/notifications")
@@ -384,46 +385,5 @@ async def read_all_notifications(license: dict = Depends(get_license_from_header
     return {"success": True, "message": "تم تحديث جميع الإشعارات"}
 
 
-# ============ Auto-Categorization Routes ============
-
-class CategorizeRequest(BaseModel):
-    message: str = Field(..., min_length=1)
-
-
-class CategorizeMultipleRequest(BaseModel):
-    messages: List[str] = Field(..., min_items=1)
-
-
-@router.post("/categorize")
-async def categorize_single_message(
-    data: CategorizeRequest,
-    license: dict = Depends(get_license_from_header)
-):
-    """
-    Auto-categorize a single message
-    Returns: category, tags, priority, sentiment, suggested folder, and auto-actions
-    """
-    result = categorize_message_dict(data.message)
-    return {
-        "success": True,
-        "categorization": result,
-        "message": "تم تصنيف الرسالة بنجاح"
-    }
-
-
-@router.post("/categorize/batch")
-async def categorize_multiple_messages(
-    data: CategorizeMultipleRequest,
-    license: dict = Depends(get_license_from_header)
-):
-    """
-    Auto-categorize multiple messages at once
-    """
-    results = categorize_messages_batch(data.messages)
-    return {
-        "success": True,
-        "categorizations": results,
-        "count": len(results),
-        "message": f"تم تصنيف {len(results)} رسالة"
-    }
+# Auto-categorization routes removed
 

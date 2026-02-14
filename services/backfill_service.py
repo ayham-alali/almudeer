@@ -5,6 +5,7 @@ Orchestrates fetching historical messages and gradual reveal in inbox
 
 import asyncio
 import os
+import json
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 

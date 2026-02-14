@@ -4,36 +4,31 @@ Database configuration, connection utilities, and table initialization
 Supports both SQLite (development) and PostgreSQL (production)
 """
 
-import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Any
 import json
 import asyncio
 
-# Database configuration
-DB_TYPE = os.getenv("DB_TYPE", "sqlite").lower()
-DATABASE_PATH = os.getenv("DATABASE_PATH", "almudeer.db")
-DATABASE_URL = os.getenv("DATABASE_URL")
+from db_helper import (
+    DB_TYPE,
+    DATABASE_PATH,
+    DATABASE_URL,
+    POSTGRES_AVAILABLE,
+    get_db,
+    execute_sql,
+    commit_db
+)
+from db_pool import ID_PK, TIMESTAMP_NOW, INT_TYPE, TEXT_TYPE
+from db_helper import fetch_all, fetch_one
 
-# Import appropriate database driver
-if DB_TYPE == "postgresql":
-    try:
-        import asyncpg
-        POSTGRES_AVAILABLE = True
-        aiosqlite = None
-    except ImportError:
-        raise ImportError(
-            "PostgreSQL selected but asyncpg not installed. "
-            "Install with: pip install asyncpg"
-        )
-else:
-    import aiosqlite
-    POSTGRES_AVAILABLE = False
-    asyncpg = None
-
-
-from db_pool import DB_TYPE, ID_PK, TIMESTAMP_NOW, INT_TYPE, TEXT_TYPE
-from db_helper import get_db, execute_sql, fetch_all, fetch_one, commit_db
+# User Roles
+ROLES = {
+    "owner": "Administrator with full access",
+    "admin": "Administrator with full access",
+    "agent": "Support agent with access to messages and customers",
+    "manager": "Team manager with reporting access",
+    "member": "Basic team member"
+}
 
 
 async def init_enhanced_tables():

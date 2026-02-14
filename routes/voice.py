@@ -14,7 +14,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from pydantic import BaseModel
 
 from dependencies import get_license_from_header
-from services.voice_service import transcribe_voice_message
+
 from services.file_storage_service import get_file_storage
 from services.agora_service import AGORA_APP_ID
 from logging_config import get_logger
@@ -31,7 +31,6 @@ class VoiceUploadResponse(BaseModel):
     success: bool
     audio_url: Optional[str] = None
     duration: Optional[int] = None  # seconds
-    transcript: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -122,17 +121,12 @@ async def upload_voice_message(
         # Get duration
         duration = await get_audio_duration(file_data, unique_filename)
         
-        # Transcribe
-        transcript_result = await transcribe_voice_message(file_data, file.filename or "audio.ogg")
-        transcript = transcript_result.get("text", "") if transcript_result.get("success") else ""
-        
-        logger.info(f"Voice upload complete: {audio_url}, duration={duration}s, transcript_len={len(transcript)}")
+        logger.info(f"Voice upload complete: {audio_url}, duration={duration}s")
         
         return VoiceUploadResponse(
             success=True,
             audio_url=audio_url,
-            duration=duration,
-            transcript=transcript
+            duration=duration
         )
         
     except HTTPException:
@@ -145,39 +139,6 @@ async def upload_voice_message(
         )
 
 
-@router.post("/transcribe")
-async def transcribe_audio(
-    file: UploadFile = File(...),
-    current_user: dict = Depends(get_license_from_header)
-):
-    """
-    Transcribe an audio file without storing it.
-    Useful for previewing transcription before sending.
-    """
-    try:
-        file_data = await file.read()
-        
-        if len(file_data) == 0:
-            raise HTTPException(status_code=400, detail="Empty file")
-        
-        result = await transcribe_voice_message(file_data, file.filename or "audio.ogg")
-        
-        if result.get("success"):
-            return {
-                "success": True,
-                "text": result.get("text", ""),
-                "language": result.get("language", "ar"),
-                "duration": result.get("duration", 0)
-            }
-        else:
-            return {
-                "success": False,
-                "error": result.get("error", "Transcription failed")
-            }
-            
-    except Exception as e:
-        logger.error(f"Transcription failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============ Voice Call Signaling (Agora) ============

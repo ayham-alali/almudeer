@@ -20,7 +20,7 @@ class TestVoiceService:
     async def test_transcribe_audio_openai_success(self):
         """Test OpenAI transcription success"""
         with patch("services.voice_service.OPENAI_API_KEY", "test-key"), \
-             patch("httpx.AsyncClient") as mock_client:
+             patch("httpx.AsyncClient", return_value=AsyncMock()) as mock_client:
             
             mock_post = AsyncMock()
             mock_post.return_value.status_code = 200
@@ -30,7 +30,7 @@ class TestVoiceService:
                 "duration": 5.5,
                 "segments": []
             }
-            mock_client.return_value.__aenter__.return_value.post = mock_post
+            mock_client.return_value.post = mock_post
             
             result = await transcribe_audio_openai(b"fake-audio")
             
@@ -83,13 +83,13 @@ class TestVoiceService:
     @pytest.mark.asyncio
     async def test_transcribe_from_url_success(self):
         """Test fetching and transcribing from URL"""
-        with patch("httpx.AsyncClient") as mock_client, \
+        with patch("httpx.AsyncClient", return_value=AsyncMock()) as mock_client, \
              patch("services.voice_service.transcribe_voice_message", new_callable=AsyncMock) as mock_transcribe:
             
             mock_get = AsyncMock()
             mock_get.return_value.status_code = 200
             mock_get.return_value.content = b"audio-data"
-            mock_client.return_value.__aenter__.return_value.get = mock_get
+            mock_client.return_value.get = mock_get
             
             mock_transcribe.return_value = {"success": True}
             

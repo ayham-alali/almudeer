@@ -13,53 +13,33 @@ def anyio_backend():
 
 
 @pytest.mark.anyio
-async def test_health_check():
+async def test_health_check(test_client):
     """Test health endpoint returns 200"""
-    from main import app
-    
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.get("/health")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "healthy"
+    response = await test_client.get("/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "healthy"
 
 
 @pytest.mark.anyio
-async def test_health_live():
+async def test_health_live(test_client):
     """Test liveness probe"""
-    from main import app
-    
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.get("/health/live")
-        assert response.status_code == 200
-        assert response.json()["status"] == "alive"
+    response = await test_client.get("/health/live")
+    assert response.status_code == 200
+    assert response.json()["status"] == "alive"
 
 
-@pytest.mark.anyio
-async def test_analyze_requires_license():
-    """Test that analyze endpoint requires license key"""
-    from main import app
-    
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.post(
-            "/api/analyze",
-            json={"message": "Hello world"}
-        )
-        # Should fail without license key
-        assert response.status_code in [401, 403, 422]
+
 
 
 @pytest.mark.anyio
-async def test_auth_login_invalid():
+async def test_auth_login_invalid(test_client):
     """Test login with invalid credentials"""
-    from main import app
-    
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.post(
-            "/api/auth/login",
-            json={"license_key": "invalid-key-12345"}
-        )
-        assert response.status_code == 401
+    response = await test_client.post(
+        "/api/auth/login",
+        json={"license_key": "invalid-key-12345"}
+    )
+    assert response.status_code == 401
 
 
 # ============ Unit Tests ============
@@ -112,25 +92,4 @@ def test_jwt_tokens():
     assert payload["license_id"] == 1
 
 
-def test_extract_entities():
-    """Test entity extraction from messages"""
-    from agent import extract_entities
-    
-    message = "اتصل بي على 0501234567 أو راسلني على test@email.com"
-    entities = extract_entities(message)
-    
-    assert "phones" in entities
-    assert "emails" in entities
 
-
-def test_rule_based_classify():
-    """Test rule-based classification fallback"""
-    from agent import rule_based_classify
-    
-    # Inquiry
-    result = rule_based_classify("ما هو سعر المنتج؟")
-    assert result["intent"] == "استفسار"
-    
-    # Complaint
-    result = rule_based_classify("أريد تقديم شكوى")
-    assert result["intent"] == "شكوى"
