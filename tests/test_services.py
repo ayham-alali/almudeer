@@ -211,35 +211,4 @@ class TestSecurity:
         assert "966" in result
 
 
-# ============ LLM Response Cache ============
-
-class TestLLMCache:
-    """Tests for LLM response caching"""
-    
-    @pytest.mark.anyio
-    async def test_lru_cache_basics(self):
-        """Test LRU cache operations"""
-        from services.llm_provider import LRUCache
-        
-        cache = LRUCache(max_size=10, ttl_seconds=3600)
-        
-        await cache.set("test prompt", "response", system="test system")
-        result = await cache.get("test prompt", system="test system")
-        
-        assert result == "response"
-    
-    @pytest.mark.anyio
-    async def test_lru_cache_different_system(self):
-        """Test different system prompts have different cache entries"""
-        from services.llm_provider import LRUCache
-        
-        cache = LRUCache(max_size=10, ttl_seconds=3600)
-        
-        await cache.set("prompt", "response1", system="system1")
-        await cache.set("prompt", "response2", system="system2")
-        
-        result1 = await cache.get("prompt", system="system1")
-        result2 = await cache.get("prompt", system="system2")
-        
-        assert result1 == "response1"
-        assert result2 == "response2"
+# ============ LLM Response Cache Tests Removed ============

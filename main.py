@@ -85,7 +85,6 @@ try:
         export_router, 
         notifications_router, 
         purchases_router, 
-        knowledge_router,
         library_router,
         stories_router,
         tasks
@@ -415,7 +414,7 @@ app.include_router(whatsapp_router)
 app.include_router(export_router)          # Export & Reports
 app.include_router(notifications_router)   # Smart Notifications & Integrations
 app.include_router(purchases_router)       # Customer Purchases
-app.include_router(knowledge_router)       # Knowledge Base (RAG)
+# app.include_router(knowledge_router)       # Knowledge Base (RAG) - Removed
 app.include_router(library_router)         # Library of Everything
 app.include_router(tasks_router)           # Task Management
 app.include_router(subscription_router)    # Subscription Key Management
