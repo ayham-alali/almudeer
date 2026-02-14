@@ -90,6 +90,74 @@ async def create_schema():
                 updated_at TIMESTAMP
             )
         """)
+
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS inbox_messages (
+                id SERIAL PRIMARY KEY,
+                license_key_id INTEGER NOT NULL REFERENCES license_keys(id),
+                channel TEXT NOT NULL,
+                channel_message_id TEXT,
+                sender_id TEXT,
+                sender_name TEXT,
+                sender_contact TEXT,
+                subject TEXT,
+                body TEXT NOT NULL,
+                received_at TIMESTAMP,
+                attachments TEXT,
+                intent TEXT,
+                urgency TEXT,
+                sentiment TEXT,
+                status TEXT DEFAULT 'pending',
+                reply_to_platform_id TEXT,
+                reply_to_body_preview TEXT,
+                reply_to_sender_name TEXT,
+                reply_to_id INTEGER,
+                platform_status TEXT,
+                platform_message_id TEXT,
+                is_forwarded BOOLEAN DEFAULT FALSE,
+                deleted_at TIMESTAMP,
+                original_sender TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS outbox_messages (
+                id SERIAL PRIMARY KEY,
+                license_key_id INTEGER NOT NULL REFERENCES license_keys(id),
+                inbox_message_id INTEGER REFERENCES inbox_messages(id),
+                channel TEXT NOT NULL,
+                recipient_id TEXT,
+                recipient_email TEXT,
+                subject TEXT,
+                body TEXT NOT NULL,
+                attachments TEXT,
+                status TEXT DEFAULT 'pending',
+                sent_at TIMESTAMP,
+                error_message TEXT,
+                reply_to_platform_id TEXT,
+                is_forwarded BOOLEAN DEFAULT FALSE,
+                deleted_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS inbox_conversations (
+                license_key_id INTEGER NOT NULL REFERENCES license_keys(id),
+                sender_contact TEXT NOT NULL,
+                sender_name TEXT,
+                channel TEXT,
+                last_message_id INTEGER,
+                last_message_body TEXT,
+                last_message_at TIMESTAMP,
+                status TEXT,
+                unread_count INTEGER DEFAULT 0,
+                message_count INTEGER DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (license_key_id, sender_contact)
+            )
+        """)
         
         # Create indexes
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_license_key_hash ON license_keys(key_hash)")

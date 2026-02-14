@@ -324,7 +324,7 @@ async def get_inbox_messages(
 
     async with get_db() as db:
         rows = await fetch_all(db, query, params)
-        return rows
+        return [_parse_message_row(row) for row in rows]
 
 
 async def get_inbox_message_by_id(message_id: int, license_id: int) -> Optional[dict]:

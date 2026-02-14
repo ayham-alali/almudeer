@@ -14,7 +14,6 @@ from datetime import datetime
 async def export_sqlite_data(db_path: str) -> Dict[str, List[Dict]]:
     """Export all data from SQLite database"""
     data = {}
-    
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
         
@@ -32,6 +31,26 @@ async def export_sqlite_data(db_path: str) -> Dict[str, List[Dict]]:
         cursor = await db.execute("SELECT * FROM usage_logs")
         rows = await cursor.fetchall()
         data['usage_logs'] = [dict(row) for row in rows]
+        
+        # Export inbox_messages
+        cursor = await db.execute("SELECT * FROM inbox_messages")
+        rows = await cursor.fetchall()
+        data['inbox_messages'] = [dict(row) for row in rows]
+
+        # Export outbox_messages
+        cursor = await db.execute("SELECT * FROM outbox_messages")
+        rows = await cursor.fetchall()
+        data['outbox_messages'] = [dict(row) for row in rows]
+
+        # Export inbox_conversations
+        cursor = await db.execute("SELECT * FROM inbox_conversations")
+        rows = await cursor.fetchall()
+        data['inbox_conversations'] = [dict(row) for row in rows]
+
+        # Export tasks
+        cursor = await db.execute("SELECT * FROM tasks")
+        rows = await cursor.fetchall()
+        data['tasks'] = [dict(row) for row in rows]
         
         # Export schema_migrations if exists
         try:
@@ -89,10 +108,86 @@ async def create_postgresql_schema(conn: asyncpg.Connection):
     """)
     
     await conn.execute("""
-        CREATE TABLE IF NOT EXISTS schema_migrations (
-            version INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        CREATE TABLE IF NOT EXISTS tasks (
+            id TEXT PRIMARY KEY,
+            license_key_id INTEGER NOT NULL REFERENCES license_keys(id),
+            title TEXT NOT NULL,
+            description TEXT,
+            is_completed BOOLEAN DEFAULT FALSE,
+            due_date TIMESTAMP,
+            priority TEXT DEFAULT 'medium',
+            color BIGINT,
+            sub_tasks TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP
+        )
+    """)
+
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS inbox_messages (
+            id SERIAL PRIMARY KEY,
+            license_key_id INTEGER NOT NULL REFERENCES license_keys(id),
+            channel TEXT NOT NULL,
+            channel_message_id TEXT,
+            sender_id TEXT,
+            sender_name TEXT,
+            sender_contact TEXT,
+            subject TEXT,
+            body TEXT NOT NULL,
+            received_at TIMESTAMP,
+            attachments TEXT,
+            intent TEXT,
+            urgency TEXT,
+            sentiment TEXT,
+            status TEXT DEFAULT 'pending',
+            reply_to_platform_id TEXT,
+            reply_to_body_preview TEXT,
+            reply_to_sender_name TEXT,
+            reply_to_id INTEGER,
+            platform_status TEXT,
+            platform_message_id TEXT,
+            is_forwarded BOOLEAN DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+            original_sender TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS outbox_messages (
+            id SERIAL PRIMARY KEY,
+            license_key_id INTEGER NOT NULL REFERENCES license_keys(id),
+            inbox_message_id INTEGER REFERENCES inbox_messages(id),
+            channel TEXT NOT NULL,
+            recipient_id TEXT,
+            recipient_email TEXT,
+            subject TEXT,
+            body TEXT NOT NULL,
+            attachments TEXT,
+            status TEXT DEFAULT 'pending',
+            sent_at TIMESTAMP,
+            error_message TEXT,
+            reply_to_platform_id TEXT,
+            is_forwarded BOOLEAN DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS inbox_conversations (
+            license_key_id INTEGER NOT NULL REFERENCES license_keys(id),
+            sender_contact TEXT NOT NULL,
+            sender_name TEXT,
+            channel TEXT,
+            last_message_id INTEGER,
+            last_message_body TEXT,
+            last_message_at TIMESTAMP,
+            status TEXT,
+            unread_count INTEGER DEFAULT 0,
+            message_count INTEGER DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (license_key_id, sender_contact)
         )
     """)
     
@@ -156,28 +251,80 @@ async def import_data_to_postgresql(conn: asyncpg.Connection, data: Dict[str, Li
                 last_request_date
             )
     
-    # Import crm_entries
-    if data['crm_entries']:
-        for row in data['crm_entries']:
+    # Import inbox_messages
+    if data.get('inbox_messages'):
+        for row in data['inbox_messages']:
             await conn.execute("""
-                INSERT INTO crm_entries
-                (id, license_key_id, sender_name, sender_contact, message_type, intent,
-                 extracted_data, original_message, draft_response, status, created_at, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                INSERT INTO inbox_messages
+                (id, license_key_id, channel, channel_message_id, sender_id, sender_name,
+                 sender_contact, subject, body, received_at, attachments, intent, urgency,
+                 sentiment, status, reply_to_platform_id, reply_to_body_preview,
+                 reply_to_sender_name, reply_to_id, platform_status, platform_message_id,
+                 is_forwarded, deleted_at, original_sender, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
                 ON CONFLICT (id) DO NOTHING
             """,
-                row.get('id'),
-                row.get('license_key_id'),
-                row.get('sender_name'),
-                row.get('sender_contact'),
-                row.get('message_type'),
-                row.get('intent'),
-                row.get('extracted_data'),
-                row.get('original_message'),
-                row.get('draft_response'),
-                row.get('status', 'جديد'),
-                row.get('created_at'),
-                row.get('updated_at')
+                row.get('id'), row.get('license_key_id'), row.get('channel'),
+                row.get('channel_message_id'), row.get('sender_id'), row.get('sender_name'),
+                row.get('sender_contact'), row.get('subject'), row.get('body'),
+                row.get('received_at'), row.get('attachments'), row.get('intent'),
+                row.get('urgency'), row.get('sentiment'), row.get('status'),
+                row.get('reply_to_platform_id'), row.get('reply_to_body_preview'),
+                row.get('reply_to_sender_name'), row.get('reply_to_id'),
+                row.get('platform_status'), row.get('platform_message_id'),
+                bool(row.get('is_forwarded', False)), row.get('deleted_at'),
+                row.get('original_sender'), row.get('created_at')
+            )
+
+    # Import outbox_messages
+    if data.get('outbox_messages'):
+        for row in data['outbox_messages']:
+            await conn.execute("""
+                INSERT INTO outbox_messages
+                (id, license_key_id, inbox_message_id, channel, recipient_id, recipient_email,
+                 subject, body, attachments, status, sent_at, error_message,
+                 reply_to_platform_id, is_forwarded, deleted_at, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                ON CONFLICT (id) DO NOTHING
+            """,
+                row.get('id'), row.get('license_key_id'), row.get('inbox_message_id'),
+                row.get('channel'), row.get('recipient_id'), row.get('recipient_email'),
+                row.get('subject'), row.get('body'), row.get('attachments'),
+                row.get('status'), row.get('sent_at'), row.get('error_message'),
+                row.get('reply_to_platform_id'), bool(row.get('is_forwarded', False)),
+                row.get('deleted_at'), row.get('created_at')
+            )
+
+    # Import inbox_conversations
+    if data.get('inbox_conversations'):
+        for row in data['inbox_conversations']:
+            await conn.execute("""
+                INSERT INTO inbox_conversations
+                (license_key_id, sender_contact, sender_name, channel, last_message_id,
+                 last_message_body, last_message_at, status, unread_count, message_count, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                ON CONFLICT (license_key_id, sender_contact) DO NOTHING
+            """,
+                row.get('license_key_id'), row.get('sender_contact'), row.get('sender_name'),
+                row.get('channel'), row.get('last_message_id'), row.get('last_message_body'),
+                row.get('last_message_at'), row.get('status'), row.get('unread_count', 0),
+                row.get('message_count', 0), row.get('updated_at')
+            )
+
+    # Import tasks
+    if data.get('tasks'):
+        for row in data['tasks']:
+            await conn.execute("""
+                INSERT INTO tasks
+                (id, license_key_id, title, description, is_completed, due_date,
+                 priority, color, sub_tasks, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                ON CONFLICT (id) DO NOTHING
+            """,
+                row.get('id'), row.get('license_key_id'), row.get('title'),
+                row.get('description'), bool(row.get('is_completed', False)),
+                row.get('due_date'), row.get('priority'), row.get('color'),
+                row.get('sub_tasks'), row.get('created_at'), row.get('updated_at')
             )
     
     # Import usage_logs
