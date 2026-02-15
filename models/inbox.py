@@ -671,6 +671,7 @@ async def get_inbox_conversations(
             last_message_body as body,
             last_message_ai_summary as ai_summary,
             last_message_at as created_at,
+            last_message_attachments as attachments,
             ic.status,
             unread_count,
             message_count,
@@ -751,6 +752,7 @@ async def get_conversations_delta(
             last_message_body as body,
             last_message_ai_summary as ai_summary,
             last_message_at as created_at,
+            last_message_attachments as attachments,
             ic.status,
             unread_count,
             message_count
@@ -2421,7 +2423,7 @@ async def upsert_conversation_state(
         # 2. Get Last Message (Source of Truth)
         # Latest from Inbox
         latest_inbox = await fetch_one(db, f"""
-            SELECT id, body, attachments, NULL as ai_summary, received_at as created_at, status, channel
+            SELECT id, body, attachments as last_message_attachments, NULL as ai_summary, received_at as created_at, status, channel
             FROM inbox_messages
             WHERE license_key_id = ?
             AND ({in_v_where})
@@ -2431,7 +2433,7 @@ async def upsert_conversation_state(
         
         # Latest from Outbox
         latest_outbox = await fetch_one(db, f"""
-            SELECT id, body, attachments, NULL as ai_summary, created_at, status, channel 
+            SELECT id, body, attachments as last_message_attachments, NULL as ai_summary, created_at, status, channel 
             FROM outbox_messages 
             WHERE license_key_id = ? 
             AND ({out_v_where}) 
@@ -2503,16 +2505,16 @@ async def upsert_conversation_state(
         if not channel:
             channel = last_message.get("channel")
         # Check for empty body but present attachments (Audio/File)
+        last_attachments = last_message.get("last_message_attachments")
         if not body.strip():
-            attachments = last_message.get("attachments")
-            if attachments:
+            if last_attachments:
                 import json
                 try:
                     att_list = []
-                    if isinstance(attachments, str):
-                        att_list = json.loads(attachments)
-                    elif isinstance(attachments, list):
-                        att_list = attachments
+                    if isinstance(last_attachments, str):
+                        att_list = json.loads(last_attachments)
+                    elif isinstance(last_attachments, list):
+                        att_list = last_attachments
                     
                     if att_list and len(att_list) > 0:
                         att = att_list[0]
@@ -2527,11 +2529,11 @@ async def upsert_conversation_state(
                             body = "مَهمَّة"
                         elif att_type == "voice" or (mime.startswith("audio/") and att.get("is_voice_note")):
                             body = "تسجيل صوتي"
-                        elif mime.startswith("audio/") or filename.endswith((".mp3", ".wav", ".aac", ".m4a", ".ogg", ".opus", ".amr")):
+                        elif att_type == "audio" or mime.startswith("audio/") or filename.endswith((".mp3", ".wav", ".aac", ".m4a", ".ogg", ".opus", ".amr")):
                              body = "ملف صوتي"
-                        elif mime.startswith("image/") or filename.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
+                        elif att_type in ["image", "photo"] or mime.startswith("image/") or filename.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
                              body = "صورة"
-                        elif mime.startswith("video/") or filename.endswith((".mp4", ".mov", ".avi", ".webm")):
+                        elif att_type == "video" or mime.startswith("video/") or filename.endswith((".mp4", ".mov", ".avi", ".webm")):
                              body = "فيديو"
                         else:
                              body = "ملف"
@@ -2548,12 +2550,12 @@ async def upsert_conversation_state(
             last_ts_value = last_message_at.isoformat()
         
         fields = ["license_key_id", "sender_contact", "last_message_id", "last_message_body", "last_message_ai_summary",
-                  "last_message_at", "status", "unread_count", "message_count", "updated_at"]
-        params = [license_id, sender_contact, msg_id, body, ai_summary, last_ts_value, status, unread_count, message_count, ts_value]
+                  "last_message_at", "last_message_attachments", "status", "unread_count", "message_count", "updated_at"]
+        params = [license_id, sender_contact, msg_id, body, ai_summary, last_ts_value, last_attachments, status, unread_count, message_count, ts_value]
         
         update_frame = """
             last_message_id = ?, last_message_body = ?, last_message_ai_summary = ?, last_message_at = ?, 
-            status = ?, unread_count = ?, message_count = ?, updated_at = ?
+            last_message_attachments = ?, status = ?, unread_count = ?, message_count = ?, updated_at = ?
         """
         
         if sender_name:
@@ -2579,6 +2581,7 @@ async def upsert_conversation_state(
                 last_message_body = EXCLUDED.last_message_body,
                 last_message_ai_summary = EXCLUDED.last_message_ai_summary,
                 last_message_at = EXCLUDED.last_message_at,
+                last_message_attachments = EXCLUDED.last_message_attachments,
                 status = EXCLUDED.status,
                 unread_count = EXCLUDED.unread_count,
                 message_count = EXCLUDED.message_count,
@@ -2596,6 +2599,7 @@ async def upsert_conversation_state(
                 last_message_body = excluded.last_message_body,
                 last_message_ai_summary = excluded.last_message_ai_summary,
                 last_message_at = excluded.last_message_at,
+                last_message_attachments = excluded.last_message_attachments,
                 status = excluded.status,
                 unread_count = excluded.unread_count,
                 message_count = excluded.message_count,
