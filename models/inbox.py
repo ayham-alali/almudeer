@@ -162,7 +162,7 @@ async def save_inbox_message(
                 platform_message_id,
                 platform_status,
                 original_sender,
-                status or 'pending',
+                status or 'analyzed',
                 is_forwarded
             ],
         )
@@ -299,20 +299,11 @@ async def get_inbox_messages(
 ) -> List[dict]:
     """
     Get inbox messages for a license with pagination (SQLite & PostgreSQL compatible).
-    
-    NOTE: Excludes 'pending' status messages from UI.
-    Pending = before AI responds (should not show in UI)
-    Analyzed = after AI responds (shows as 'بانتظار الموافقة')
+    Show all messages immediately (AI analysis discarded).
     """
-
-    # Exclude 'pending' status - only show messages after AI responds
     # Also exclude soft-deleted messages
-    query = "SELECT * FROM inbox_messages WHERE license_key_id = ? AND status != 'pending' AND deleted_at IS NULL"
+    query = "SELECT * FROM inbox_messages WHERE license_key_id = ? AND deleted_at IS NULL"
     params = [license_id]
-
-    if status:
-        query += " AND status = ?"
-        params.append(status)
 
     if channel:
         query += " AND channel = ?"
@@ -352,7 +343,7 @@ async def get_inbox_messages_count(
     
     # Exclude 'pending' status - only count messages after AI responds
     # Also exclude soft-deleted messages
-    query = "SELECT COUNT(*) as count FROM inbox_messages WHERE license_key_id = ? AND status != 'pending' AND deleted_at IS NULL"
+    query = "SELECT COUNT(*) as count FROM inbox_messages WHERE license_key_id = ? AND deleted_at IS NULL"
     params = [license_id]
 
     if status:
@@ -664,7 +655,7 @@ async def get_inbox_conversations(
     This is O(1) per page instead of O(N) full scan.
     """
     params = [license_id]
-    where_clauses = ["license_key_id = ?", "ic.status != 'pending'"]
+    where_clauses = ["ic.license_key_id = ?"]
     
     if channel:
         where_clauses.append("ic.channel = ?")
@@ -676,7 +667,6 @@ async def get_inbox_conversations(
     
     query = f"""
         SELECT 
-            ic.id,
             ic.sender_contact, ic.sender_name, ic.channel,
             last_message_body as body,
             last_message_ai_summary as ai_summary,
@@ -766,7 +756,6 @@ async def get_conversations_delta(
             message_count
         FROM inbox_conversations ic
         WHERE license_key_id = ? 
-          AND ic.status != 'pending'
           AND last_message_at > ?
         ORDER BY ic.last_message_at DESC
         LIMIT ?
@@ -787,7 +776,7 @@ async def get_inbox_conversations_count(
     Get total number of unique conversations (senders).
     Uses the optimized inbox_conversations table.
     """
-    query = "SELECT COUNT(*) as count FROM inbox_conversations WHERE license_key_id = ? AND status != 'pending'"
+    query = "SELECT COUNT(*) as count FROM inbox_conversations WHERE license_key_id = ?"
     params = [license_id]
     
     if channel:
@@ -808,7 +797,7 @@ async def get_inbox_status_counts(license_id: int) -> dict:
         
         analyzed_row = await fetch_one(db, """
             SELECT COUNT(*) as count FROM inbox_conversations 
-            WHERE license_key_id = ? AND status = 'analyzed'
+            WHERE license_key_id = ?
         """, [license_id])
         
         return {
@@ -985,7 +974,6 @@ async def get_conversation_messages(
             SELECT *, is_forwarded FROM inbox_messages
             WHERE license_key_id = ?
             AND ({where_clause})
-            AND status != 'pending'
             AND deleted_at IS NULL
             ORDER BY created_at DESC
             LIMIT ?
@@ -1065,7 +1053,7 @@ async def get_conversation_messages_cursor(
             
         in_sender_where = " OR ".join(in_identifiers) if in_identifiers else "1=0"
         inbox_conditions.append(f"({in_sender_where})")
-        inbox_conditions.append("i.status != 'pending'")
+        # No status filter
         inbox_conditions.append("i.deleted_at IS NULL")
         
         inbox_where = " AND ".join(inbox_conditions)
@@ -1297,7 +1285,6 @@ async def approve_chat_messages(license_id: int, sender_contact: str) -> int:
             SET status = 'approved'
             WHERE license_key_id = ?
             AND ({sender_where})
-            AND status = 'analyzed'
             """,
             params
         )
@@ -1324,7 +1311,6 @@ async def fix_stale_inbox_status(license_id: int = None) -> int:
     UPDATE inbox_messages
     SET status = 'approved'
     WHERE {license_filter}
-    AND status = 'analyzed'
     AND (
         EXISTS (
             SELECT 1 FROM inbox_messages m2
@@ -1466,7 +1452,6 @@ async def get_full_chat_history(
             FROM inbox_messages
             WHERE license_key_id = ?
             AND ({sender_where})
-            AND status != 'pending'
             AND deleted_at IS NULL
             ORDER BY effective_ts ASC
             LIMIT ?
@@ -2395,18 +2380,16 @@ async def upsert_conversation_state(
             SELECT COUNT(*) as count FROM inbox_messages 
             WHERE license_key_id = ? 
             AND ({in_v_where})
-            AND status = 'analyzed' 
             AND deleted_at IS NULL
             AND ({unread_conditions_sql})
         """, in_v_params)
         unread_count = row_unread["count"] if row_unread else 0
         
-        # Calculate Total Message Count (excluding pending)
+        # Calculate Total Message Count
         row_count_in = await fetch_one(db, f"""
             SELECT COUNT(*) as count FROM inbox_messages 
             WHERE license_key_id = ? 
             AND ({in_v_where})
-            AND status != 'pending'
             AND deleted_at IS NULL
         """, in_v_params)
 
@@ -2442,7 +2425,6 @@ async def upsert_conversation_state(
             FROM inbox_messages
             WHERE license_key_id = ?
             AND ({in_v_where})
-            AND status != 'pending'
             AND deleted_at IS NULL
             ORDER BY created_at DESC LIMIT 1
         """, in_v_params)

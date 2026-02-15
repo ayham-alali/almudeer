@@ -21,69 +21,55 @@ async def process_inbox_message_logic(
     attachments: Optional[List[dict]] = None
 ):
     """
-    Core logic to analyze message with AI and optionally auto-reply.
-    Now designed to be called from a robust background task queue.
+    Core logic to mark message as handled and trigger notifications.
+    AI analysis has been removed.
     """
     try:
-        if message_data:
-            # Basic validation
-            pass
-
-
-
-        # Detect media-only and skip full AI if just simple media
-        is_media_only = False
-        if attachments and (not body or len(body.strip()) < 3):
-            has_img = any(a.get("type", "").startswith("image") for a in attachments)
-            has_aud = any(a.get("type", "").startswith(("audio", "voice")) for a in attachments)
-            if has_img and not has_aud: is_media_only = True
+        from db_helper import get_db, fetch_one
         
-        if is_media_only:
-            await update_inbox_analysis(message_id, "media", "low", "neutral", None, None, "📷 صورة بدون نص", "")
-            return {
-                "success": True, 
-                "action": "media_only", 
-                "message_id": message_id
-            }
-
-        # Legacy Analysis Structure (Placeholder)
-        data = {
-            "intent": "neutral",
-            "urgency": "low",
-            "sentiment": "neutral",
-            "language": "ar",
-            "dialect": None,
-            "summary": None,
-            "draft_response": None
-        }
+        # 1. Fetch message details to ensure it exists and get sender info
+        async with get_db() as db:
+            message_data = await fetch_one(
+                db, 
+                "SELECT * FROM inbox_messages WHERE id = ?", 
+                [message_id]
+            )
         
-        # Update inbox with analysis results
+        if not message_data:
+            logger.warning(f"Message {message_id} not found for processing")
+            return {"success": False, "error": "not_found"}
+
+        # 2. Update status to 'analyzed' (handled) immediately if not already
         await update_inbox_analysis(
             message_id=message_id,
-            intent=data["intent"],
-            urgency=data["urgency"],
-            sentiment=data["sentiment"],
-            language=data.get("language"),
-            dialect=data.get("dialect"),
-            summary=data["summary"],
-            draft_response=data["draft_response"]
+            intent="neutral",
+            urgency="low",
+            sentiment="neutral",
+            language="ar",
+            dialect=None,
+            summary=None,
+            draft_response=None
         )
         
-        # Notifications
+        # 3. Trigger mobile/desktop notifications
         try:
-            await process_message_notifications(license_id, {
-                    "sender_name": message_data.get("sender_name", "Unknown") if message_data else "Unknown",
-                    "sender_contact": message_data.get("sender_contact") if message_data else None,
-                    "body": body, "intent": data.get("intent"), "urgency": data.get("urgency"), "sentiment": data.get("sentiment"),
-                    "channel": message_data.get("channel", "whatsapp") if message_data else "whatsapp",
-                    "attachments": attachments
-                }, message_id=message_id)
+            notification_data = {
+                "sender_name": message_data.get("sender_name", "Unknown"),
+                "sender_contact": message_data.get("sender_contact"),
+                "body": body or message_data.get("body", ""),
+                "intent": "neutral",
+                "urgency": "low",
+                "sentiment": "neutral",
+                "channel": message_data.get("channel", "whatsapp"),
+                "attachments": attachments or []
+            }
+            await process_message_notifications(license_id, notification_data, message_id=message_id)
         except Exception as e:
             logger.warning(f"Notification failed for msg {message_id}: {e}")
 
-        return {"success": True, "analysis": data}
+        return {"success": True}
             
     except Exception as e:
         logger.error(f"Error in process_inbox_message_logic {message_id}: {e}", exc_info=True)
-        raise e # Rethrow so task queue marks it as failed
+        raise e
 

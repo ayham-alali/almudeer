@@ -167,7 +167,6 @@ class MessagePoller:
                     t2.add_done_callback(self.background_tasks.discard)
                     # WhatsApp uses webhooks, so no polling needed
                     
-                    await self._retry_pending_messages(license_id)
                     await self._retry_approved_outbox(license_id)
                     
                     # Poll Telegram delivery statuses (read receipts)
@@ -252,75 +251,8 @@ class MessagePoller:
         return list(set(licenses))  # Remove duplicates
     
     async def _retry_pending_messages(self, license_id: int):
-        """Retry AI analysis for messages with placeholder responses"""
-        try:
-            # Find messages with pending placeholder response
-            placeholder = "⏳ جاري تحليل الرسالة تلقائياً..."
-            
-            async with get_db() as db:
-                # Query messages with placeholder ai_draft_response
-                # Use different datetime syntax for PostgreSQL vs SQLite
-                if DB_TYPE == "postgresql":
-                    query = """
-                        SELECT id, body, sender_contact, sender_name, channel
-                        FROM inbox_messages
-                        WHERE license_key_id = $1
-                          AND (ai_draft_response = $2 OR ai_draft_response IS NULL OR ai_draft_response = '')
-                          AND created_at > NOW() - INTERVAL '24 hours'
-                        ORDER BY created_at DESC
-                        LIMIT 1
-                    """
-                else:
-                    query = """
-                        SELECT id, body, sender_contact, sender_name, channel
-                        FROM inbox_messages
-                        WHERE license_key_id = ?
-                          AND (ai_draft_response = ? OR ai_draft_response IS NULL OR ai_draft_response = '')
-                          AND created_at > datetime('now', '-24 hours')
-                        ORDER BY created_at DESC
-                        LIMIT 1
-                    """
-                logger.debug(f"License {license_id}: Querying pending messages with DB_TYPE={DB_TYPE}")
-                rows = await fetch_all(db, query, [license_id, placeholder])
-                logger.debug(f"License {license_id}: Query returned {len(rows) if rows else 0} rows")
-                
-                if not rows:
-                    return
-                
-                logger.info(f"License {license_id}: Found {len(rows)} pending messages to retry")
-                
-                for row in rows:
-                    message_id = row.get("id")
-                    body = row.get("body")
-                    sender_contact = row.get("sender_contact")
-                    sender_name = row.get("sender_name")
-                    channel = row.get("channel")
-                    
-                    # Skip if already retried this cycle (prevents rapid retry loops)
-                    if message_id in self._retried_this_cycle:
-                        logger.debug(f"Skipping message {message_id}: already retried this cycle")
-                        continue
-                    
-                    # Mark as retried this cycle
-                    self._retried_this_cycle.add(message_id)
-                    
-                    # Add delay between retries
-                    await asyncio.sleep(random.uniform(5.0, 10.0))
-                    
-                    # Re-analyze the message
-                    await self._analyze_and_process_message(
-                        message_id=message_id,
-                        body=body,
-                        license_id=license_id,
-                        channel=channel,
-                        recipient=sender_contact,
-                        sender_name=sender_name
-                    )
-                    
-                    logger.info(f"Retried AI analysis for message {message_id}")
-                    
-        except Exception as e:
-            logger.error(f"Error retrying pending messages for license {license_id}: {type(e).__name__}: {e}", exc_info=True)
+        """AI analysis retry is now removed."""
+        pass
 
     async def _retry_approved_outbox(self, license_id: int):
         """Retry sending messages that are approved but not yet sent"""
@@ -610,7 +542,7 @@ class MessagePoller:
                     attachments=attachments
                 )
                 
-                # Analyze with AI
+                # Analyze with AI (Decommissioned - only notifications remains)
                 await self._analyze_and_process_message(
                     message_id=msg_id,
                     body=email_data["body"],
@@ -1009,25 +941,20 @@ class MessagePoller:
         attachments: Optional[List[dict]] = None
     ):
         """
-        Process new message notifications and basic handling.
-        AI analysis has been removed.
+        Only handles notifications and basic message housekeeping.
         """
         try:
-            try:
-                from services.analysis_service import process_inbox_message_logic
-                
-                # Delegate to the centralized logic
-                await process_inbox_message_logic(
-                    message_id=message_id,
-                    body=body,
-                    license_id=license_id,
-                    attachments=attachments
-                )
-            except Exception as e:
-                logger.error(f"Error during processing for message {message_id}: {e}", exc_info=True)
+            from services.analysis_service import process_inbox_message_logic
             
+            # Delegate to standard processing logic
+            await process_inbox_message_logic(
+                message_id=message_id,
+                body=body,
+                license_id=license_id,
+                attachments=attachments
+            )
         except Exception as e:
-            logger.error(f"Error analyzing message {message_id}: {e}", exc_info=True)
+            logger.error(f"Error processing message {message_id}: {e}")
 
     
 
