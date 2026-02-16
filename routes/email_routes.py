@@ -182,8 +182,6 @@ async def fetch_emails(
         # Simple fetch logic for manual trigger
         emails = await gmail_service.fetch_new_emails(since_hours=1, limit=50)
         
-        # Note: analyze_inbox_message is imported locally if needed to avoid cycles
-        from routes.chat_routes import analyze_inbox_message
         
         processed = 0
         for email_data in emails:

@@ -22,7 +22,7 @@ class TestBurstHandling(unittest.IsolatedAsyncioTestCase):
              patch('workers.TelegramPhoneService') as MockService, \
              patch('workers.get_inbox_messages', new_callable=AsyncMock) as mock_get_inbox, \
              patch('workers.save_inbox_message', new_callable=AsyncMock) as mock_save, \
-             patch('workers.update_inbox_analysis', new_callable=AsyncMock) as mock_update, \
+             patch('workers.update_inbox_status', new_callable=AsyncMock) as mock_update, \
              patch('workers.update_telegram_phone_session_sync_time', new_callable=AsyncMock), \
              patch('services.telegram_listener_service.get_telegram_listener', return_value=mock_listener):
             
@@ -92,8 +92,8 @@ class TestBurstHandling(unittest.IsolatedAsyncioTestCase):
             # IDs 101 and 102 should be updated
             self.assertEqual(mock_update.call_count, 2)
             # Check ID of first update call
-            self.assertEqual(mock_update.call_args_list[0].kwargs['message_id'], 101)
-            self.assertEqual(mock_update.call_args_list[0].kwargs['intent'], "merged")
+            self.assertEqual(mock_update.call_args_list[0].args[0], 101)
+            self.assertEqual(mock_update.call_args_list[0].args[1], "analyzed")
 
 if __name__ == "__main__":
     unittest.main()

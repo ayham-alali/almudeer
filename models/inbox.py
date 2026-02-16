@@ -190,7 +190,10 @@ async def save_inbox_message(
             # This enables WhatsApp/Telegram-like instant message appearance in the mobile app.
             # Moved from update_inbox_analysis to ensure direct flow works.
             try:
-                # Fetch authoritative unread count from conversations table
+                # 1. Update conversation state (recalculates unread count)
+                await upsert_conversation_state(license_id, sender_contact, sender_name, channel)
+
+                # 2. Fetch updated authoritative unread count
                 conv_row = await fetch_one(
                     db, 
                     "SELECT unread_count FROM inbox_conversations WHERE license_key_id = ? AND sender_contact = ?", 
@@ -198,6 +201,7 @@ async def save_inbox_message(
                 )
                 unread_count = conv_row["unread_count"] if conv_row else 0
 
+                # 3. Broadcast to WebSocket
                 from services.websocket_manager import broadcast_new_message
                 await broadcast_new_message(
                     license_id,
@@ -214,9 +218,6 @@ async def save_inbox_message(
                         "is_forwarded": bool(is_forwarded),
                     }
                 )
-                
-                # Call upsert to update conversation state
-                await upsert_conversation_state(license_id, sender_contact, sender_name, channel)
             except Exception as e:
                 from logging_config import get_logger
                 get_logger(__name__).warning(f"WebSocket broadcast or state update failed in save_inbox_message: {e}")

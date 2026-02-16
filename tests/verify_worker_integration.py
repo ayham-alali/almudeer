@@ -25,10 +25,8 @@ async def test_worker_notification_trigger():
              patch("workers.fetch_all", new_callable=AsyncMock) as mock_fetch_all, \
              patch("workers.execute_sql", new_callable=AsyncMock) as mock_execute_sql, \
              patch("workers.commit_db", new_callable=AsyncMock) as mock_commit_db, \
-             patch("workers.update_inbox_analysis", new_callable=AsyncMock) as mock_update_inbox, \
              patch("workers.get_or_create_customer", new_callable=AsyncMock) as mock_get_customer, \
              patch("workers.increment_customer_messages", new_callable=AsyncMock) as mock_inc_msg, \
-             patch("workers.process_message", new_callable=AsyncMock) as mock_process_message, \
              patch("workers.MessagePoller._increment_user_rate_limit", new_callable=MagicMock) as mock_rate_limit, \
              patch("workers.MessagePoller._is_duplicate_content", return_value=False), \
              patch("workers.apply_filters", return_value=True):
@@ -36,19 +34,6 @@ async def test_worker_notification_trigger():
             mock_get_db.return_value = MockDBContext()
             
             # Setup mock data
-            mock_process_message.return_value = {
-                "success": True, 
-                "data": {
-                    "intent": "support",
-                    "urgency": "high", 
-                    "sentiment": "negative",
-                    "summary": "Help me",
-                    "draft_response": "Sure",
-                    "language": "en",
-                    "dialect": None
-                }
-            }
-            
             # Mock customer with VIP status
             mock_get_customer.return_value = {"id": 123, "is_vip": True}
             

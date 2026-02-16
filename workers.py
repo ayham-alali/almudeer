@@ -60,7 +60,6 @@ from models import (
     get_whatsapp_config,
     save_inbox_message,
     update_inbox_status,
-    update_inbox_analysis,
     get_preferences,
     get_inbox_messages,
     create_outbox_message,
@@ -834,18 +833,9 @@ class MessagePoller:
                     
                     # Mark previous messages as 'analyzed' with special note
                     for m in group[:-1]:
-                        # Use update_inbox_analysis to set status without triggering AI
+                        # Update status to 'analyzed' (handled) for merged messages
                         try:
-                            await update_inbox_analysis(
-                                message_id=m["db_id"],
-                                intent="merged",
-                                urgency="low",
-                                sentiment="neutral",
-                                language=None,
-                                dialect=None,
-                                summary="تم دمج الرسالة مع الرد التالي",
-                                draft_response=""
-                            )
+                            await update_inbox_status(m["db_id"], "analyzed")
                         except Exception as e:
                             logger.error(f"Failed to mark merged message {m['db_id']}: {e}")
 

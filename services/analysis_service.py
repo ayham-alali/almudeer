@@ -8,7 +8,7 @@ from typing import Optional, List, Dict
 import re
 import base64
 from logging_config import get_logger
-from models import update_inbox_analysis, create_outbox_message, approve_outbox_message, update_inbox_status
+from models import create_outbox_message, approve_outbox_message, update_inbox_status
 from services.notification_service import process_message_notifications
 
 logger = get_logger(__name__)
@@ -40,16 +40,8 @@ async def process_inbox_message_logic(
             return {"success": False, "error": "not_found"}
 
         # 2. Update status to 'analyzed' (handled) immediately if not already
-        await update_inbox_analysis(
-            message_id=message_id,
-            intent="neutral",
-            urgency="low",
-            sentiment="neutral",
-            language="ar",
-            dialect=None,
-            summary=None,
-            draft_response=None
-        )
+        from models import update_inbox_status
+        await update_inbox_status(message_id, "analyzed")
         
         # 3. Trigger mobile/desktop notifications
         try:

@@ -49,7 +49,6 @@ from .telegram_config import (
 # Inbox/Outbox
 from .inbox import (
     save_inbox_message,
-    update_inbox_analysis,
     get_inbox_messages,
     get_inbox_messages_count,
     get_inbox_conversations,
@@ -161,7 +160,6 @@ __all__ = [
     "update_whatsapp_config_settings",
     # Inbox
     "save_inbox_message",
-    "update_inbox_analysis",
     "get_inbox_messages",
     "get_inbox_messages_count",
     "get_inbox_conversations",
