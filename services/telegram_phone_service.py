@@ -902,6 +902,7 @@ class TelegramPhoneService:
         session_string: str,
         recipient_id: str,
         audio_path: str,
+        caption: Optional[str] = None,
         reply_to_message_id: Optional[int] = None,
         client: Optional["TelegramClient"] = None
     ) -> Dict:
@@ -931,6 +932,7 @@ class TelegramPhoneService:
             sent_message = await client.send_file(
                 entity,
                 audio_path,
+                caption=caption,
                 reply_to=reply_to_message_id,
                 voice_note=True  # This makes it appear as a voice message
             )

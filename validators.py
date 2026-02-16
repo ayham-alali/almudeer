@@ -101,9 +101,18 @@ def validate_text_length(
     text: str,
     min_length: int = 0,
     max_length: int = 10000,
-    field_name: str = "text"
+    field_name: str = "text",
+    allow_empty: bool = False
 ) -> str:
-    """Validate text length"""
+    """
+    Validate text length. 
+    If allow_empty is True, min_length check is skipped if text is empty/whitespace.
+    Useful for messages that have attachments but no text.
+    """
+    if not text or not text.strip():
+        if allow_empty:
+            return text
+        
     if len(text) < min_length:
         raise ValidationError(
             message=f"{field_name} must be at least {min_length} characters",

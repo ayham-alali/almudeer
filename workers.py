@@ -950,8 +950,14 @@ class MessagePoller:
 
     
     async def _send_message(self, outbox_id: int, license_id: int, channel: str):
-        """Send an approved message (Text, Attachments, Audio)"""
+        """Send an approved message (Text, Attachments, Audio) with Caption support"""
         from services.delivery_status import save_platform_message_id
+        import base64
+        import tempfile
+        import mimetypes
+        import os
+        import json
+
         try:
             # Get outbox message (works for both SQLite and PostgreSQL)
             async with get_db() as db:
@@ -971,82 +977,241 @@ class MessagePoller:
             
             # Extract Audio Tag
             import re
-            body = message["body"]
+            body = (message["body"] or "").strip()
             audio_path = None
             audio_match = re.search(r'\[AUDIO: (.*?)\]', body)
             if audio_match:
                 audio_path = audio_match.group(1).strip()
                 body = body.replace(audio_match.group(0), "").strip()
             
-            sent_anything = False
-            last_platform_id = None
-            
-            # 1. SEND TEXT PART
-            if body and not audio_path:
-                try:
-                    if channel == "email":
-                        tokens = await get_email_oauth_tokens(license_id)
-                        if tokens and tokens.get("access_token"):
-                            gs = GmailAPIService(tokens["access_token"], tokens.get("refresh_token"), GmailOAuthService())
-                            res = await gs.send_message(
-                                to_email=message["recipient_email"],
-                                subject=message.get("subject", "رد على رسالتك"),
-                                body=body
-                            )
-                            if res:
-                                sent_anything = True
-                                last_platform_id = str(res.get("id"))
-                    
-                    elif channel == "telegram":
-                        session = await get_telegram_phone_session_data(license_id)
-                        if session:
-                            from services.telegram_listener_service import get_telegram_listener
-                            listener = get_telegram_listener()
-                            active_client = await listener.ensure_client_active(license_id)
-                            
-                            ps = TelegramPhoneService()
-                            recipient = message.get("recipient_id") or message.get("sender_id")
-                            if recipient:
-                                res = await ps.send_message(
-                                    session_string=session,
-                                    recipient_id=str(recipient),
-                                    text=body,
-                                    client=active_client
-                                )
-                                sent_anything = True
-                                if res: last_platform_id = str(res.get("id"))
-
-                    elif channel == "telegram_bot":
-                        async with get_db() as db:
-                            row = await fetch_one(db, "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?", [license_id])
-                            if row and row.get("bot_token"):
-                                ts = TelegramService(row["bot_token"])
-                                res = await ts.send_message(chat_id=message["recipient_id"], text=body)
-                                sent_anything = True
-                                if res: last_platform_id = str(res.get("message_id"))
-
-                    elif channel == "whatsapp":
-                        config = await get_whatsapp_config(license_id)
-                        if config:
-                            ws = WhatsAppService(config["phone_number_id"], config["access_token"])
-                            res = await ws.send_message(to=message["recipient_id"], message=body)
-                            if res["success"]:
-                                sent_anything = True
-                                last_platform_id = res.get("message_id")
-                except Exception as e:
-                    logger.error(f"Error sending text via {channel}: {e}")
-
-            # 2. SEND ATTACHMENTS (if present)
+            # Parse attachments
+            attachments_list = []
             if message.get("attachments"):
-                import json
-                attachments_list = []
                 if isinstance(message["attachments"], str):
                     try: attachments_list = json.loads(message["attachments"])
                     except: pass
                 elif isinstance(message["attachments"], list):
                     attachments_list = message["attachments"]
-                    
-                for att in attachments_list:
+
+            sent_anything = False
+            last_platform_id = None
+
+            # CRITICAL: Channel-specific unified sending
+            # If we have media AND text, we should send them together as a caption where supported
+            
+            # --- INTERNAL CHANNELS ---
+            if channel == "saved":
+                # Special case: self-chat
+                sent_anything = True
+                last_platform_id = f"saved_{message['id']}"
+                # Ensure conversation state updated for Saved Messages
+                from models.inbox import upsert_conversation_state
+                await upsert_conversation_state(license_id, "__saved_messages__", channel="saved")
+            
+            elif channel == "almudeer":
+                # Almudeer Internal Channel: Peer-to-Peer delivery between license holders
+                # recipient_email stores the target username
+                recipient_username = message.get("recipient_email")
+                if recipient_username:
+                    async with get_db() as db:
+                        # 1. Find target license holder
+                        target_license = await fetch_one(db, "SELECT id, company_name FROM license_keys WHERE username = ?", [recipient_username])
+                        if target_license:
+                            # 2. Resolve sender info for recipient view
+                            sender_license = await fetch_one(db, "SELECT username, company_name FROM license_keys WHERE id = ?", [license_id])
+                            sender_username = (sender_license["username"] if sender_license else None) or "mudeer_user"
+                            sender_company = (sender_license["company_name"] if sender_license else "Al-Mudeer User")
+                            
+                            # 3. Deliver to Target Inbox
+                            from models.inbox import save_inbox_message
+                            internal_platform_id = f"alm_{message['id']}"
+                            new_inbox_id = await save_inbox_message(
+                                license_id=target_license["id"],
+                                channel="almudeer",
+                                body=body,
+                                sender_contact=sender_username,
+                                sender_name=sender_company,
+                                sender_id=sender_username,
+                                received_at=datetime.utcnow(),
+                                attachments=attachments_list,
+                                platform_message_id=internal_platform_id,
+                                status='analyzed'
+                            )
+                            # 4. Broadcast to Recipient
+                            if new_inbox_id:
+                                from services.websocket_manager import broadcast_new_message
+                                await broadcast_new_message(target_license["id"], {
+                                    "id": new_inbox_id,
+                                    "license_key_id": target_license["id"],
+                                    "channel": "almudeer",
+                                    "sender_contact": sender_username,
+                                    "sender_name": sender_company,
+                                    "body": body,
+                                    "attachments": attachments_list,
+                                    "received_at": datetime.utcnow().isoformat(),
+                                    "status": "analyzed",
+                                    "direction": "incoming"
+                                })
+                            
+                            # 5. Broadcast "Sent" status back to SOURCE (Real-time UI update for the sender)
+                            from services.websocket_manager import broadcast_message_status_update
+                            await broadcast_message_status_update(license_id, {
+                                "outbox_id": outbox_id,
+                                "sender_contact": recipient_username,
+                                "status": "sent",
+                                "timestamp": datetime.utcnow().isoformat()
+                            })
+                            
+                            # 6. Update Conversation State for both sides
+                            from models.inbox import upsert_conversation_state
+                            await upsert_conversation_state(target_license["id"], sender_username, channel="almudeer")
+                            await upsert_conversation_state(license_id, recipient_username, channel="almudeer")
+
+                            sent_anything = True
+                            last_platform_id = internal_platform_id
+                        else:
+                            from logging_config import get_logger
+                            get_logger(__name__).error(f"Internal delivery failed: Recipient license holder '{recipient_username}' not found.")
+
+            # --- EXTERNAL CHANNELS ---
+            elif channel == "email":
+                from services.gmail_api_service import GmailAPIService, GmailOAuthService
+                from models.email_config import get_email_oauth_tokens
+                tokens = await get_email_oauth_tokens(license_id)
+                if tokens and tokens.get("access_token"):
+                    gs = GmailAPIService(tokens["access_token"], tokens.get("refresh_token"), GmailOAuthService())
+                    res = await gs.send_message(
+                        to_email=message["recipient_email"],
+                        subject=message.get("subject", "رد على رسالتك"),
+                        body=body,
+                        reply_to_message_id=message.get("reply_to_platform_id"),
+                        attachments=attachments_list 
+                    )
+                    if res:
+                        sent_anything = True
+                        last_platform_id = str(res.get("id"))
+
+            elif channel in ["whatsapp", "telegram", "telegram_bot"]:
+                # Optimization: Separate the first attachment to use as a captioned host if body exists
+                first_att = attachments_list[0] if attachments_list else None
+                remaining_attachments = attachments_list[1:] if attachments_list else []
+                
+                # Case 1: Send as Text-only (no attachments)
+                if not first_att and not audio_path:
+                    if body:
+                        try:
+                            if channel == "whatsapp":
+                                config = await get_whatsapp_config(license_id)
+                                if config:
+                                    ws = WhatsAppService(config["phone_number_id"], config["access_token"])
+                                    res = await ws.send_message(
+                                        to=message["recipient_id"], 
+                                        message=body,
+                                        reply_to_message_id=message.get("reply_to_platform_id")
+                                    )
+                                    if res["success"]:
+                                        sent_anything = True
+                                        last_platform_id = res.get("message_id")
+                            elif channel == "telegram_bot":
+                                async with get_db() as db:
+                                    row = await fetch_one(db, "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?", [license_id])
+                                    if row and row.get("bot_token"):
+                                        ts = TelegramService(row["bot_token"])
+                                        res = await ts.send_message(
+                                            chat_id=message["recipient_id"], 
+                                            text=body,
+                                            reply_to_message_id=message.get("reply_to_id") # Telegram Bot API usually uses internal numeric ID
+                                        )
+                                        sent_anything = True
+                                        if res: last_platform_id = str(res.get("message_id"))
+                            elif channel == "telegram":
+                                session = await get_telegram_phone_session_data(license_id)
+                                if session:
+                                    from services.telegram_listener_service import get_telegram_listener
+                                    listener = get_telegram_listener()
+                                    active_client = await listener.ensure_client_active(license_id)
+                                    ps = TelegramPhoneService()
+                                    recipient = message.get("recipient_id") or message.get("sender_id")
+                                    if recipient:
+                                        res = await ps.send_message(
+                                            session_string=session, 
+                                            recipient_id=str(recipient), 
+                                            text=body, 
+                                            reply_to_message_id=message.get("reply_to_id"), # MTProto uses numeric ID
+                                            client=active_client
+                                        )
+                                        sent_anything = True
+                                        if res: last_platform_id = str(res.get("id"))
+                        except Exception as text_e:
+                            logger.error(f"Error sending text via {channel}: {text_e}")
+
+                # Case 2: Send First Attachment (possibly with body as CAPTION)
+                if first_att:
+                    try:
+                        file_data = base64.b64decode(first_att["base64"])
+                        suffix = os.path.splitext(first_att["filename"])[1]
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                            tmp.write(file_data)
+                            tmp_path = tmp.name
+                        
+                        try:
+                            mime_type = first_att.get("mime_type") or mimetypes.guess_type(first_att["filename"])[0] or "application/octet-stream"
+                            caption = body if body else None # Body behaves as caption
+                            
+                            if channel == "whatsapp":
+                                config = await get_whatsapp_config(license_id)
+                                if config:
+                                    ws = WhatsAppService(config["phone_number_id"], config["access_token"])
+                                    mid = await ws.upload_media(tmp_path, mime_type=mime_type)
+                                    if mid:
+                                        res = None
+                                        if mime_type.startswith("image/"): res = await ws.send_image_message(message["recipient_id"], mid, caption=caption, reply_to_message_id=message.get("reply_to_platform_id"))
+                                        elif mime_type.startswith("video/"): res = await ws.send_video_message(message["recipient_id"], mid, caption=caption, reply_to_message_id=message.get("reply_to_platform_id"))
+                                        else: res = await ws.send_document_message(message["recipient_id"], mid, first_att["filename"], caption=caption, reply_to_message_id=message.get("reply_to_platform_id"))
+                                        if res and res.get("success"):
+                                            sent_anything = True
+                                            last_platform_id = res.get("message_id")
+                            
+                            elif channel == "telegram_bot":
+                                async with get_db() as db:
+                                    row = await fetch_one(db, "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?", [license_id])
+                                    if row and row.get("bot_token"):
+                                        ts = TelegramService(row["bot_token"])
+                                        res = None
+                                        if mime_type.startswith("image/"): res = await ts.send_photo(chat_id=message["recipient_id"], photo_path=tmp_path, caption=caption, reply_to_message_id=message.get("reply_to_id"))
+                                        elif mime_type.startswith("video/"): res = await ts.send_video(chat_id=message["recipient_id"], video_path=tmp_path, caption=caption, reply_to_message_id=message.get("reply_to_id"))
+                                        elif mime_type.startswith("audio/"): res = await ts.send_audio(chat_id=message["recipient_id"], audio_path=tmp_path, title=caption, reply_to_message_id=message.get("reply_to_id"))
+                                        else: res = await ts.send_document(chat_id=message["recipient_id"], document_path=tmp_path, caption=caption, reply_to_message_id=message.get("reply_to_id"))
+                                        if res:
+                                            sent_anything = True
+                                            last_platform_id = str(res.get("message_id"))
+
+                            elif channel == "telegram":
+                                session = await get_telegram_phone_session_data(license_id)
+                                if session:
+                                    from services.telegram_listener_service import get_telegram_listener
+                                    listener = get_telegram_listener()
+                                    active_client = await listener.ensure_client_active(license_id)
+                                    ps = TelegramPhoneService()
+                                    res = await ps.send_file(
+                                        session_string=session, 
+                                        recipient_id=str(message["recipient_id"]), 
+                                        file_path=tmp_path, 
+                                        caption=caption, 
+                                        reply_to_message_id=message.get("reply_to_id"),
+                                        client=active_client
+                                    )
+                                    sent_anything = True
+                                    if res: last_platform_id = str(res.get("id"))
+
+                        finally:
+                            try: os.remove(tmp_path)
+                            except: pass
+                    except Exception as first_att_e:
+                        logger.error(f"Error sending first attachment: {first_att_e}")
+
+                # Case 3: Send Remaining Attachments
+                for att in remaining_attachments:
                     if not att.get("base64") or not att.get("filename"): continue
                     try:
                         file_data = base64.b64decode(att["base64"])
@@ -1086,58 +1251,78 @@ class MessagePoller:
                             elif channel == "telegram":
                                 session = await get_telegram_phone_session_data(license_id)
                                 if session:
+                                    from services.telegram_listener_service import get_telegram_listener
+                                    listener = get_telegram_listener()
+                                    active_client = await listener.ensure_client_active(license_id)
                                     ps = TelegramPhoneService()
-                                    res = await ps.send_file(session_string=session, recipient_id=str(message["recipient_id"]), file_path=tmp_path)
+                                    res = await ps.send_file(session_string=session, recipient_id=str(message["recipient_id"]), file_path=tmp_path, client=active_client)
                                     sent_anything = True
                                     if res: last_platform_id = str(res.get("id"))
                         finally:
                             try: os.remove(tmp_path)
                             except: pass
-                    except Exception as att_e:
-                        logger.error(f"Error sending attachment: {att_e}")
+                    except Exception as rest_att_e:
+                        logger.error(f"Error sending extra attachment: {rest_att_e}")
 
-            # 3. SEND AUDIO PART
-            if audio_path:
-                try:
-                    if channel == "whatsapp":
-                        config = await get_whatsapp_config(license_id)
-                        if config:
-                            ws = WhatsAppService(config["phone_number_id"], config["access_token"])
-                            mid = await ws.upload_media(audio_path)
-                            if mid:
-                                await asyncio.sleep(1)
-                                res = await ws.send_audio_message(to=message["recipient_id"], media_id=mid)
-                                if res and res.get("success"):
-                                    sent_anything = True
-                                    last_platform_id = res.get("message_id")
-                    
-                    elif channel == "telegram_bot":
-                        async with get_db() as db:
-                            row = await fetch_one(db, "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?", [license_id])
-                            if row and row.get("bot_token"):
-                                ts = TelegramService(row["bot_token"])
-                                await asyncio.sleep(1)
-                                res = await ts.send_voice(chat_id=message["recipient_id"], audio_path=audio_path)
-                                if res:
-                                    sent_anything = True
-                                    last_platform_id = str(res.get("message_id"))
+                # Case 4: Send Audio (Voice)
+                if audio_path:
+                    try:
+                        if channel == "whatsapp":
+                            config = await get_whatsapp_config(license_id)
+                            if config:
+                                ws = WhatsAppService(config["phone_number_id"], config["access_token"])
+                                mid = await ws.upload_media(audio_path)
+                                if mid:
+                                    await asyncio.sleep(1) # Extra buffer for audio processing
+                                    res = await ws.send_audio_message(
+                                        to=message["recipient_id"], 
+                                        media_id=mid,
+                                        reply_to_message_id=message.get("reply_to_platform_id")
+                                    )
+                                    if res and res.get("success"):
+                                        sent_anything = True
+                                        last_platform_id = res.get("message_id")
+                        
+                        elif channel == "telegram_bot":
+                            async with get_db() as db:
+                                row = await fetch_one(db, "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?", [license_id])
+                                if row and row.get("bot_token"):
+                                    ts = TelegramService(row["bot_token"])
+                                    await asyncio.sleep(1)
+                                    res = await ts.send_voice(
+                                        chat_id=message["recipient_id"], 
+                                        audio_path=audio_path,
+                                        reply_to_message_id=message.get("reply_to_id")
+                                    )
+                                    if res:
+                                        sent_anything = True
+                                        last_platform_id = str(res.get("message_id"))
 
-                    elif channel == "telegram":
-                        session = await get_telegram_phone_session_data(license_id)
-                        if session:
-                            from services.telegram_listener_service import get_telegram_listener
-                            listener = get_telegram_listener()
-                            active_client = await listener.ensure_client_active(license_id)
-                            ps = TelegramPhoneService()
-                            recipient = message.get("recipient_id") or message.get("sender_id")
-                            if recipient:
-                                await asyncio.sleep(1)
-                                res = await ps.send_voice(session_string=session, recipient_id=str(recipient), audio_path=audio_path, client=active_client)
-                                if res:
-                                    sent_anything = True
-                                    last_platform_id = str(res.get("id"))
-                except Exception as audio_e:
-                    logger.error(f"Error sending audio: {audio_e}")
+                        elif channel == "telegram":
+                            session = await get_telegram_phone_session_data(license_id)
+                            if session:
+                                from services.telegram_listener_service import get_telegram_listener
+                                listener = get_telegram_listener()
+                                active_client = await listener.ensure_client_active(license_id)
+                                ps = TelegramPhoneService()
+                                recipient = message.get("recipient_id") or message.get("sender_id")
+                                if recipient:
+                                    await asyncio.sleep(1)
+                                    # Forward original body as caption if it's not a standalone text msg
+                                    caption = body if body and not sent_anything else None
+                                    res = await ps.send_voice(
+                                        session_string=session, 
+                                        recipient_id=str(recipient), 
+                                        audio_path=audio_path, 
+                                        caption=caption, 
+                                        reply_to_message_id=message.get("reply_to_id"),
+                                        client=active_client
+                                    )
+                                    if res:
+                                        sent_anything = True
+                                        last_platform_id = str(res.get("id"))
+                    except Exception as audio_e:
+                        logger.error(f"Error sending audio: {audio_e}")
 
             # Final Status Update
             if sent_anything:
@@ -1145,8 +1330,7 @@ class MessagePoller:
                 if last_platform_id:
                     await save_platform_message_id(outbox_id, last_platform_id)
             else:
-                await mark_outbox_failed(outbox_id, "Failed to send message via any method")
-        
+                await mark_outbox_failed(outbox_id, "Failed to send message via any method")        
         except Exception as e:
             logger.error(f"Error sending message {outbox_id}: {e}", exc_info=True)
     

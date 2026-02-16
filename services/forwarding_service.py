@@ -78,9 +78,16 @@ class ForwardingService:
             if file_info.get("file_path"):
                 return await self.telegram.download_file(file_info["file_path"])
         elif channel == "email" and self.email:
-            # Email media handling usually involves attachments stored in our DB or cloud
-            # For now, we'll assume it's a URL or media_id maps to something Gmail can fetch
-            pass
+            # Download from our DB/Storage since email attachments are saved locally
+            # In GmailAPIService._parse_message, attachments are saved to storage
+            # media_id here would be the file_id or path
+            from services.file_storage_service import get_file_storage
+            # We assume media_id might be a path or we need to find it
+            # For simplicity, if media_id is a path, we read it
+            if os.path.exists(media_id):
+                with open(media_id, "rb") as f:
+                    return f.read()
+            return None
         return None
 
     async def _upload_to_target(
@@ -121,8 +128,28 @@ class ForwardingService:
 
         elif channel == "email" and self.email:
             # Email sending logic normally uses body + attachments
-            # We'll need a simplified 'send_media' in EmailService if we want direct forwarding
-            return {"success": False, "error": "Email forwarding not fully implemented in this tier"}
+            # We use EmailService or GmailAPIService
+            try:
+                # We need a subject and body. If not provided, use defaults.
+                attachments = []
+                if os.path.exists(file_path):
+                    import base64
+                    with open(file_path, "rb") as f:
+                        b64_data = base64.b64encode(f.read()).decode('utf-8')
+                        attachments.append({
+                            "filename": filename or os.path.basename(file_path),
+                            "base64": b64_data
+                        })
+                
+                # We need to know which email config to use. 
+                # This service might need a license_id to fetch the right config.
+                # However, the current __init__ takes an initialized service.
+                res = await self.email.send_image_message(target_id, file_path, caption=caption) if media_type == "image" else \
+                      await self.email.send_message(target_id, caption or "Shared File", attachments=attachments)
+                
+                return {"success": True, "message_id": res.get("id") if res else None}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
 
         return {"success": False, "error": f"Unsupported target channel: {channel}"}
 
