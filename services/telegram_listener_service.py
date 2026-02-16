@@ -499,21 +499,6 @@ class TelegramListenerService:
                     if msg_id:
                         logger.info(f"Saved real-time Telegram message {msg_id} for license {license_id}")
                         
-                        # 6. Trigger AI Analysis
-                        # Local import to avoid circular dependency
-                        from routes.chat_routes import analyze_inbox_message
-                        
-                        task = asyncio.create_task(
-                            analyze_inbox_message(
-                                message_id=msg_id,
-                                body=body,
-                                license_id=license_id,
-                                telegram_chat_id=str(sender.id),
-                                attachments=attachments
-                            )
-                        )
-                        task.add_done_callback(self.background_tasks.discard)
-
                         # 7. Persist Updated Session (CRITICAL for access_hash management)
                         # StringSession stores new hashes as they are encountered. 
                         # Saving it back ensures we don't get "entity not found" on replies.

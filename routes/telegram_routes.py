@@ -178,16 +178,7 @@ async def telegram_webhook(
         attachments=attachments,
         is_forwarded=parsed.get("is_forwarded", False)
     )
-    
-    from routes.chat_routes import analyze_inbox_message
-    background_tasks.add_task(
-        analyze_inbox_message,
-        msg_id,
-        parsed["text"],
-        license_id,
-        parsed["chat_id"],
-        attachments
-    )
+    pass
     return {"ok": True}
 
 # ============ Telegram Phone Routes (MTProto) ============

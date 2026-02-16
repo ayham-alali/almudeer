@@ -199,15 +199,9 @@ async def fetch_emails(
                 subject=email_data.get("subject", ""),
                 channel_message_id=email_data["channel_message_id"],
                 received_at=email_data["received_at"],
-                attachments=attachments
+                attachments=email_data["attachments"]
             )
             
-            background_tasks.add_task(
-                analyze_inbox_message,
-                msg_id,
-                email_data["body"],
-                license["license_id"]
-            )
             processed += 1
         
         return {"success": True, "message": f"تم جلب {processed} رسالة جديدة", "count": processed}

@@ -26,7 +26,6 @@ from models import (
     get_full_chat_history,
     search_messages,
     update_inbox_status,
-    update_inbox_analysis,
     create_outbox_message,
     approve_outbox_message,
     get_pending_outbox,

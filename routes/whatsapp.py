@@ -448,21 +448,9 @@ async def receive_webhook(request: Request):
 
                     # Analyze with AI (WhatsApp auto-analysis)
                     try:
-                        from routes.chat_routes import analyze_inbox_message  # local import to avoid cycles
-                        import asyncio
-                        
-                        # Use asyncio.create_task for proper background execution
-                        asyncio.create_task(
-                            analyze_inbox_message(
-                                inbox_id,
-                                msg.get("body", ""),
-                                license_id,
-                                None,  # telegram_chat_id
-                                attachments  # Pass attachments
-                            )
-                        )
+                        pass
                     except Exception as e:
-                        print(f"WhatsApp auto-analysis scheduling failed: {e}")
+                        print(f"WhatsApp processing error: {e}")
                     
                     # Create notification
                     await create_smart_notification(

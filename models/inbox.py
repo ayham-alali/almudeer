@@ -183,111 +183,45 @@ async def save_inbox_message(
         message_id = row["id"] if row else 0
         
         
-        # Call upsert to update conversation state
-        # We do this asynchronously/fire-and-forget or await it? 
-        # Await it to ensure UI is consistent on next fetch.
-        await upsert_conversation_state(license_id, sender_contact, sender_name, channel)
-
-        return message_id
-
-
-
-async def update_inbox_analysis(
-    message_id: int,
-    intent: str,
-    urgency: str,
-    sentiment: str,
-    language: Optional[str],
-    dialect: Optional[str],
-    summary: str,
-    draft_response: str
-):
-    """Update inbox message with AI analysis (DB agnostic)."""
-
-    now = datetime.utcnow()
-    ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
-
-    async with get_db() as db:
-        # First, get the message details to pass to upsert_conversation_state
-        # Added 'body' to fetch for broadcast
-        message_row = await fetch_one(db, "SELECT license_key_id, sender_contact, sender_name, channel, body, is_forwarded FROM inbox_messages WHERE id = ?", [message_id])
-        
-        try:
-            # Try to update with all columns including language/dialect
-            await execute_sql(
-                db,
-                """
-                UPDATE inbox_messages SET
-                    intent = ?, urgency = ?, sentiment = ?,
-                    language = ?, dialect = ?,
-                    ai_summary = ?, ai_draft_response = ?,
-                    status = 'analyzed', processed_at = ?
-                WHERE id = ? AND (status IS NULL OR status = 'pending')
-                """,
-                [intent, urgency, sentiment, language, dialect, summary, draft_response, ts_value, message_id],
-            )
-            await commit_db(db)
-        except Exception as e:
-            # If language/dialect columns don't exist, update without them
-            if "language" in str(e).lower() or "dialect" in str(e).lower():
-                from logging_config import get_logger
-                logger = get_logger(__name__)
-                logger.warning(f"Language/dialect columns not found, updating without them: {e}")
-                await execute_sql(
-                    db,
-                    """
-                    UPDATE inbox_messages SET
-                        intent = ?, urgency = ?, sentiment = ?,
-                        ai_summary = ?, ai_draft_response = ?,
-                        status = 'analyzed', processed_at = ?
-                    WHERE id = ? AND (status IS NULL OR status = 'pending')
-                    """,
-                    [intent, urgency, sentiment, summary, draft_response, ts_value, message_id],
-                )
-                await commit_db(db)
-            else:
-                raise
-        
-        if message_row:
-            await upsert_conversation_state(
-                message_row["license_key_id"],
-                message_row["sender_contact"],
-                message_row["sender_name"],
-                message_row["channel"]
-            )
-            
-            # Broadcast via WebSocket for real-time mobile updates
-            # This enables WhatsApp/Telegram-like instant message appearance
+        if message_id:
+            # ---------------------------------------------------------
+            # Real-time Broadcast (WebSocket)
+            # ---------------------------------------------------------
+            # This enables WhatsApp/Telegram-like instant message appearance in the mobile app.
+            # Moved from update_inbox_analysis to ensure direct flow works.
             try:
                 # Fetch authoritative unread count from conversations table
                 conv_row = await fetch_one(
                     db, 
                     "SELECT unread_count FROM inbox_conversations WHERE license_key_id = ? AND sender_contact = ?", 
-                    [message_row["license_key_id"], message_row["sender_contact"]]
+                    [license_id, sender_contact]
                 )
                 unread_count = conv_row["unread_count"] if conv_row else 0
 
                 from services.websocket_manager import broadcast_new_message
                 await broadcast_new_message(
-                    message_row["license_key_id"],
+                    license_id,
                     {
                         "conversation_id": message_id,
-                        "sender_contact": message_row["sender_contact"],
-                        "sender_name": message_row["sender_name"],
-                        # Use actual body for preview instead of AI summary (fixes "..." glitch)
-                        "body": message_row["body"] if message_row["body"] else (summary[:150] if summary else ""),
-                        "channel": message_row["channel"],
+                        "sender_contact": sender_contact,
+                        "sender_name": sender_name,
+                        "body": body,
+                        "channel": channel,
                         "timestamp": datetime.utcnow().isoformat(),
-                        "status": "analyzed",
+                        "status": status or 'analyzed',
                         "direction": "incoming",
-                        "unread_count": unread_count, # Authoritative count
-                        "is_forwarded": bool(message_row.get("is_forwarded", False)),
+                        "unread_count": unread_count,
+                        "is_forwarded": bool(is_forwarded),
                     }
                 )
+                
+                # Call upsert to update conversation state
+                await upsert_conversation_state(license_id, sender_contact, sender_name, channel)
             except Exception as e:
-                # Don't fail the analysis if WebSocket broadcast fails
                 from logging_config import get_logger
-                get_logger(__name__).warning(f"WebSocket broadcast failed: {e}")
+                get_logger(__name__).warning(f"WebSocket broadcast or state update failed in save_inbox_message: {e}")
+
+        return message_id
 
 
 async def get_inbox_messages(
@@ -1537,35 +1471,6 @@ async def get_full_chat_history(
 
 
 
-async def get_chat_history_for_llm(
-    license_id: int,
-    sender_contact: str,
-    limit: int = 10
-) -> str:
-    """
-    Get chat history formatted as a string for LLM context.
-    Format:
-    User: [message]
-    Agent: [message]
-    ...
-    """
-    # Reuse the existing full history retrieval
-    messages = await get_full_chat_history(license_id, sender_contact, limit=limit)
-    
-    formatted_history = []
-    for msg in messages:
-        # Determine speaker
-        if msg.get("direction") == "incoming":
-            speaker = "User"
-        else:
-            speaker = "Agent"
-            
-        # Get content
-        content = msg.get("body", "").replace("\n", " ").strip()
-        if content:
-            formatted_history.append(f"{speaker}: {content}")
-            
-    return "\n".join(formatted_history)
 
 
 # ============ Message Editing Functions ============
