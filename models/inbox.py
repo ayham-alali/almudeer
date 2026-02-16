@@ -216,6 +216,7 @@ async def save_inbox_message(
                         "direction": "incoming",
                         "unread_count": unread_count,
                         "is_forwarded": bool(is_forwarded),
+                        "attachments": attachments,
                     }
                 )
             except Exception as e:
@@ -551,10 +552,22 @@ async def mark_outbox_sent(message_id: int):
             from services.websocket_manager import broadcast_message_status_update
             if message_row:
                 lic_id = message_row["license_key_id"]
+                # Get sender_contact for the broadcast (needed by mobile app to match message)
+                sender_contact = None
+                if message_row.get("inbox_message_id"):
+                    inbox_msg = await fetch_one(db, "SELECT sender_contact FROM inbox_messages WHERE id = ?", [message_row["inbox_message_id"]])
+                    if inbox_msg:
+                        sender_contact = inbox_msg["sender_contact"]
+                else:
+                    outbox_msg = await fetch_one(db, "SELECT recipient_email, recipient_id FROM outbox_messages WHERE id = ?", [message_id])
+                    if outbox_msg:
+                        sender_contact = outbox_msg["recipient_email"] or outbox_msg["recipient_id"]
+                
                 await broadcast_message_status_update(lic_id, {
                     "outbox_id": message_id,
                     "status": "sent",
-                    "timestamp": ts_value.isoformat() if hasattr(ts_value, 'isoformat') else str(ts_value)
+                    "timestamp": ts_value.isoformat() if hasattr(ts_value, 'isoformat') else str(ts_value),
+                    "sender_contact": sender_contact
                 })
         except Exception as e:
             from logging_config import get_logger

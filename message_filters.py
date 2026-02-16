@@ -76,7 +76,7 @@ def filter_spam(message: Dict) -> tuple[bool, Optional[str]]:
 
 
 def filter_empty(message: Dict) -> tuple[bool, Optional[str]]:
-    """Filter empty or very short messages"""
+    """Filter empty messages"""
     body = message.get("body", "").strip()
     attachments = message.get("attachments", [])
     
@@ -84,12 +84,9 @@ def filter_empty(message: Dict) -> tuple[bool, Optional[str]]:
     if attachments and len(attachments) > 0:
         return True, None
     
-    if len(body) < 3:
-        return False, "Message too short"
-    
-    # Check if message is only whitespace or special characters
-    if not re.search(r'[a-zA-Z\u0600-\u06FF]', body):
-        return False, "No meaningful content"
+    # Allow any non-empty message (including 1-letter messages)
+    if len(body) < 1:
+        return False, "Message is empty"
     
     return True, None
 
