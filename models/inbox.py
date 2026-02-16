@@ -206,7 +206,7 @@ async def save_inbox_message(
                 await broadcast_new_message(
                     license_id,
                     {
-                        "conversation_id": message_id,
+                        "id": message_id,
                         "sender_contact": sender_contact,
                         "sender_name": sender_name,
                         "body": body,
@@ -425,32 +425,33 @@ async def approve_outbox_message(message_id: int, edited_body: str = None):
             # We fetched message_row which has license_key_id.
             
             if message_row:
-               lic_id = message_row["license_key_id"]
-               # Get full message details for broadcast
-               # We can reuse get_outbox_message_by_id logic or just query
-               msg_data = await fetch_one(db, "SELECT * FROM outbox_messages WHERE id = ?", [message_id])
-               if msg_data:
-                   # Format for frontend
-                   import json
-                   attachments = []
-                   if msg_data.get("attachments") and isinstance(msg_data["attachments"], str):
-                       try:
-                           attachments = json.loads(msg_data["attachments"])
-                       except: pass
-                       
-                   evt_data = {
-                       "id": msg_data["id"],
-                       "channel": msg_data["channel"],
-                       "sender_contact": msg_data.get("recipient_email") or msg_data.get("recipient_id"), # It's outgoing, so contact is recipient
-                       "sender_name": None, # It's us
-                       "body": msg_data["body"],
-                       "status": "sending", # It is 'approved' in DB, but 'sending' for UI
-                       "direction": "outgoing",
-                       "timestamp": ts_value.isoformat() if hasattr(ts_value, 'isoformat') else str(ts_value),
-                       "attachments": attachments,
-                       "is_forwarded": bool(msg_data.get("is_forwarded", False))
-                   }
-                   await broadcast_new_message(lic_id, evt_data)
+                lic_id = message_row["license_key_id"]
+                # Get full message details for broadcast
+                # We can reuse get_outbox_message_by_id logic or just query
+                msg_data = await fetch_one(db, "SELECT * FROM outbox_messages WHERE id = ?", [message_id])
+                if msg_data:
+                    # Format for frontend
+                    import json
+                    attachments = []
+                    if msg_data.get("attachments") and isinstance(msg_data["attachments"], str):
+                        try:
+                            attachments = json.loads(msg_data["attachments"])
+                        except: pass
+                        
+                    evt_data = {
+                        "id": msg_data["id"],
+                        "outbox_id": msg_data["id"],  # Include outbox_id for status tracking
+                        "channel": msg_data["channel"],
+                        "sender_contact": msg_data.get("recipient_email") or msg_data.get("recipient_id"), # It's outgoing, so contact is recipient
+                        "sender_name": None, # It's us
+                        "body": msg_data["body"],
+                        "status": "sending", # It is 'approved' in DB, but 'sending' for UI
+                        "direction": "outgoing",
+                        "timestamp": ts_value.isoformat() if hasattr(ts_value, 'isoformat') else str(ts_value),
+                        "attachments": attachments,
+                        "is_forwarded": bool(msg_data.get("is_forwarded", False))
+                    }
+                    await broadcast_new_message(lic_id, evt_data)
 
         except Exception as e:
             from logging_config import get_logger
@@ -1621,6 +1622,7 @@ async def save_synced_outbox_message(
             
             evt_data = {
                 "id": message_id,
+                "outbox_id": message_id,  # Include outbox_id for status tracking
                 "channel": channel,
                 "sender_contact": contact,
                 "sender_name": None, # It's us
