@@ -593,8 +593,8 @@ async def handle_websocket_connection(websocket: WebSocket, license_key: str):
     license_id = license_result["license_id"]
     manager = get_websocket_manager()
     
-    await manager.connect(websocket, license_id)
     try:
+        await manager.connect(websocket, license_id)
         while True:
             # Keep connection alive, handle pings
             data = await websocket.receive_text()
@@ -626,7 +626,17 @@ async def handle_websocket_connection(websocket: WebSocket, license_key: str):
                     except Exception:
                         pass
     except WebSocketDisconnect:
+        # Normal disconnect
         await manager.disconnect(websocket, license_id)
+    except Exception as e:
+        # Log unexpected errors but ensure we disconnect
+        logger.error(f"Unexpected WebSocket error for license {license_id}: {e}", exc_info=True)
+        try:
+            await manager.disconnect(websocket, license_id)
+        except Exception:
+            pass
+        # Do NOT re-raise, as that causes the "RuntimeError: WebSocket is not connected" 
+        # when Starlette tries to send an error response to a closed/failed WS.
 
 
 @app.websocket("/ws")

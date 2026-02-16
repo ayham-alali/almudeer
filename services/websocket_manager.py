@@ -55,6 +55,7 @@ class RedisPubSubManager:
     def __init__(self):
         self._redis_client = None
         self._pubsub = None
+        self._lock = asyncio.Lock()  # Synchronize access to self._pubsub
         self._listener_task: Optional[asyncio.Task] = None
         self._message_handlers: Dict[int, Any] = {}  # license_id -> callback
         self._initialized = False
@@ -96,15 +97,16 @@ class RedisPubSubManager:
         channel = f"{self.CHANNEL_PREFIX}{license_id}"
         self._message_handlers[license_id] = handler
         
-        try:
-            await self._pubsub.subscribe(channel)
-            logger.debug(f"Subscribed to Redis channel: {channel}")
-            
-            # Start listener if not already running
-            if self._listener_task is None or self._listener_task.done():
-                self._listener_task = asyncio.create_task(self._listen())
-        except Exception as e:
-            logger.error(f"Failed to subscribe to Redis channel: {e}")
+        async with self._lock:
+            try:
+                await self._pubsub.subscribe(channel)
+                logger.debug(f"Subscribed to Redis channel: {channel}")
+                
+                # Start listener if not already running
+                if self._listener_task is None or self._listener_task.done():
+                    self._listener_task = asyncio.create_task(self._listen())
+            except Exception as e:
+                logger.error(f"Failed to subscribe to Redis channel: {e}")
     
     async def unsubscribe(self, license_id: int):
         """Unsubscribe from messages for a specific license"""
@@ -114,18 +116,19 @@ class RedisPubSubManager:
         channel = f"{self.CHANNEL_PREFIX}{license_id}"
         self._message_handlers.pop(license_id, None)
         
-        try:
-            await self._pubsub.unsubscribe(channel)
-            logger.debug(f"Unsubscribed from Redis channel: {channel}")
-            
-            # Stop listener if no more subscriptions
-            if not self._message_handlers and self._listener_task:
-                self._listener_task.cancel()
-                self._listener_task = None
-                logger.debug("Redis listener stopped (no subscriptions)")
+        async with self._lock:
+            try:
+                await self._pubsub.unsubscribe(channel)
+                logger.debug(f"Unsubscribed from Redis channel: {channel}")
                 
-        except Exception as e:
-            logger.error(f"Failed to unsubscribe from Redis channel: {e}")
+                # Stop listener if no more subscriptions
+                if not self._message_handlers and self._listener_task:
+                    self._listener_task.cancel()
+                    self._listener_task = None
+                    logger.debug("Redis listener stopped (no subscriptions)")
+                    
+            except Exception as e:
+                logger.error(f"Failed to unsubscribe from Redis channel: {e}")
     
     async def publish(self, license_id: int, message: WebSocketMessage):
         """Publish a message to a license channel"""
@@ -145,10 +148,15 @@ class RedisPubSubManager:
         """Background task to listen for Redis messages"""
         try:
             while True:
-                message = await self._pubsub.get_message(
-                    ignore_subscribe_messages=True,
-                    timeout=1.0
-                )
+                # Use lock for reading message to prevent concurrent read errors
+                message = None
+                async with self._lock:
+                    if self._pubsub:
+                        message = await self._pubsub.get_message(
+                            ignore_subscribe_messages=True,
+                            timeout=0.1 # Shorter timeout when holding lock
+                        )
+                
                 if message and message.get("type") == "message":
                     channel = message.get("channel", "")
                     data = message.get("data", "")
@@ -164,7 +172,10 @@ class RedisPubSubManager:
                         except (ValueError, json.JSONDecodeError) as e:
                             logger.debug(f"Failed to parse Redis message: {e}")
                 
-                await asyncio.sleep(0.01)  # Small sleep to prevent busy loop
+                if not message:
+                    await asyncio.sleep(0.1)  # Sleep longer if no message
+                else:
+                    await asyncio.sleep(0.01) # Rapid check after message
         except asyncio.CancelledError:
             pass
         except Exception as e:
