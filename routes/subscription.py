@@ -413,6 +413,13 @@ async def update_subscription(
             
             logger.info(f"Updated subscription {license_id}")
             
+            if update.is_active is False:
+                try:
+                    from services.account_service import trigger_account_logout
+                    await trigger_account_logout(license_id)
+                except Exception as e:
+                    logger.warning(f"Failed to trigger account logout for {license_id}: {e}")
+
             return {
                 "success": True,
                 "message": "تم تحديث الاشتراك بنجاح"
@@ -581,6 +588,13 @@ async def delete_subscription(
             
             await commit_db(db)
             
+            # Trigger real-time logout BEFORE deleting the record
+            try:
+                from services.account_service import trigger_account_logout
+                await trigger_account_logout(license_id)
+            except Exception as e:
+                logger.warning(f"Failed to trigger account logout for {license_id} during deletion: {e}")
+
             logger.info(f"Permanently deleted subscription {license_id}")
             
             return {

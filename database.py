@@ -36,7 +36,8 @@ async def init_database():
                     ADD COLUMN IF NOT EXISTS is_trial BOOLEAN DEFAULT FALSE,
                     ADD COLUMN IF NOT EXISTS referral_count INTEGER DEFAULT 0,
                     ADD COLUMN IF NOT EXISTS username VARCHAR(255) UNIQUE,
-                    ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP
+                    ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP,
+                    ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 1
                 """)
             except Exception as e:
                 from logging_config import get_logger
@@ -45,8 +46,9 @@ async def init_database():
             await _init_sqlite_tables(conn)
             # Migrations for existing SQLite tables
             try:
-                pass # Placeholder for future migrations, previous ones moved to _init_sqlite_tables
-            except Exception as e:
+                await execute_sql(conn, "ALTER TABLE license_keys ADD COLUMN token_version INTEGER DEFAULT 1")
+            except Exception:
+                pass
                 from logging_config import get_logger
                 get_logger(__name__).debug(f"SQLite migration note (might already exist): {e}")
             await commit_db(conn)
@@ -120,6 +122,7 @@ async def _init_sqlite_tables(db):
             referral_count INTEGER DEFAULT 0,
             phone TEXT,
             email TEXT,
+            token_version INTEGER DEFAULT 1,
             FOREIGN KEY (referred_by_id) REFERENCES license_keys(id)
         )
     """)
@@ -246,7 +249,8 @@ async def _init_postgresql_tables(conn):
             referral_count INTEGER DEFAULT 0,
             last_seen_at TIMESTAMP,
             phone VARCHAR(255),
-            email VARCHAR(255)
+            email VARCHAR(255),
+            token_version INTEGER DEFAULT 1
         )
     """))
     
