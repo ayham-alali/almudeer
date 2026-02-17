@@ -17,6 +17,8 @@ async def init_tasks_table():
                 priority TEXT DEFAULT 'medium',
                 color BIGINT,
                 sub_tasks TEXT,  -- JSON string
+                alarm_enabled BOOLEAN DEFAULT FALSE,
+                alarm_time TIMESTAMP,
                 created_at {TIMESTAMP_NOW},
                 updated_at TIMESTAMP,
                 synced_at TIMESTAMP,
@@ -24,7 +26,19 @@ async def init_tasks_table():
             )
         """)
         
-        # Check for new columns and migrate if needed (SQLite specific check)
+        # Migrations for existing tables
+        try:
+            await execute_sql(db, "ALTER TABLE tasks ADD COLUMN alarm_enabled BOOLEAN DEFAULT FALSE")
+            print("Migrated tasks: added alarm_enabled")
+        except Exception:
+            pass
+            
+        try:
+            await execute_sql(db, "ALTER TABLE tasks ADD COLUMN alarm_time TIMESTAMP")
+            print("Migrated tasks: added alarm_time")
+        except Exception:
+            pass
+            
         try:
             await execute_sql(db, "ALTER TABLE tasks ADD COLUMN color INTEGER")
             print("Migrated tasks: added color")
@@ -88,8 +102,10 @@ async def create_task(license_id: int, task_data: dict) -> dict:
             
         await execute_sql(db, """
             INSERT INTO tasks (
-                id, license_key_id, title, description, is_completed, due_date, priority, color, sub_tasks, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                id, license_key_id, title, description, is_completed, due_date, 
+                priority, color, sub_tasks, alarm_enabled, alarm_time,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 description = excluded.description,
@@ -98,6 +114,8 @@ async def create_task(license_id: int, task_data: dict) -> dict:
                 priority = excluded.priority,
                 color = excluded.color,
                 sub_tasks = excluded.sub_tasks,
+                alarm_enabled = excluded.alarm_enabled,
+                alarm_time = excluded.alarm_time,
                 updated_at = CURRENT_TIMESTAMP
             WHERE tasks.license_key_id = ?
         """, (
@@ -110,6 +128,8 @@ async def create_task(license_id: int, task_data: dict) -> dict:
             task_data.get('priority', 'medium'),
             task_data.get('color'),
             sub_tasks_val,
+            task_data.get('alarm_enabled', False),
+            task_data.get('alarm_time'),
             license_id  # For the WHERE clause in ON CONFLICT
         ))
         await commit_db(db)

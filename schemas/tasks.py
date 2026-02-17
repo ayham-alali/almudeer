@@ -10,6 +10,8 @@ class TaskBase(BaseModel):
     priority: str = Field("medium", pattern="^(low|medium|high)$")
     color: Optional[int] = None
     sub_tasks: Optional[list[str]] = []
+    alarm_enabled: bool = False
+    alarm_time: Optional[datetime] = None
 
 class TaskCreate(TaskBase):
     id: str = Field(..., description="UUID from client")
