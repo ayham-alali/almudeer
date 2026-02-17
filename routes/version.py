@@ -37,6 +37,9 @@ from database import (
     add_version_history,
     get_version_history_list
 )
+from logging_config import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(tags=["Version"])
 
@@ -441,6 +444,7 @@ async def check_app_version(
     For force updates, provide app_build_number parameter.
     """
     client_ip = request.client.host if request and request.client else "unknown"
+    logger.info(f"Version check request: build={app_build_number}, platform={platform}, version={current_version}, ip={client_ip}")
     return await _get_app_version_logic(current_version, platform, client_ip, app_build_number)
 
 
@@ -579,17 +583,19 @@ async def set_min_build_number(
         await set_app_config("update_config", json.dumps(update_config))
             
     except Exception as e:
+        logger.error(f"Failed to update min build: {str(e)}", extra={"extra_fields": {"build_number": build_number}})
         raise HTTPException(
             status_code=500,
             detail=_MESSAGES["ar"]["update_failed"].format(error=str(e))
         )
+    
+    logger.info(f"App min build updated to {build_number} (soft={is_soft_update}, priority={priority})")
     
     return {
         "success": True,
         "message": _MESSAGES["ar"]["min_build_updated"],
         "min_build_number": build_number,
         "is_soft_update": is_soft_update,
-        "priority": priority,
         "priority": priority,
         "ios_store_url": ios_store_url,
     }
