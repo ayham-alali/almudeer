@@ -201,7 +201,20 @@ async def _init_sqlite_tables(db):
         )
     """)
 
-    
+    # Update Events table (for analytics)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS update_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event TEXT NOT NULL,
+            from_build INTEGER,
+            to_build INTEGER,
+            device_id TEXT,
+            device_type TEXT,
+            license_key TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     # Create indexes for performance
     await db.execute("""
         CREATE INDEX IF NOT EXISTS idx_license_key_hash 
@@ -334,7 +347,20 @@ async def _init_postgresql_tables(conn):
         )
     """))
 
-    
+    # Update Events table (for analytics)
+    await conn.execute(_adapt_sql_for_db("""
+        CREATE TABLE IF NOT EXISTS update_events (
+            id SERIAL PRIMARY KEY,
+            event VARCHAR(50) NOT NULL,
+            from_build INTEGER,
+            to_build INTEGER,
+            device_id TEXT,
+            device_type TEXT,
+            license_key TEXT,
+            timestamp TIMESTAMP DEFAULT NOW()
+        )
+    """))
+
     # Create indexes for performance
     await conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_license_key_hash 

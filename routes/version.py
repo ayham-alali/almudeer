@@ -381,44 +381,155 @@ async def get_version():
 
 
 class UpdateCheckResponse(BaseModel):
+    """Complete version check response for mobile app force update system"""
+    # Core update flags
     update_available: bool
+    update_required: bool
+    force_update: bool
+    
+    # Version info
+    min_build_number: int
     version: str
-    download_url: Optional[str] = None
-    release_notes: Optional[str] = None
-    is_critical: bool = False
+    
+    # Download info
+    update_url: Optional[str] = None
+    apk_size_mb: Optional[float] = None
+    apk_sha256: Optional[str] = None
+    
+    # Update metadata
+    message: Optional[str] = None
+    priority: str = UPDATE_PRIORITY_NORMAL
+    changelog: List[str] = []
+    changelog_en: List[str] = []
+    release_notes_url: Optional[str] = None
+    changes: List[dict] = []
+    
+    # Rollout and scheduling
+    rollout_percentage: int = 100
+    update_active: bool = True
+    update_active_reason: Optional[str] = None
+    
+    # Security
+    apk_signing_fingerprint: Optional[str] = None
+    
+    # Server time for client sync
+    server_time: str = ""
+    
+    # iOS support
+    ios_store_url: Optional[str] = None
 
-@router.get("/check-update", response_model=UpdateCheckResponse)
-async def check_update(current_version: str, platform: str = "android"):
+
+@router.get("/check-update")
+async def check_update(current_version: str = Query(None), platform: str = Query("android")):
     """Internal/Legacy alias for check_app_version"""
     return await _get_app_version_logic(current_version, platform)
 
+
 @router.get("/api/app/version-check", summary="Mobile app version check (public)")
 @router.get("/api/v1/app/version-check", summary="Mobile app version check v1 (public)")
-@router.get("/check", response_model=UpdateCheckResponse)
-async def check_app_version(request: Request, current_version: str = Query(None), platform: str = Query("android")):
-    """Public endpoint for mobile app version check"""
-    client_ip = request.client.host if request and request.client else "unknown"
-    return await _get_app_version_logic(current_version, platform, client_ip)
-
-async def _get_app_version_logic(current_version: str, platform: str = "android", client_ip: str = "unknown"):
-    config = await get_all_app_config()
-    min_version = config.get(f"min_{platform}_version", "1.0.0")
-    latest_version = config.get(f"latest_{platform}_version", "1.0.0")
+@router.get("/check")
+async def check_app_version(
+    request: Request, 
+    current_version: str = Query(None), 
+    platform: str = Query("android"),
+    app_build_number: int = Query(None, description="App build number for force update check")
+):
+    """
+    Public endpoint for mobile app version check.
     
+    Supports both legacy version string checks and new build number-based force updates.
+    For force updates, provide app_build_number parameter.
+    """
+    client_ip = request.client.host if request and request.client else "unknown"
+    return await _get_app_version_logic(current_version, platform, client_ip, app_build_number)
+
+
+async def _get_app_version_logic(
+    current_version: Optional[str] = None, 
+    platform: str = "android", 
+    client_ip: str = "unknown",
+    app_build_number: Optional[int] = None
+):
+    """
+    Main version check logic supporting both legacy and new force update system.
+    
+    If app_build_number is provided, uses build number-based force update logic.
+    Otherwise falls back to legacy version string comparison.
+    """
+    # Get all configuration
+    min_build_number = await _get_min_build_number()
+    changelog_data = await _get_changelog()
+    update_config = await _get_update_config()
+    signing_fingerprint = await _get_apk_signing_fingerprint()
+    
+    # Refresh APK cache to get current SHA256 and size
+    _refresh_apk_cache()
+    
+    # Check if update is active based on scheduling
+    is_update_active, update_active_reason = _is_update_active(update_config)
+    
+    # Determine update status
     update_available = False
-    if current_version:
+    update_required = False
+    force_update = False
+    
+    if app_build_number is not None:
+        # New build number-based force update logic
+        update_available = app_build_number < min_build_number
+        force_update = update_available and is_update_active
+        update_required = force_update
+    elif current_version:
+        # Legacy version string comparison
         try:
+            config = await get_all_app_config()
+            min_version = config.get(f"min_{platform}_version", "1.0.0")
+            latest_version = config.get(f"latest_{platform}_version", "1.0.0")
             update_available = latest_version > current_version
+            update_required = update_available and is_update_active
+            force_update = update_required
         except Exception:
             update_available = False
-            
-    return UpdateCheckResponse(
-        update_available=update_available,
-        version=latest_version,
-        download_url=config.get(f"{platform}_download_url"),
-        release_notes=config.get(f"{platform}_release_notes", ""),
-        is_critical=latest_version > min_version
-    )
+    
+    # Build response
+    response = {
+        # Core flags
+        "update_available": update_available,
+        "update_required": update_required,
+        "force_update": force_update,
+        
+        # Version info
+        "min_build_number": min_build_number,
+        "version": _APP_VERSION,
+        
+        # Download info
+        "update_url": _APP_DOWNLOAD_URL,
+        "apk_size_mb": _get_apk_size_mb(),
+        "apk_sha256": _get_apk_sha256(),
+        
+        # Update metadata
+        "message": _MESSAGES["ar"]["update_message"] if update_required else None,
+        "priority": update_config.get("priority", UPDATE_PRIORITY_NORMAL),
+        "changelog": changelog_data.get("changelog_ar", []),
+        "changelog_en": changelog_data.get("changelog_en", []),
+        "release_notes_url": changelog_data.get("release_notes_url", ""),
+        "changes": changelog_data.get("changes", []),
+        
+        # Rollout and scheduling
+        "rollout_percentage": update_config.get("rollout_percentage", 100),
+        "update_active": is_update_active,
+        "update_active_reason": update_active_reason if not is_update_active else None,
+        
+        # Security
+        "apk_signing_fingerprint": signing_fingerprint,
+        
+        # Server time
+        "server_time": datetime.now(timezone.utc).isoformat(),
+        
+        # iOS support
+        "ios_store_url": update_config.get("ios_store_url") or _IOS_STORE_URL,
+    }
+    
+    return response
 
 
 @router.post("/api/app/set-min-build", summary="Set minimum build number (admin only)")
