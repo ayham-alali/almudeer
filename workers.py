@@ -966,13 +966,16 @@ class MessagePoller:
                     """
                     SELECT o.*, i.sender_name, i.body as original_message, i.sender_contact, i.sender_id
                     FROM outbox_messages o
-                    JOIN inbox_messages i ON o.inbox_message_id = i.id
+                    LEFT JOIN inbox_messages i ON o.inbox_message_id = i.id
                     WHERE o.id = ? AND o.license_key_id = ?
                     """,
                     [outbox_id, license_id],
                 )
 
-            if not rows: return
+            if not rows:
+                logger.error(f"Unified Send: Outbox message {outbox_id} not found for license {license_id}")
+                await mark_outbox_failed(outbox_id, "Outbox message record not found in database")
+                return
             message = rows[0]
             
             # Extract Audio Tag
@@ -1104,8 +1107,12 @@ class MessagePoller:
                                 config = await get_whatsapp_config(license_id)
                                 if config:
                                     ws = WhatsAppService(config["phone_number_id"], config["access_token"])
+                                    recipient = message.get("recipient_id") or message.get("recipient_email")
+                                    if not recipient:
+                                        raise ValueError("No recipient specified (ID or Contact)")
+                                        
                                     res = await ws.send_message(
-                                        to=message["recipient_id"], 
+                                        to=recipient, 
                                         message=body,
                                         reply_to_message_id=message.get("reply_to_platform_id")
                                     )
@@ -1117,8 +1124,12 @@ class MessagePoller:
                                     row = await fetch_one(db, "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?", [license_id])
                                     if row and row.get("bot_token"):
                                         ts = TelegramService(row["bot_token"])
+                                        recipient = message.get("recipient_id") or message.get("recipient_email")
+                                        if not recipient:
+                                            raise ValueError("No recipient specified (ID or Contact)")
+
                                         res = await ts.send_message(
-                                            chat_id=message["recipient_id"], 
+                                            chat_id=recipient, 
                                             text=body,
                                             reply_to_message_id=message.get("reply_to_id") # Telegram Bot API usually uses internal numeric ID
                                         )
@@ -1131,7 +1142,7 @@ class MessagePoller:
                                     listener = get_telegram_listener()
                                     active_client = await listener.ensure_client_active(license_id)
                                     ps = TelegramPhoneService()
-                                    recipient = message.get("recipient_id") or message.get("sender_id")
+                                    recipient = message.get("recipient_id") or message.get("recipient_email") or message.get("sender_id")
                                     if recipient:
                                         res = await ps.send_message(
                                             session_string=session, 
@@ -1165,9 +1176,13 @@ class MessagePoller:
                                     mid = await ws.upload_media(tmp_path, mime_type=mime_type)
                                     if mid:
                                         res = None
-                                        if mime_type.startswith("image/"): res = await ws.send_image_message(message["recipient_id"], mid, caption=caption, reply_to_message_id=message.get("reply_to_platform_id"))
-                                        elif mime_type.startswith("video/"): res = await ws.send_video_message(message["recipient_id"], mid, caption=caption, reply_to_message_id=message.get("reply_to_platform_id"))
-                                        else: res = await ws.send_document_message(message["recipient_id"], mid, first_att["filename"], caption=caption, reply_to_message_id=message.get("reply_to_platform_id"))
+                                        recipient = message.get("recipient_id") or message.get("recipient_email")
+                                        if not recipient:
+                                            raise ValueError("No recipient specified (ID or Contact)")
+
+                                        if mime_type.startswith("image/"): res = await ws.send_image_message(recipient, mid, caption=caption, reply_to_message_id=message.get("reply_to_platform_id"))
+                                        elif mime_type.startswith("video/"): res = await ws.send_video_message(recipient, mid, caption=caption, reply_to_message_id=message.get("reply_to_platform_id"))
+                                        else: res = await ws.send_document_message(recipient, mid, first_att["filename"], caption=caption, reply_to_message_id=message.get("reply_to_platform_id"))
                                         if res and res.get("success"):
                                             sent_anything = True
                                             last_platform_id = res.get("message_id")
@@ -1177,11 +1192,15 @@ class MessagePoller:
                                     row = await fetch_one(db, "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?", [license_id])
                                     if row and row.get("bot_token"):
                                         ts = TelegramService(row["bot_token"])
+                                        recipient = message.get("recipient_id") or message.get("recipient_email")
+                                        if not recipient:
+                                            raise ValueError("No recipient specified (ID or Contact)")
+
                                         res = None
-                                        if mime_type.startswith("image/"): res = await ts.send_photo(chat_id=message["recipient_id"], photo_path=tmp_path, caption=caption, reply_to_message_id=message.get("reply_to_id"))
-                                        elif mime_type.startswith("video/"): res = await ts.send_video(chat_id=message["recipient_id"], video_path=tmp_path, caption=caption, reply_to_message_id=message.get("reply_to_id"))
-                                        elif mime_type.startswith("audio/"): res = await ts.send_audio(chat_id=message["recipient_id"], audio_path=tmp_path, title=caption, reply_to_message_id=message.get("reply_to_id"))
-                                        else: res = await ts.send_document(chat_id=message["recipient_id"], document_path=tmp_path, caption=caption, reply_to_message_id=message.get("reply_to_id"))
+                                        if mime_type.startswith("image/"): res = await ts.send_photo(chat_id=recipient, photo_path=tmp_path, caption=caption, reply_to_message_id=message.get("reply_to_id"))
+                                        elif mime_type.startswith("video/"): res = await ts.send_video(chat_id=recipient, video_path=tmp_path, caption=caption, reply_to_message_id=message.get("reply_to_id"))
+                                        elif mime_type.startswith("audio/"): res = await ts.send_audio(chat_id=recipient, audio_path=tmp_path, title=caption, reply_to_message_id=message.get("reply_to_id"))
+                                        else: res = await ts.send_document(chat_id=recipient, document_path=tmp_path, caption=caption, reply_to_message_id=message.get("reply_to_id"))
                                         if res:
                                             sent_anything = True
                                             last_platform_id = str(res.get("message_id"))
@@ -1193,14 +1212,16 @@ class MessagePoller:
                                     listener = get_telegram_listener()
                                     active_client = await listener.ensure_client_active(license_id)
                                     ps = TelegramPhoneService()
-                                    res = await ps.send_file(
-                                        session_string=session, 
-                                        recipient_id=str(message["recipient_id"]), 
-                                        file_path=tmp_path, 
-                                        caption=caption, 
-                                        reply_to_message_id=message.get("reply_to_id"),
-                                        client=active_client
-                                    )
+                                    recipient = message.get("recipient_id") or message.get("recipient_email") or message.get("sender_id")
+                                    if recipient:
+                                        res = await ps.send_file(
+                                            session_string=session, 
+                                            recipient_id=str(recipient), 
+                                            file_path=tmp_path, 
+                                            caption=caption, 
+                                            reply_to_message_id=message.get("reply_to_id"),
+                                            client=active_client
+                                        )
                                     sent_anything = True
                                     if res: last_platform_id = str(res.get("id"))
 
@@ -1229,9 +1250,11 @@ class MessagePoller:
                                     mid = await ws.upload_media(tmp_path, mime_type=mime_type)
                                     if mid:
                                         res = None
-                                        if mime_type.startswith("image/"): res = await ws.send_image_message(message["recipient_id"], mid)
-                                        elif mime_type.startswith("video/"): res = await ws.send_video_message(message["recipient_id"], mid)
-                                        else: res = await ws.send_document_message(message["recipient_id"], mid, att["filename"])
+                                        recipient = message.get("recipient_id") or message.get("recipient_email")
+                                        if recipient:
+                                            if mime_type.startswith("image/"): res = await ws.send_image_message(recipient, mid)
+                                            elif mime_type.startswith("video/"): res = await ws.send_video_message(recipient, mid)
+                                            else: res = await ws.send_document_message(recipient, mid, att["filename"])
                                         if res and res.get("success"):
                                             sent_anything = True
                                             last_platform_id = res.get("message_id")
@@ -1241,10 +1264,12 @@ class MessagePoller:
                                     if row and row.get("bot_token"):
                                         ts = TelegramService(row["bot_token"])
                                         res = None
-                                        if mime_type.startswith("image/"): res = await ts.send_photo(chat_id=message["recipient_id"], photo_path=tmp_path)
-                                        elif mime_type.startswith("video/"): res = await ts.send_video(chat_id=message["recipient_id"], video_path=tmp_path)
-                                        elif mime_type.startswith("audio/"): res = await ts.send_audio(chat_id=message["recipient_id"], audio_path=tmp_path)
-                                        else: res = await ts.send_document(chat_id=message["recipient_id"], document_path=tmp_path)
+                                        recipient = message.get("recipient_id") or message.get("recipient_email")
+                                        if recipient:
+                                            if mime_type.startswith("image/"): res = await ts.send_photo(chat_id=recipient, photo_path=tmp_path)
+                                            elif mime_type.startswith("video/"): res = await ts.send_video(chat_id=recipient, video_path=tmp_path)
+                                            elif mime_type.startswith("audio/"): res = await ts.send_audio(chat_id=recipient, audio_path=tmp_path)
+                                            else: res = await ts.send_document(chat_id=recipient, document_path=tmp_path)
                                         if res:
                                             sent_anything = True
                                             last_platform_id = str(res.get("message_id"))
@@ -1255,7 +1280,9 @@ class MessagePoller:
                                     listener = get_telegram_listener()
                                     active_client = await listener.ensure_client_active(license_id)
                                     ps = TelegramPhoneService()
-                                    res = await ps.send_file(session_string=session, recipient_id=str(message["recipient_id"]), file_path=tmp_path, client=active_client)
+                                    recipient = message.get("recipient_id") or message.get("recipient_email") or message.get("sender_id")
+                                    if recipient:
+                                        res = await ps.send_file(session_string=session, recipient_id=str(recipient), file_path=tmp_path, client=active_client)
                                     sent_anything = True
                                     if res: last_platform_id = str(res.get("id"))
                         finally:
@@ -1275,7 +1302,7 @@ class MessagePoller:
                                 if mid:
                                     await asyncio.sleep(1) # Extra buffer for audio processing
                                     res = await ws.send_audio_message(
-                                        to=message["recipient_id"], 
+                                        to=recipient, 
                                         media_id=mid,
                                         reply_to_message_id=message.get("reply_to_platform_id")
                                     )
@@ -1289,8 +1316,9 @@ class MessagePoller:
                                 if row and row.get("bot_token"):
                                     ts = TelegramService(row["bot_token"])
                                     await asyncio.sleep(1)
+                                    recipient = message.get("recipient_id") or message.get("recipient_email")
                                     res = await ts.send_voice(
-                                        chat_id=message["recipient_id"], 
+                                        chat_id=recipient, 
                                         audio_path=audio_path,
                                         reply_to_message_id=message.get("reply_to_id")
                                     )
@@ -1305,7 +1333,7 @@ class MessagePoller:
                                 listener = get_telegram_listener()
                                 active_client = await listener.ensure_client_active(license_id)
                                 ps = TelegramPhoneService()
-                                recipient = message.get("recipient_id") or message.get("sender_id")
+                                recipient = message.get("recipient_id") or message.get("recipient_email") or message.get("sender_id")
                                 if recipient:
                                     await asyncio.sleep(1)
                                     # Forward original body as caption if it's not a standalone text msg
@@ -1332,7 +1360,8 @@ class MessagePoller:
             else:
                 await mark_outbox_failed(outbox_id, "Failed to send message via any method")        
         except Exception as e:
-            logger.error(f"Error sending message {outbox_id}: {e}", exc_info=True)
+            logger.error(f"Critical error sending outbox {outbox_id}: {e}", exc_info=True)
+            await mark_outbox_failed(outbox_id, f"Internal Worker Error: {str(e)}")
     
     async def _poll_telegram_outbox_status(self, license_id: int):
         """Poll Telegram Phone outbox messages for read receipts"""

@@ -219,7 +219,7 @@ async def send_chat_message(
             recipient_id = history[0].get("sender_id")
     
     outbox_id = await create_outbox_message(
-        inbox_message_id=None,
+        inbox_message_id=reply_to_id, # Link the server side ID if it's a reply
         license_id=license["license_id"],
         channel=channel,
         body=body,
