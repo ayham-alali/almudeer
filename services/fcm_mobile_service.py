@@ -443,8 +443,12 @@ async def _send_fcm_v1(
                 logger.info(f"FCM v1: Notification sent: {title[:30]}...")
                 return True
             elif response.status_code == 404:
-                # Token not found/expired - mark as failed
+                # Token not found/expired - definitively invalid
                 logger.warning(f"FCM v1: Token not found (expired)")
+                return False
+            elif response.status_code == 410:
+                # GONE - definitively invalid
+                logger.warning(f"FCM v1: Token is gone (permanently invalid)")
                 return False
             elif response.status_code == 401 or response.status_code == 403:
                 # Auth error or Permission denied - clear cached token to force refresh
@@ -474,9 +478,12 @@ async def _send_fcm_v1(
                 logger.error(f"FCM v1: HTTP error {response.status_code}: {response.text}")
                 return None
                 
+    except httpx.TimeoutException:
+        logger.warning(f"FCM v1: Timeout sending notification to {token[:15]}...")
+        return True # Don't deactivate on timeout
     except Exception as e:
         logger.error(f"FCM v1: Error sending notification: {e}")
-        return None
+        return True # Don't deactivate on unknown error, keep token active
 
 
 async def _send_fcm_legacy(
@@ -533,15 +540,21 @@ async def _send_fcm_legacy(
                     logger.info(f"FCM legacy: Notification sent: {title[:30]}...")
                     return True
                 else:
-                    logger.warning(f"FCM legacy: Notification failed: {result}")
-                    return False
+                    # Check error type in results
+                    results = result.get("results", [])
+                    if results and any(r.get("error") in ["NotRegistered", "InvalidRegistration"] for r in results):
+                        logger.warning(f"FCM legacy: Token invalid/unregistered: {result}")
+                        return False
+                    
+                    logger.warning(f"FCM legacy: Notification failed (transient): {result}")
+                    return True # Keep active for other errors
             else:
                 logger.error(f"FCM legacy: HTTP error {response.status_code}: {response.text}")
-                return False
+                return True # Don't deactivate on service error
                 
     except Exception as e:
         logger.error(f"FCM legacy: Error sending notification: {e}")
-        return False
+        return True # Keep active on unknown legacy error
 
 
 async def send_fcm_to_license(
@@ -691,25 +704,54 @@ async def send_fcm_topic(
     """
     Send a notification to an FCM topic (efficient for broadcasts).
     """
+    access_token = _get_access_token()
+    if not access_token:
+        logger.warning("FCM: Topic send failed - no access token")
+        return False
+        
     try:
-        # Prepare data payload
+        # Prepare message payload
         fcm_data = data.copy() if data else {}
+        # Convert all data values to strings
+        fcm_data = {k: str(v) for k, v in fcm_data.items()}
         
-        # Build FCM message for the topic
-        message = messaging.Message(
-            notification=messaging.Notification(
-                title=title,
-                body=body,
-                image=image
-            ),
-            data=fcm_data,
-            topic=topic
-        )
+        payload = {
+            "message": {
+                "topic": topic,
+                "notification": {
+                    "title": title,
+                    "body": body
+                },
+                "android": {
+                    "priority": "high",
+                    "notification": {
+                        "click_action": "FLUTTER_NOTIFICATION_CLICK"
+                    }
+                },
+                "data": fcm_data
+            }
+        }
         
-        # Send via v1 API (preferred)
-        messaging.send(message)
-        logger.info(f"FCM: Sent notification to topic {topic}")
-        return True
+        if image:
+            payload["message"]["notification"]["image"] = image
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"https://fcm.googleapis.com/v1/projects/{FCM_PROJECT_ID}/messages:send",
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json"
+                },
+                timeout=15.0
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"FCM: Topic notification sent to {topic}")
+                return True
+            else:
+                logger.error(f"FCM Topic HTTP error {response.status_code}: {response.text}")
+                return False
     except Exception as e:
         logger.error(f"FCM Topic error: {e}")
         return False
