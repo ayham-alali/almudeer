@@ -78,7 +78,7 @@ async def login(data: LoginRequest):
                 detail="Invalid license key",
             )
         
-        tokens = create_token_pair(
+        tokens = await create_token_pair(
             user_id=data.license_key[:20],
             license_id=result.get("license_id"),
             role="user",
@@ -136,7 +136,7 @@ async def login(data: LoginRequest):
         record_successful_login(data.email)
         security_logger.log_login_success(data.email)
         
-        tokens = create_token_pair(
+        tokens = await create_token_pair(
             user_id=user.get("email"),
             license_id=user.get("license_key_id"),
             role=user.get("role", "user"),
@@ -213,7 +213,7 @@ async def register(data: RegisterRequest):
         )
     
     # Create tokens
-    tokens = create_token_pair(
+    tokens = await create_token_pair(
         user_id=data.email,
         license_id=license_result.get("license_id"),
         role="user",
@@ -238,7 +238,7 @@ async def refresh_token(data: RefreshRequest):
     
     Use the refresh token to get a new access token.
     """
-    result = refresh_access_token(data.refresh_token)
+    result = await refresh_access_token(data.refresh_token)
     
     if not result:
         raise HTTPException(

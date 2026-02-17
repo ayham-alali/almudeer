@@ -72,11 +72,12 @@ def test_password_hashing():
     assert verify_password("wrong_password", hashed) is False
 
 
-def test_jwt_tokens():
+@pytest.mark.anyio
+async def test_jwt_tokens():
     """Test JWT token creation and verification"""
     from services.jwt_auth import create_token_pair, verify_token, TokenType
     
-    tokens = create_token_pair(
+    tokens = await create_token_pair(
         user_id="test@example.com",
         license_id=1,
         role="user"

@@ -119,7 +119,7 @@ def create_refresh_token(data: Dict[str, Any]) -> str:
     return jwt.encode(to_encode, config.secret_key, algorithm=config.algorithm)
 
 
-def create_token_pair(user_id: str, license_id: int = None, role: str = TeamRoles.MEMBER) -> Dict[str, Any]:
+async def create_token_pair(user_id: str, license_id: int = None, role: str = TeamRoles.MEMBER) -> Dict[str, Any]:
     """
     Create both access and refresh tokens.
     
@@ -140,7 +140,8 @@ def create_token_pair(user_id: str, license_id: int = None, role: str = TeamRole
                 row = await fetch_one(db, "SELECT token_version FROM license_keys WHERE id = ?", [license_id])
                 if row:
                     token_version = row.get("token_version", 1)
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error fetching token version for JWT: {e}")
             pass
 
     payload = {
@@ -190,19 +191,11 @@ def verify_token(token: str, token_type: str = TokenType.ACCESS) -> Optional[Dic
                     logger.info(f"Token {jti[:8]}... is blacklisted")
                     return None
             
-            # Verify token version against current license status
-            license_id = payload.get("license_id")
-            token_v_in_jwt = payload.get("v", 0)
-            if license_id:
-                from database import get_db, fetch_one
-                # Note: For production performance, this should be cached in Redis
-                try:
-                    # We can't easily use 'await' here if verify_token is not async
-                    # However, verify_token IS synchronous in this file.
-                    # We need to handle this carefully.
-                    pass 
-                except Exception:
-                    pass
+            # Note: For production performance, this should be cached in Redis
+            # Senior Engineering Note: Version check is performed in the async 
+            # get_current_user dependency. verify_token remains sync for 
+            # basic field parsing/decoding.
+            pass
         
         return payload
         
@@ -211,7 +204,7 @@ def verify_token(token: str, token_type: str = TokenType.ACCESS) -> Optional[Dic
         return None
 
 
-def refresh_access_token(refresh_token: str) -> Optional[Dict[str, Any]]:
+async def refresh_access_token(refresh_token: str) -> Optional[Dict[str, Any]]:
     """
     Use a refresh token to get a new access token.
     
@@ -226,20 +219,12 @@ def refresh_access_token(refresh_token: str) -> Optional[Dict[str, Any]]:
     if not payload:
         return None
     
-    # Create new access token (not new refresh token for security)
-    access_token, jti, expires_at = create_access_token({
-        "sub": payload.get("sub"),
-        "license_id": payload.get("license_id"),
-        "role": payload.get("role", TeamRoles.MEMBER),
-    })
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "expires_in": config.access_token_expire_minutes * 60,
-        "jti": jti,
-        "expires_at": expires_at,
-    }
+    # Create new access token pair with current token version
+    return await create_token_pair(
+        user_id=payload.get("sub"),
+        license_id=payload.get("license_id"),
+        role=payload.get("role", TeamRoles.MEMBER),
+    )
 
 
 # ============ Password Operations ============

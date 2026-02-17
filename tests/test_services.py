@@ -44,11 +44,12 @@ class TestJWTAuth:
         assert payload["type"] == "refresh"
         assert "jti" in payload  # Unique ID for revocation
     
-    def test_token_pair(self):
+    @pytest.mark.anyio
+    async def test_token_pair(self):
         """Test creating token pair"""
         from services.jwt_auth import create_token_pair
         
-        tokens = create_token_pair("user@test.com", license_id=1, role="admin")
+        tokens = await create_token_pair("user@test.com", license_id=1, role="admin")
         
         assert "access_token" in tokens
         assert "refresh_token" in tokens
