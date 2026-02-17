@@ -175,30 +175,71 @@ async def get_story_viewers(story_id: int, license_id: int) -> List[dict]:
         rows = await fetch_all(db, query, [story_id, license_id])
         return [dict(row) for row in rows]
 
+def _delete_file_safely(file_path: str):
+    """Utility to delete file from disk if it exists, handling both relative and absolute paths."""
+    if not file_path:
+        return
+        
+    # If it's a URL, extract the path part assuming /static/ is the mount point
+    if file_path.startswith('http'):
+        if '/static/' in file_path:
+            parts = file_path.split('/static/')
+            file_path = os.path.join('static', parts[-1])
+    
+    if os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+        except Exception:
+            pass # Best effort
+
 async def delete_story(story_id: int, license_id: int, user_id: Optional[str] = None) -> bool:
-    """Soft delete a story. If user_id is provided, only deletes if owner matches."""
-    now = datetime.utcnow()
-    ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
-    
-    query = "UPDATE stories SET deleted_at = ? WHERE id = ? AND license_key_id = ?"
-    params = [ts_value, story_id, license_id]
-    
-    if user_id:
-        query += " AND user_id = ?"
-        params.append(user_id)
-    
+    """Immediate deletion of a story and its media. Ensures only owner or admin can delete."""
     async with get_db() as db:
-        await execute_sql(db, query, params)
-        await commit_db(db)
-        return True
+        query = "SELECT media_path, thumbnail_path FROM stories WHERE id = ? AND license_key_id = ?"
+        params = [story_id, license_id]
+        if user_id:
+            query += " AND user_id = ?"
+            params.append(user_id)
+            
+        story = await fetch_one(db, query, params)
+        
+        if story:
+            _delete_file_safely(story.get('media_path'))
+            _delete_file_safely(story.get('thumbnail_path'))
+            
+            # Now delete from DB
+            delete_query = "DELETE FROM stories WHERE id = ? AND license_key_id = ?"
+            delete_params = [story_id, license_id]
+            if user_id:
+                delete_query += " AND user_id = ?"
+                delete_params.append(user_id)
+            
+            await execute_sql(db, delete_query, delete_params)
+            await commit_db(db)
+            return True
+    return False
 
 async def cleanup_expired_stories():
     """Permanent deletion of stories older than expiry hours or soft-deleted items."""
-    if DB_TYPE == "postgresql":
-        query = f"DELETE FROM stories WHERE created_at < NOW() - INTERVAL '{STORY_EXPIRATION_HOURS} hours' OR deleted_at IS NOT NULL"
-    else:
-        query = f"DELETE FROM stories WHERE created_at < datetime('now', '-{STORY_EXPIRATION_HOURS} hours') OR deleted_at IS NOT NULL"
-    
     async with get_db() as db:
-        await execute_sql(db, query)
+        # 1. Fetch paths of stories to be deleted to clean up disk
+        if DB_TYPE == "postgresql":
+            select_query = f"SELECT media_path, thumbnail_path FROM stories WHERE created_at < NOW() - INTERVAL '{STORY_EXPIRATION_HOURS} hours' OR deleted_at IS NOT NULL"
+        else:
+            select_query = f"SELECT media_path, thumbnail_path FROM stories WHERE created_at < datetime('now', '-{STORY_EXPIRATION_HOURS} hours') OR deleted_at IS NOT NULL"
+        
+        expired_stories = await fetch_all(db, select_query)
+        
+        # 2. Delete files from disk
+        for story in expired_stories:
+            _delete_file_safely(story.get('media_path'))
+            _delete_file_safely(story.get('thumbnail_path'))
+
+        # 3. Delete from DB
+        if DB_TYPE == "postgresql":
+            delete_query = f"DELETE FROM stories WHERE created_at < NOW() - INTERVAL '{STORY_EXPIRATION_HOURS} hours' OR deleted_at IS NOT NULL"
+        else:
+            delete_query = f"DELETE FROM stories WHERE created_at < datetime('now', '-{STORY_EXPIRATION_HOURS} hours') OR deleted_at IS NOT NULL"
+        
+        await execute_sql(db, delete_query)
         await commit_db(db)
