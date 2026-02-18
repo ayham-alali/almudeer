@@ -587,6 +587,8 @@ async def handle_websocket_connection(websocket: WebSocket, license_key: str):
     # Validate license key
     license_result = await validate_license_key(license_key)
     if not license_result["valid"]:
+        # Must accept before closing if we want to send a reason/code in modern ASGI
+        await websocket.accept()
         await websocket.close(code=4001, reason="Invalid license key")
         return
     

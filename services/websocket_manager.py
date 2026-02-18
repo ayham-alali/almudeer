@@ -14,6 +14,7 @@ from datetime import datetime
 from dataclasses import dataclass, asdict
 
 from fastapi import WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 from logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -276,17 +277,6 @@ class ConnectionManager:
         await websocket.accept()
         await self._ensure_pubsub()
         
-        async with self._lock:
-            if license_id not in self._connections:
-                self._connections[license_id] = set()
-                # Subscribe to Redis channel for this license
-                if self._pubsub.is_available:
-                    await self._pubsub.subscribe(
-                        license_id,
-                        lambda msg: self._handle_redis_message(license_id, msg)
-                    )
-            self._connections[license_id].add(websocket)
-        
         # Global presence tracking via Redis
         if self._pubsub.is_available:
             try:
@@ -322,6 +312,17 @@ class ConnectionManager:
                 await execute_sql(db, "UPDATE license_keys SET last_seen_at = ? WHERE id = ?", (datetime.utcnow(), license_id))
                 await commit_db(db)
             await broadcast_presence_update(license_id, is_online=True)
+
+        async with self._lock:
+            if license_id not in self._connections:
+                self._connections[license_id] = set()
+                # Subscribe to Redis channel for this license
+                if self._pubsub.is_available:
+                    await self._pubsub.subscribe(
+                        license_id,
+                        lambda msg: self._handle_redis_message(license_id, msg)
+                    )
+            self._connections[license_id].add(websocket)
         
         logger.info(f"WebSocket connected: license {license_id} (total: {self.connection_count})")
     
@@ -413,8 +414,16 @@ class ConnectionManager:
         json_message = message.to_json()
         
         for connection in list(self._connections.get(license_id, [])):
+            if connection.client_state != WebSocketState.CONNECTED:
+                logger.debug(f"Skipping send: WebSocket state is {connection.client_state}")
+                continue
+            
             try:
                 await connection.send_text(json_message)
+            except RuntimeError as e:
+                # Catch "WebSocket is not connected" which can happen if state changes between check and send
+                logger.debug(f"Runtime error sending to WebSocket: {e}")
+                dead_connections.append(connection)
             except Exception as e:
                 logger.debug(f"Failed to send to WebSocket: {e}")
                 dead_connections.append(connection)
