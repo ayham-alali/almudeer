@@ -1679,14 +1679,15 @@ class TaskWorker:
                             attachments=payload.get("attachments")
                         )
                      elif task_type == "analyze":
-                          # Generic analyze from main.py endpoint
-                          from agent import process_message
-                          result = await process_message(
-                              message=payload.get("message"),
-                              message_type=payload.get("message_type"),
-                              sender_name=payload.get("sender_name"),
-                              sender_contact=payload.get("sender_contact"),
-                          )
+                          # Generic analyze from main.py endpoint - DISABLED (agent.py removed)
+                          # from agent import process_message
+                          # result = await process_message(
+                          #     message=payload.get("message"),
+                          #     message_type=payload.get("message_type"),
+                          #     sender_name=payload.get("sender_name"),
+                          #     sender_contact=payload.get("sender_contact"),
+                          # )
+                          pass
                      
                      # 3. Complete
                      await complete_task(task_id)
