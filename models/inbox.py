@@ -1356,6 +1356,11 @@ async def mark_chat_read(license_id: int, sender_contact: str) -> int:
 
 
 
+
+
+
+
+
 async def get_full_chat_history(
     license_id: int,
     sender_contact: str,
@@ -1434,7 +1439,7 @@ async def get_full_chat_history(
             SELECT 
                 o.id, o.channel, o.recipient_email as sender_contact, o.recipient_id as sender_id,
                 o.subject, o.body, o.attachments, o.status,
-                o.created_at, o.sent_at,
+                o.created_at, o.sent_at, o.edited_at,
                 o.delivery_status,
                 o.reply_to_platform_id, o.reply_to_body_preview,
                 i.sender_name
@@ -1468,6 +1473,7 @@ async def get_full_chat_history(
                 msg["status"] = "sent"
             elif msg.get("status") == "approved":
                 msg["status"] = "sending"
+            msg["is_edited"] = bool(msg.get("edited_at")) # Infer is_edited from edited_at
             messages.append(msg)
         
         # Sort all messages by timestamp
@@ -1655,23 +1661,11 @@ async def get_outbox_message_by_id(message_id: int, license_id: int) -> Optional
 async def edit_outbox_message(
     message_id: int,
     license_id: int,
-    new_body: str,
-    edit_window_minutes: int = 15
+    new_body: str
 ) -> dict:
     """
     Edit an outbox message (agent's sent message).
-    
-    Args:
-        message_id: ID of the message to edit
-        license_id: License ID for ownership verification
-        new_body: New message content
-        edit_window_minutes: Time window for editing (default 15 minutes)
-        
-    Returns:
-        {"success": True/False, "message": str, "edited_at": str}
-        
-    Raises:
-        ValueError: If message not found, not owned, or edit window expired
+    Rules: Only 'almudeer' and 'saved' channels, and within 24 hours.
     """
     async with get_db() as db:
         # Get the message
@@ -1686,12 +1680,27 @@ async def edit_outbox_message(
         
         channel = message.get("channel")
         
-        # Channel-specific restrictions
-        if channel in ['telegram', 'whatsapp', 'gmail']:
+        # Channel-specific restrictions: Only almudeer and saved (Drafts) are editable
+        if channel not in ['almudeer', 'saved']:
             raise ValueError(f"لا يمكن تعديل الرسائل المرسلة عبر {channel}")
             
-        # Time limit removed for all channels (Almudeer, generic, etc.)
-        # No time window check here anymore.
+        # 24-hour edit window
+        created_at = message.get("created_at")
+        if created_at:
+            if isinstance(created_at, str):
+                try:
+                    # Parse ISO format if string
+                    created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                except ValueError:
+                    pass
+            
+            if isinstance(created_at, datetime):
+                # Ensure offset-aware comparison
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                
+                if datetime.now(timezone.utc) - created_at > timedelta(hours=24):
+                    raise ValueError("انتهت الفترة المتاحة لتعديل الرسالة (24 ساعة)")
         
         # Store original body if this is the first edit
         original_body = message.get("original_body") or message.get("body", "")
@@ -1720,6 +1729,20 @@ async def edit_outbox_message(
         if recipient:
              await upsert_conversation_state(license_id, recipient)
         
+        # Broadcast the edit via WebSocket
+        try:
+            from services.websocket_manager import broadcast_message_edited
+            await broadcast_message_edited(
+                license_id=license_id,
+                message_id=message_id,
+                new_body=new_body,
+                edited_at=ts_value if isinstance(ts_value, str) else ts_value.isoformat(),
+                sender_contact=recipient
+            )
+        except Exception as e:
+            from logging_config import get_logger
+            get_logger(__name__).warning(f"Broadcast failed in edit_outbox_message: {e}")
+            
         return {
             "success": True,
             "message": "تم تعديل الرسالة بنجاح",
@@ -1769,6 +1792,18 @@ async def soft_delete_outbox_message(message_id: int, license_id: int) -> dict:
         if recipient:
              await upsert_conversation_state(license_id, recipient)
         
+        # Broadcast deletion via WebSocket
+        try:
+            from services.websocket_manager import broadcast_message_deleted
+            await broadcast_message_deleted(
+                license_id=license_id,
+                message_id=message_id,
+                sender_contact=recipient
+            )
+        except Exception as e:
+            from logging_config import get_logger
+            get_logger(__name__).warning(f"Broadcast failed in soft_delete_outbox_message: {e}")
+            
         return {
             "success": True,
             "message": "تم حذف الرسالة بنجاح",
@@ -1831,6 +1866,18 @@ async def soft_delete_inbox_message(message_id: int, license_id: int) -> dict:
         
         if message.get("sender_contact"):
             await upsert_conversation_state(license_id, message["sender_contact"])
+
+        # Broadcast deletion via WebSocket
+        try:
+            from services.websocket_manager import broadcast_message_deleted
+            await broadcast_message_deleted(
+                license_id=license_id,
+                message_id=message_id,
+                sender_contact=message.get("sender_contact")
+            )
+        except Exception as e:
+            from logging_config import get_logger
+            get_logger(__name__).warning(f"Broadcast failed in soft_delete_inbox_message: {e}")
 
         return {
             "success": True, 

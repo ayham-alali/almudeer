@@ -260,6 +260,22 @@ async def init_enhanced_tables():
         except:
             pass
 
+        # Migration for message editing (outbox)
+        try:
+            await execute_sql(db, "ALTER TABLE outbox_messages ADD COLUMN edited_at TIMESTAMP")
+        except: pass
+        try:
+            await execute_sql(db, "ALTER TABLE outbox_messages ADD COLUMN original_body TEXT")
+        except: pass
+        try:
+            await execute_sql(db, "ALTER TABLE outbox_messages ADD COLUMN edit_count INTEGER DEFAULT 0")
+        except: pass
+
+        # Migration for message editing (inbox - for peer compatibility)
+        try:
+            await execute_sql(db, "ALTER TABLE inbox_messages ADD COLUMN edited_at TIMESTAMP")
+        except: pass
+
         # Migration for outbox_messages inbox_message_id (PostgreSQL only)
         if DB_TYPE == "postgresql":
             try:

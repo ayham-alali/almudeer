@@ -532,28 +532,119 @@ async def broadcast_task_complete(license_id: int, task_id: str, result: Dict[st
 
 # ============ Message Edit/Delete Broadcasting ============
 
-async def broadcast_message_edited(license_id: int, message_id: int, new_body: str, edited_at: str):
-    """Broadcast when a message is edited"""
+async def broadcast_message_edited(license_id: int, message_id: int, new_body: str, edited_at: str, sender_contact: str = None):
+    """
+    Broadcast when a message is edited.
+    Notifies both the sender (multi-device) and the recipient (if internal).
+    """
     manager = get_websocket_manager()
+    
+    # payload for sync
+    payload = {
+        "message_id": message_id,
+        "new_body": new_body,
+        "edited_at": edited_at,
+        "sender_contact": sender_contact
+    }
+
+    # 1. Send to self (multi-device sync)
     await manager.send_to_license(license_id, WebSocketMessage(
         event="message_edited",
-        data={
-            "message_id": message_id,
-            "new_body": new_body,
-            "edited_at": edited_at
-        }
+        data=payload
     ))
+    
+    # 2. Check if peer is an internal almudeer user and notify them
+    from db_helper import get_db, fetch_one
+    try:
+        async with get_db() as db:
+            # If sender_contact wasn't provided, try to find it
+            if not sender_contact:
+                msg = await fetch_one(db, "SELECT channel, recipient_email, recipient_id FROM outbox_messages WHERE id = ?", [message_id])
+                if msg:
+                   sender_contact = msg.get("recipient_email") or msg.get("recipient_id")
+                   payload["sender_contact"] = sender_contact
+            else:
+                msg = await fetch_one(db, "SELECT channel FROM outbox_messages WHERE id = ?", [message_id])
+
+            if msg and msg.get("channel") in ["almudeer", "saved"] and sender_contact:
+                # Check if recipient is a license username (internal peer)
+                peer_row = await fetch_one(db, "SELECT id FROM license_keys WHERE username = ?", [sender_contact])
+                if peer_row:
+                    peer_license_id = peer_row["id"]
+                    # For the peer, we also need to include sender_contact? 
+                    # Actually for the peer, the "sender" of the edit is US (license_id)
+                    # So the peer sees 'sender_contact' as US.
+                    # We need to get OUR username.
+                    owner_row = await fetch_one(db, "SELECT username FROM license_keys WHERE id = ?", [license_id])
+                    if owner_row:
+                        peer_payload = payload.copy()
+                        peer_payload["sender_contact"] = owner_row["username"]
+                        await manager.send_to_license(peer_license_id, WebSocketMessage(
+                            event="message_edited",
+                            data=peer_payload
+                        ))
+    except Exception as e:
+        from logging_config import get_logger
+        get_logger(__name__).warning(f"Failed to notify peer of message edit: {e}")
 
 
-async def broadcast_message_deleted(license_id: int, message_id: int):
-    """Broadcast when a message is deleted"""
+async def broadcast_message_deleted(license_id: int, message_id: int, sender_contact: str = None):
+    """
+    Broadcast when a message is deleted.
+    Notifies both the sender (multi-device) and the recipient (if internal).
+    """
     manager = get_websocket_manager()
+    
+    payload = {
+        "message_id": message_id,
+        "sender_contact": sender_contact
+    }
+
+    # 1. Send to self (multi-device sync)
     await manager.send_to_license(license_id, WebSocketMessage(
         event="message_deleted",
-        data={
-            "message_id": message_id
-        }
+        data=payload
     ))
+    
+    # 2. Check if peer is an internal almudeer user and notify them
+    from db_helper import get_db, fetch_one
+    try:
+        async with get_db() as db:
+            # If sender_contact wasn't provided, try to find it
+            if not sender_contact:
+                msg = await fetch_one(db, "SELECT channel, recipient_email, recipient_id FROM outbox_messages WHERE id = ?", [message_id])
+                if msg:
+                   sender_contact = msg.get("recipient_email") or msg.get("recipient_id")
+                   payload["sender_contact"] = sender_contact
+                else:
+                    # Try inbox_messages
+                    msg = await fetch_one(db, "SELECT channel, sender_contact FROM inbox_messages WHERE id = ?", [message_id])
+                    if msg:
+                        sender_contact = msg.get("sender_contact")
+                        payload["sender_contact"] = sender_contact
+            else:
+                # Still need channel info for peer notification check
+                msg = await fetch_one(db, "SELECT channel FROM outbox_messages WHERE id = ?", [message_id])
+                if not msg:
+                    msg = await fetch_one(db, "SELECT channel FROM inbox_messages WHERE id = ?", [message_id])
+
+            if msg and msg.get("channel") in ["almudeer", "saved"] and sender_contact:
+                # Check if recipient is a license username (internal peer)
+                peer_row = await fetch_one(db, "SELECT id FROM license_keys WHERE username = ?", [sender_contact])
+                if peer_row:
+                    peer_license_id = peer_row["id"]
+                    # For the peer, the "sender" of the deletion is US (license_id)
+                    owner_row = await fetch_one(db, "SELECT username FROM license_keys WHERE id = ?", [license_id])
+                    if owner_row:
+                        peer_payload = payload.copy()
+                        peer_payload["sender_contact"] = owner_row["username"]
+                        await manager.send_to_license(peer_license_id, WebSocketMessage(
+                            event="message_deleted",
+                            data=peer_payload
+                        ))
+    except Exception as e:
+        from logging_config import get_logger
+        get_logger(__name__).warning(f"Failed to notify peer of message deletion: {e}")
 
 
 async def broadcast_conversation_deleted(license_id: int, sender_contact: str):
