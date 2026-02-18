@@ -247,221 +247,161 @@ async def verify_webhook(request: Request):
 
 
 @router.post("/webhook")
-async def receive_webhook(request: Request):
+async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
     """Receive incoming WhatsApp messages"""
     try:
         payload = await request.json()
         
-        # Parse the webhook payload
-        # We need to find the right config based on phone_number_id
-        # For now, process all incoming messages
-        
-        entry = payload.get("entry", [])
-        for e in entry:
-            changes = e.get("changes", [])
-            for change in changes:
-                value = change.get("value", {})
-                phone_number_id = value.get("metadata", {}).get("phone_number_id")
-                
-                if not phone_number_id:
-                    continue
-                
-                # Find license by phone_number_id using unified db_helper layer
-                from db_helper import get_db, fetch_one
+        async def process_payload(p):
+            entry = p.get("entry", [])
+            tasks = []
+            for e in entry:
+                changes = e.get("changes", [])
+                for change in changes:
+                    value = change.get("value", {})
+                    phone_number_id = value.get("metadata", {}).get("phone_number_id")
+                    if phone_number_id:
+                        tasks.append(process_whatsapp_change(phone_number_id, p, value))
+            
+            if tasks:
+                await asyncio.gather(*tasks)
 
-                async with get_db() as db:
-                    config = await fetch_one(
-                        db,
-                        "SELECT * FROM whatsapp_configs WHERE phone_number_id = ?",
-                        [phone_number_id],
-                    )
-
-                if not config:
-                    continue
-                
-                license_id = config["license_key_id"]
-                
-                service = WhatsAppService(
-                    phone_number_id=phone_number_id,
-                    access_token=config["access_token"]
-                )
-                
-                messages = service.parse_webhook_message(payload)
-                
-                # Import filters
-                from message_filters import apply_filters
-
-                for msg in messages:
-                    # Apply Filters (Spam, Groups, etc.)
-                    # We pass empty list for recent_messages for now (optional optimization)
-                    sender_contact_raw = msg.get("sender_phone", "")
-                    
-                    # EXCLUDE "Saved Messages" (Self-Chat) for WhatsApp
-                    # If the sender is the same as the business itself.
-                    # Note: We verify against config data if possible, or just standard "me" check if we had it.
-                    # Determine current business phone number from database config
-                    # 'config' is available from the outer scope lookup
-                    
-                    # 1. Compare 'from' ID with 'phone_number_id' of the business
-                    # msg['from'] might be the user's phone ID or phone number. 
-                    # Usually msg['from'] is the phone number (w/o +).
-                    # config['phone_number_id'] is the ID.
-                    # We can't strictly compare ID vs Phone.
-                    # However, if it's a self-message, the 'from' usually matches the business phone number.
-                    
-                    # Better check:
-                    # In a self-chat, the user messages themselves.
-                    # The webhook event usually has 'from' = sender.
-                    # Use a heuristic or strict check if we have the business phone number stored.
-                    # The 'config' object from DB has: phone_number_id, access_token, etc.
-                    # It might NOT have the raw phone number unless we stored it in whatsapp_configs (we don't seem to).
-                    
-                    # Alternative: Check if 'is_echo' if that exists, or relying on the fact that 
-                    # if the sender IS the business account, we skip.
-                    # But we don't know our own number easily here without an API call.
-                    # Let's assume for now that if we are processing it, it's incoming.
-                    # "Saved Messages" on WhatsApp from the App:
-                    # User sends message to THEIR OWN number.
-                    # Webhook: from = User Number, to = User Number.
-                    # This looks just like any other message from User Number.
-                    # WAIT: The config is found by looking up `phone_number_id` from metadata.
-                    # The metadata.phone_number_id is the receiver (Business).
-                    # If msg['from'] (Sender) == metadata.display_phone_number (Business), then it's self.
-                    
-                    try:
-                        metadata = value.get("metadata", {})
-                        business_phone = metadata.get("display_phone_number", "").replace(" ", "").replace("+", "")
-                        sender_phone = str(msg.get("from", "")).replace(" ", "").replace("+", "")
-                        
-                        if business_phone and sender_phone and business_phone in sender_phone:
-                             print(f"Ignoring WhatsApp 'Saved Messages' (Self-Chat) from {sender_phone}")
-                             continue
-                    except:
-                        pass
-
-                    filter_msg = {
-                        "body": msg.get("body", ""),
-                        "sender_contact": msg.get("sender_phone"),
-                        "sender_name": msg.get("sender_name"),
-                        "channel": "whatsapp",
-                        "is_group": msg.get("is_group"),
-                    }
-                    
-                    should_process, reason = await apply_filters(filter_msg, license_id, [])
-                    if not should_process:
-                        print(f"WhatsApp message filtered: {reason}")
-                        continue
-
-                    # ============ PROCESS DELIVERY STATUS UPDATES ============
-                    if msg.get("type") == "status":
-                        # WhatsApp sends: sent, delivered, read, failed
-                        try:
-                            from services.delivery_status import update_delivery_status
-                            from datetime import datetime
-                            
-                            status = msg.get("status")  # sent, delivered, read, failed
-                            wa_message_id = msg.get("message_id")
-                            timestamp_str = msg.get("timestamp")
-                            
-                            if status and wa_message_id:
-                                # Parse timestamp
-                                timestamp = None
-                                if timestamp_str:
-                                    try:
-                                        timestamp = datetime.fromtimestamp(int(timestamp_str))
-                                    except:
-                                        pass
-                                
-                                await update_delivery_status(
-                                    platform_message_id=wa_message_id,
-                                    status=status,
-                                    timestamp=timestamp
-                                )
-                                print(f"WhatsApp delivery status update: {wa_message_id} -> {status}")
-
-                        except Exception as status_error:
-                            print(f"Failed to process WhatsApp status: {status_error}")
-                        
-                        continue  # Status processed, skip to next message
-                    
-                    # Media Handling (Premium File Storage)
-                    attachments = []
-                    if msg.get("media_id"):
-                        try:
-                            content = await service.download_media(msg["media_id"])
-                            if content:
-                                size = len(content)
-                                if size < 20 * 1024 * 1024: # Increased to 20MB for premium
-                                    # Identify type & extension
-                                    msg_type = msg.get("type", "file")
-                                    # Guess mime type if possible, or use WhatsApp suggested type
-                                    # WhatsApp 'audio' can be voice or audio.
-                                    # We'll use the type from the webhook msg
-                                    mime_map = {
-                                        "image": "image/jpeg",
-                                        "audio": "audio/ogg", # WhatsApp usually sends ogg
-                                        "video": "video/mp4",
-                                        "document": "application/pdf" # Default doc
-                                    }
-                                    mime_type = mime_map.get(msg_type, "application/octet-stream")
-                                    
-                                    # Save to file system
-                                    filename = f"wa_{msg['media_id']}"
-                                    rel_path, abs_url = get_file_storage().save_file(
-                                        content=content,
-                                        filename=filename,
-                                        mime_type=mime_type
-                                    )
-                                    
-                                    # Hybrid storage: small files get base64 for instant loading
-                                    b64_data = None
-                                    if size < 1 * 1024 * 1024:
-                                        b64_data = base64.b64encode(content).decode('utf-8')
-
-                                    attachments.append({
-                                        "type": "voice" if msg.get("is_voice") else msg_type,
-                                        "mime_type": mime_type,
-                                        "url": abs_url,
-                                        "path": rel_path,
-                                        "base64": b64_data,
-                                        "filename": filename,
-                                        "size": size,
-                                        "platform_media_id": msg["media_id"]
-                                    })
-                        except Exception as e:
-                            print(f"Error downloading WhatsApp media: {e}")
-
-                    # Save to inbox
-                    inbox_id = await save_inbox_message(
-                        license_id=license_id,
-                        channel="whatsapp",
-                        channel_message_id=msg.get("message_id"),
-                        sender_id=msg.get("from"),
-                        sender_name=msg.get("sender_name"),
-                        sender_contact=msg.get("sender_phone"),
-                        body=msg.get("body", ""),
-                        received_at=msg.get("timestamp"),
-                        attachments=attachments,
-                        is_forwarded=msg.get("is_forwarded", False)
-                    )
-
-
-                    # Analyze with AI (WhatsApp auto-analysis)
-                    try:
-                        pass
-                    except Exception as e:
-                        print(f"WhatsApp processing error: {e}")
-                    
-                    # Create notification
-                    await create_smart_notification(
-                        license_id=license_id,
-                        event_type="new_message",
-                        data={"sender": msg.get("sender_name", msg.get("from"))}
-                    )
-        
+        background_tasks.add_task(process_payload, payload)
         return {"status": "ok"}
         
     except Exception as e:
-        print(f"WhatsApp webhook error: {e}")
-        return {"status": "error", "message": str(e)}
+        print(f"WhatsApp webhook entry error: {e}")
+        return {"status": "ok"} # Always return OK to Meta to prevent retry loops
 
+async def process_whatsapp_change(phone_number_id: str, payload: dict, value: dict):
+    """Background processor for individual WhatsApp changes"""
+    try:
+        from db_helper import get_db, fetch_one
+        from services.whatsapp_service import WhatsAppService
+        from message_filters import apply_filters
+        from services.delivery_status import update_delivery_status
+        from datetime import datetime
+        from services.file_storage import get_file_storage
+        import base64
+        from services.inbox_service import save_inbox_message
+        from services.notification_service import create_smart_notification
+
+        async with get_db() as db:
+            config = await fetch_one(
+                db,
+                "SELECT * FROM whatsapp_configs WHERE phone_number_id = ?",
+                [phone_number_id],
+            )
+
+        if not config:
+            return
+        
+        license_id = config["license_key_id"]
+        service = WhatsAppService(
+            phone_number_id=phone_number_id,
+            access_token=config["access_token"]
+        )
+        
+        messages = service.parse_webhook_message(payload)
+        
+        for msg in messages:
+            try:
+                # 1. Saved Messages (Self-Chat) detection
+                metadata = value.get("metadata", {})
+                business_phone = metadata.get("display_phone_number", "").replace(" ", "").replace("+", "")
+                sender_phone = str(msg.get("from", "")).replace(" ", "").replace("+", "")
+                
+                if business_phone and sender_phone and business_phone in sender_phone:
+                     print(f"Ignoring WhatsApp 'Saved Messages' (Self-Chat) from {sender_phone}")
+                     continue
+
+                # 2. Filtering
+                filter_msg = {
+                    "body": msg.get("body", ""),
+                    "sender_contact": msg.get("sender_phone"),
+                    "sender_name": msg.get("sender_name"),
+                    "channel": "whatsapp",
+                    "is_group": msg.get("is_group"),
+                    "attachments": [{"type": "pending"}] if msg.get("media_id") else []
+                }
+                
+                should_process, reason = await apply_filters(filter_msg, license_id, [])
+                if not should_process:
+                    print(f"WhatsApp message filtered: {reason}")
+                    continue
+
+                # 3. Delivery Status Updates
+                if msg.get("type") == "status":
+                    status = msg.get("status")
+                    wa_message_id = msg.get("message_id")
+                    timestamp_str = msg.get("timestamp")
+
+                    if status and wa_message_id:
+                        timestamp = None
+                        if timestamp_str:
+                            try: timestamp = datetime.fromtimestamp(int(timestamp_str))
+                            except: pass
+                        await update_delivery_status(
+                            platform_message_id=wa_message_id,
+                            status=status,
+                            timestamp=timestamp
+                        )
+                        print(f"WhatsApp delivery status update: {wa_message_id} -> {status}")
+                    continue
+                
+                # 4. Media Handling
+                attachments = []
+                if msg.get("media_id"):
+                    try:
+                        content = await service.download_media(msg["media_id"])
+                        if content:
+                            size = len(content)
+                            if size < 20 * 1024 * 1024:
+                                msg_type = msg.get("type", "file")
+                                mime_map = {"image": "image/jpeg", "audio": "audio/ogg", "video": "video/mp4", "document": "application/pdf"}
+                                mime_type = mime_map.get(msg_type, "application/octet-stream")
+                                
+                                filename = f"wa_{msg['media_id']}"
+                                rel_path, abs_url = get_file_storage().save_file(content=content, filename=filename, mime_type=mime_type)
+                                
+                                b64_data = None
+                                if size < 1 * 1024 * 1024:
+                                    b64_data = base64.b64encode(content).decode('utf-8')
+
+                                attachments.append({
+                                    "type": "voice" if msg.get("is_voice") else msg_type,
+                                    "mime_type": mime_type,
+                                    "url": abs_url,
+                                    "path": rel_path,
+                                    "base64": b64_data,
+                                    "filename": filename,
+                                    "size": size,
+                                    "platform_media_id": msg["media_id"]
+                                })
+                    except Exception as e:
+                        print(f"Error downloading WhatsApp media: {e}")
+
+                # 5. Save to Inbox
+                inbox_id = await save_inbox_message(
+                    license_id=license_id,
+                    channel="whatsapp",
+                    channel_message_id=msg.get("message_id"),
+                    sender_id=msg.get("from"),
+                    sender_name=msg.get("sender_name"),
+                    sender_contact=msg.get("sender_phone"),
+                    body=msg.get("body", ""),
+                    received_at=msg.get("timestamp"),
+                    attachments=attachments,
+                    is_forwarded=msg.get("is_forwarded", False)
+                )
+
+                # 6. Create Notification
+                await create_smart_notification(
+                    license_id=license_id,
+                    event_type="new_message",
+                    data={"sender": msg.get("sender_name", msg.get("from"))}
+                )
+            except Exception as msg_e:
+                print(f"Error processing individual WhatsApp msg: {msg_e}")
+    except Exception as e:
+        print(f"WhatsApp webhook processing error: {e}")

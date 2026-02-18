@@ -279,24 +279,38 @@ class MessagePoller:
                     """
                 
                 rows = await fetch_all(db, query, [license_id])
+            
+            if not rows:
+                return
+            
+            logger.info(f"License {license_id}: Retrying {len(rows)} approved outbox messages")
+            
+            # Use a semaphore to limit concurrent sends (e.g., 5 at a time) to avoid flooding and memory spikes
+            sem = asyncio.Semaphore(5)
+            
+            async def process_outbox_item(msg):
+                outbox_id = msg["id"]
+                channel = msg["channel"]
                 
-                if not rows:
-                    return
-                
-                logger.info(f"License {license_id}: Retrying {len(rows)} approved outbox messages")
-                
-                for row in rows:
-                    outbox_id = row.get("id")
-                    channel = row.get("channel")
-                    
-                    # Add small delay between sends
-                    await asyncio.sleep(1.0)
-                    
-                    # Reuse existing _send_message logic
+                async with sem:
                     try:
+                        # Use a distributed lock or local memory lock to avoid duplicate sends 
+                        # if processing takes longer than the polling interval
+                        lock_key = f"outbox_send_{outbox_id}"
+                        if cache.get(lock_key):
+                            return
+                        
+                        # Set lock for 5 minutes
+                        cache.set(lock_key, True, expire=300)
+                        
+                        # Send the message
                         await self._send_message(outbox_id, license_id, channel)
-                    except Exception as send_e:
-                        logger.error(f"Failed to retry outbox {outbox_id}: {send_e}")
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing outbox {outbox_id}: {e}")
+
+            # Process all approved messages in parallel (honoring the semaphore)
+            await asyncio.gather(*(process_outbox_item(msg) for msg in rows))
                     
         except Exception as e:
             logger.error(f"Error retrying approved outbox for license {license_id}: {e}")
@@ -462,99 +476,91 @@ class MessagePoller:
             # Use higher limit to avoid missing duplicates when inbox is large
             recent_messages = await get_inbox_messages(license_id, limit=500)
             
-            # Process each email
-            for email_data in emails:
-                # CRITICAL: Skip emails sent BY US to prevent AI loop
-                sender_email = (email_data.get("sender_contact") or "").lower()
-                if our_email_address and sender_email == our_email_address:
-                    # NEW: Sync outgoing emails to outbox
-                    logger.debug(f"Syncing self-sent email to outbox: {email_data.get('subject')}")
-                    
-                    # Parse 'To' header to get primary recipient
-                    to_header = email_data.get("to", "")
-                    recipient_email = ""
-                    recipient_name = ""
-                    
-                    if to_header:
-                        # Simple extraction, first email found
-                        # You might use self.gmail_service._extract_email_address if accessible, or simple split
-                        # gmail_service is available in local scope
-                        recipient_name, recipient_email = gmail_service._extract_email_address(to_header)
-                    
-                    if not recipient_email:
-                        recipient_email = "Unknown"
+            # Process emails in parallel with a concurrency limit
+            sem = asyncio.Semaphore(10) # 10 parallel processes for Gmail
+            
+            async def process_one_email(email_data):
+                async with sem:
+                    try:
+                        # CRITICAL: Skip emails sent BY US to prevent AI loop
+                        sender_email = (email_data.get("sender_contact") or "").lower()
+                        if our_email_address and sender_email == our_email_address:
+                            # Sync outgoing emails to outbox
+                            to_header = email_data.get("to", "")
+                            recipient_email = ""
+                            recipient_name = ""
+                            if to_header:
+                                recipient_name, recipient_email = gmail_service._extract_email_address(to_header)
+                            
+                            if not recipient_email:
+                                recipient_email = "Unknown"
 
-                    from models.inbox import save_synced_outbox_message
-                    await save_synced_outbox_message(
-                        license_id=license_id,
-                        channel="email",
-                        body=email_data["body"] or "",
-                        recipient_email=recipient_email,
-                        recipient_name=recipient_name,
-                        subject=email_data.get("subject"),
-                        attachments=email_data.get("attachments", []),
-                        sent_at=email_data.get("received_at"),
-                        platform_message_id=email_data.get("channel_message_id")
-                    )
-                    continue 
+                            from models.inbox import save_synced_outbox_message
+                            await save_synced_outbox_message(
+                                license_id=license_id,
+                                channel="email",
+                                body=email_data["body"] or "",
+                                recipient_email=recipient_email,
+                                recipient_name=recipient_name,
+                                subject=email_data.get("subject"),
+                                attachments=email_data.get("attachments", []),
+                                sent_at=email_data.get("received_at"),
+                                platform_message_id=email_data.get("channel_message_id")
+                            )
+                            return
 
-                # Check if we already have this message
-                existing = await self._check_existing_message(
-                    license_id, "email", email_data.get("channel_message_id")
-                )
-                
-                if existing:
-                    continue  # Already processed
-                
-                # Apply filters
-                message_dict = {
-                    "body": email_data["body"],
-                    "sender_contact": email_data.get("sender_contact"),
-                    "sender_name": email_data.get("sender_name"),
-                    "subject": email_data.get("subject"),
-                    "channel": "email",
-                    "attachments": email_data.get("attachments", []),
-                }
-                
-                should_process, filter_reason = await apply_filters(
-                    message_dict, license_id, recent_messages
-                )
-                
-                if not should_process:
-                    logger.info(f"Message filtered: {filter_reason}")
-                    continue
-                
-                # Attachments are already handled by GmailAPIService (downloaded & stored)
-                attachments = email_data.get("attachments", [])
+                        # Check if we already have this message
+                        existing = await self._check_existing_message(
+                            license_id, "email", email_data.get("channel_message_id")
+                        )
+                        if existing:
+                            return
+                        
+                        # Apply filters
+                        message_dict = {
+                            "body": email_data["body"],
+                            "sender_contact": email_data.get("sender_contact"),
+                            "sender_name": email_data.get("sender_name"),
+                            "subject": email_data.get("subject"),
+                            "channel": "email",
+                            "attachments": email_data.get("attachments", []),
+                        }
+                        
+                        should_process, filter_reason = await apply_filters(
+                            message_dict, license_id, recent_messages
+                        )
+                        if not should_process:
+                            return
+                        
+                        # Save to inbox
+                        msg_id = await save_inbox_message(
+                            license_id=license_id,
+                            channel="email",
+                            body=email_data["body"],
+                            sender_name=email_data["sender_name"],
+                            sender_contact=email_data["sender_contact"],
+                            sender_id=None,
+                            subject=email_data.get("subject"),
+                            channel_message_id=email_data.get("channel_message_id"),
+                            received_at=email_data.get("received_at"),
+                            attachments=email_data.get("attachments", [])
+                        )
+                        
+                        await self._analyze_and_process_message(
+                            message_id=msg_id,
+                            body=email_data["body"],
+                            license_id=license_id,
+                            channel="email",
+                            recipient=email_data.get("sender_contact"),
+                            sender_name=email_data.get("sender_name"),
+                            channel_message_id=email_data.get("channel_message_id"),
+                            attachments=email_data.get("attachments", [])
+                        )
+                    except Exception as email_e:
+                        logger.error(f"Error processing single email: {email_e}")
 
-                # Save to inbox
-                msg_id = await save_inbox_message(
-                    license_id=license_id,
-                    channel="email",
-                    body=email_data["body"],
-                    sender_name=email_data["sender_name"],
-                    sender_contact=email_data["sender_contact"],
-                    sender_id=None,
-                    subject=email_data.get("subject"),
-                    channel_message_id=email_data.get("channel_message_id"),
-                    received_at=email_data.get("received_at"),
-                    attachments=attachments
-                )
-                
-                # Analyze with AI (Decommissioned - only notifications remains)
-                await self._analyze_and_process_message(
-                    message_id=msg_id,
-                    body=email_data["body"],
-                    license_id=license_id,
-                    channel="email",
-                    recipient=email_data.get("sender_contact"),
-                    sender_name=email_data.get("sender_name"),
-                    channel_message_id=email_data.get("channel_message_id"),
-                    attachments=attachments
-                )
-                
-                # Small stagger to avoid hitting rate limits
-                await asyncio.sleep(1.0)
+            # Execute all email tasks
+            await asyncio.gather(*(process_one_email(e) for e in emails))
             
             # Update last_checked_at
             await self._update_email_last_checked(license_id)
@@ -711,88 +717,61 @@ class MessagePoller:
             grouped_messages: Dict[str, List[Dict]] = {}
             saved_messages_map: Dict[str, int] = {}  # channel_message_id -> db_id
             
-            for msg in messages:
-                # Check existance
-                existing = await self._check_existing_message(
-                    license_id, "telegram", msg.get("channel_message_id")
-                )
-                if existing:
-                    continue
+            # Parallel Processing for Telegram Messages (Senior Concurrency Fix)
+            sem = asyncio.Semaphore(10)
+            
+            async def process_one_tg_msg(msg):
+                async with sem:
+                    try:
+                        # 1. Check existence
+                        existing = await self._check_existing_message(license_id, "telegram", msg.get("channel_message_id"))
+                        if existing: return
 
-                # Handle OUTGOING messages (synced from Telegram app)
-                if msg.get("direction") == "outgoing":
-                    # Check if already synced to outbox
-                    existing_outbox = await self._check_existing_outbox_message(
-                        license_id, "telegram", msg.get("channel_message_id")
-                    )
-                    if existing_outbox:
-                        continue
-                    
-                    # Save to outbox (not inbox)
-                    from models.inbox import save_synced_outbox_message
-                    await save_synced_outbox_message(
-                        license_id=license_id,
-                        channel="telegram",
-                        body=msg.get("body", ""),
-                        recipient_id=msg.get("sender_id"),  # For outgoing, sender_id is actually recipient
-                        recipient_name=msg.get("sender_name"),
-                        attachments=msg.get("attachments", []),
-                        sent_at=msg.get("received_at"),
-                        platform_message_id=msg.get("channel_message_id")
-                    )
-                    # Add to cache to prevent duplicate syncs
-                    cache_key = f"outbox_{license_id}_telegram_{msg.get('channel_message_id')}"
-                    if not hasattr(self, '_outbox_sync_cache'):
-                        self._outbox_sync_cache = set()
-                    self._outbox_sync_cache.add(cache_key)
-                    logger.debug(f"Synced outgoing Telegram message to outbox: {msg.get('channel_message_id')}")
-                    continue  # Skip inbox processing and AI analysis
+                        # 2. Handle OUTGOING Sync
+                        if msg.get("direction") == "outgoing":
+                            existing_outbox = await self._check_existing_outbox_message(license_id, "telegram", msg.get("channel_message_id"))
+                            if existing_outbox: return
+                            
+                            from models.inbox import save_synced_outbox_message
+                            await save_synced_outbox_message(
+                                license_id=license_id, channel="telegram", body=msg.get("body", ""),
+                                recipient_id=msg.get("sender_id"), recipient_name=msg.get("sender_name"),
+                                attachments=msg.get("attachments", []), sent_at=msg.get("received_at"),
+                                platform_message_id=msg.get("channel_message_id")
+                            )
+                            return
 
-                # Apply filters (for incoming messages)
-                message_dict = {
-                    "body": msg["body"],
-                    "sender_contact": msg.get("sender_contact"),
-                    "sender_name": msg.get("sender_name"),
-                    "sender_id": msg.get("sender_id"),
-                    "subject": msg.get("subject"),
-                    "channel": "telegram",
-                    "attachments": msg.get("attachments", []),
-                    "is_group": msg.get("is_group"),
-                    "is_channel": msg.get("is_channel"),
-                }
+                        # 3. Apply Filters
+                        message_dict = {
+                            "body": msg["body"], "sender_contact": msg.get("sender_contact"),
+                            "sender_name": msg.get("sender_name"), "sender_id": msg.get("sender_id"),
+                            "subject": msg.get("subject"), "channel": "telegram",
+                            "attachments": msg.get("attachments", []), "is_group": msg.get("is_group"),
+                            "is_channel": msg.get("is_channel")
+                        }
+                        should_process, reason = await apply_filters(message_dict, license_id, recent_messages)
+                        if not should_process: return
 
-                should_process, filter_reason = await apply_filters(
-                    message_dict, license_id, recent_messages
-                )
+                        # 4. Save to Inbox
+                        msg_id = await save_inbox_message(
+                            license_id=license_id, channel="telegram", body=msg["body"],
+                            sender_name=msg.get("sender_name"), sender_contact=msg.get("sender_contact"),
+                            sender_id=msg.get("sender_id"), subject=msg.get("subject"),
+                            channel_message_id=msg.get("channel_message_id"),
+                            received_at=msg.get("received_at"), attachments=msg.get("attachments")
+                        )
+                        
+                        # 5. Store for Burst Processing
+                        msg["db_id"] = msg_id
+                        sender_key = msg.get("sender_contact") or "unknown"
+                        if sender_key not in grouped_messages:
+                            grouped_messages[sender_key] = []
+                        grouped_messages[sender_key].append(msg)
+                        saved_messages_map[msg["channel_message_id"]] = msg_id
+                    except Exception as tg_e:
+                        logger.error(f"Error processing single Telegram msg: {tg_e}")
 
-                if not should_process:
-                    logger.info(f"Telegram phone message filtered: {filter_reason}")
-                    continue
-
-                # Save to inbox
-                msg_id = await save_inbox_message(
-                    license_id=license_id,
-                    channel="telegram",
-                    body=msg["body"],
-                    sender_name=msg.get("sender_name"),
-                    sender_contact=msg.get("sender_contact"),
-                    sender_id=msg.get("sender_id"),
-                    subject=msg.get("subject"),
-                    channel_message_id=msg.get("channel_message_id"),
-                    received_at=msg.get("received_at"),
-                    attachments=msg.get("attachments")
-                )
-                
-                # Add to map and groups
-                saved_messages_map[msg["channel_message_id"]] = msg_id
-                
-                sender_key = msg.get("sender_contact") or "unknown"
-                if sender_key not in grouped_messages:
-                    grouped_messages[sender_key] = []
-                
-                # Store msg data with DB ID
-                msg["db_id"] = msg_id
-                grouped_messages[sender_key].append(msg)
+            await asyncio.gather(*(process_one_tg_msg(m) for m in messages))
 
 
             # Process groups (Burst Handling)
@@ -1095,12 +1074,27 @@ class MessagePoller:
                         last_platform_id = str(res.get("id"))
 
             elif channel in ["whatsapp", "telegram", "telegram_bot"]:
-                # Optimization: Separate the first attachment to use as a captioned host if body exists
-                first_att = attachments_list[0] if attachments_list else None
-                remaining_attachments = attachments_list[1:] if attachments_list else []
+                # Optimization for Telegram: Group media into an album if possible
+                media_for_album = []
+                other_attachments = []
                 
-                # Case 1: Send as Text-only (no attachments)
-                if not first_att and not audio_path:
+                if channel in ["telegram", "telegram_bot"] and len(attachments_list) > 1:
+                    for att in attachments_list:
+                        mime = att.get("mime_type") or mimetypes.guess_type(att["filename"])[0] or ""
+                        if mime.startswith("image/") or mime.startswith("video/"):
+                            media_for_album.append(att)
+                        else:
+                            other_attachments.append(att)
+                    
+                    # Albums in Telegram require at least 2 items
+                    if len(media_for_album) < 2:
+                        other_attachments = attachments_list
+                        media_for_album = []
+                else:
+                    other_attachments = attachments_list
+
+                # Case 1: Send as Text-only (if no attachments and no audio)
+                if not attachments_list and not audio_path:
                     if body:
                         try:
                             if channel == "whatsapp":
@@ -1108,14 +1102,8 @@ class MessagePoller:
                                 if config:
                                     ws = WhatsAppService(config["phone_number_id"], config["access_token"])
                                     recipient = message.get("recipient_id") or message.get("recipient_email")
-                                    if not recipient:
-                                        raise ValueError("No recipient specified (ID or Contact)")
-                                        
-                                    res = await ws.send_message(
-                                        to=recipient, 
-                                        message=body,
-                                        reply_to_message_id=message.get("reply_to_platform_id")
-                                    )
+                                    if not recipient: raise ValueError("No recipient specified")
+                                    res = await ws.send_message(to=recipient, message=body, reply_to_message_id=message.get("reply_to_platform_id"))
                                     if res["success"]:
                                         sent_anything = True
                                         last_platform_id = res.get("message_id")
@@ -1125,14 +1113,8 @@ class MessagePoller:
                                     if row and row.get("bot_token"):
                                         ts = TelegramService(row["bot_token"])
                                         recipient = message.get("recipient_id") or message.get("recipient_email")
-                                        if not recipient:
-                                            raise ValueError("No recipient specified (ID or Contact)")
-
-                                        res = await ts.send_message(
-                                            chat_id=recipient, 
-                                            text=body,
-                                            reply_to_message_id=message.get("reply_to_id") # Telegram Bot API usually uses internal numeric ID
-                                        )
+                                        if not recipient: raise ValueError("No recipient specified")
+                                        res = await ts.send_message(chat_id=recipient, text=body, reply_to_message_id=message.get("reply_to_id"))
                                         sent_anything = True
                                         if res: last_platform_id = str(res.get("message_id"))
                             elif channel == "telegram":
@@ -1144,67 +1126,46 @@ class MessagePoller:
                                     ps = TelegramPhoneService()
                                     recipient = message.get("recipient_id") or message.get("recipient_email") or message.get("sender_id")
                                     if recipient:
-                                        res = await ps.send_message(
-                                            session_string=session, 
-                                            recipient_id=str(recipient), 
-                                            text=body, 
-                                            reply_to_message_id=message.get("reply_to_id"), # MTProto uses numeric ID
-                                            client=active_client
-                                        )
+                                        res = await ps.send_message(session_string=session, recipient_id=str(recipient), text=body, reply_to_message_id=message.get("reply_to_id"), client=active_client)
                                         sent_anything = True
                                         if res: last_platform_id = str(res.get("id"))
                         except Exception as text_e:
                             logger.error(f"Error sending text via {channel}: {text_e}")
 
-                # Case 2: Send First Attachment (possibly with body as CAPTION)
-                if first_att:
+                # Case 2: Send Album (Telegram Only)
+                if media_for_album:
                     try:
-                        file_data = base64.b64decode(first_att["base64"])
-                        suffix = os.path.splitext(first_att["filename"])[1]
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                            tmp.write(file_data)
-                            tmp_path = tmp.name
+                        tmp_paths = []
+                        album_payload = []
+                        caption = body if body else None
                         
-                        try:
-                            mime_type = first_att.get("mime_type") or mimetypes.guess_type(first_att["filename"])[0] or "application/octet-stream"
-                            caption = body if body else None # Body behaves as caption
-                            
-                            if channel == "whatsapp":
-                                config = await get_whatsapp_config(license_id)
-                                if config:
-                                    ws = WhatsAppService(config["phone_number_id"], config["access_token"])
-                                    mid = await ws.upload_media(tmp_path, mime_type=mime_type)
-                                    if mid:
-                                        res = None
-                                        recipient = message.get("recipient_id") or message.get("recipient_email")
-                                        if not recipient:
-                                            raise ValueError("No recipient specified (ID or Contact)")
+                        for att in media_for_album:
+                            file_data = base64.b64decode(att["base64"])
+                            suffix = os.path.splitext(att["filename"])[1]
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                                tmp.write(file_data)
+                                tpath = tmp.name
+                                tmp_paths.append(tpath)
+                                
+                            mime = att.get("mime_type") or mimetypes.guess_type(att["filename"])[0] or "image/jpeg"
+                            item_type = "video" if mime.startswith("video/") else "photo"
+                            album_payload.append({"type": item_type, "path": tpath})
+                        
+                        # Add caption to the first item for Bot, or pass separate for Phone
+                        if album_payload and caption:
+                            album_payload[0]["caption"] = caption
 
-                                        if mime_type.startswith("image/"): res = await ws.send_image_message(recipient, mid, caption=caption, reply_to_message_id=message.get("reply_to_platform_id"))
-                                        elif mime_type.startswith("video/"): res = await ws.send_video_message(recipient, mid, caption=caption, reply_to_message_id=message.get("reply_to_platform_id"))
-                                        else: res = await ws.send_document_message(recipient, mid, first_att["filename"], caption=caption, reply_to_message_id=message.get("reply_to_platform_id"))
-                                        if res and res.get("success"):
-                                            sent_anything = True
-                                            last_platform_id = res.get("message_id")
-                            
-                            elif channel == "telegram_bot":
+                        try:
+                            if channel == "telegram_bot":
                                 async with get_db() as db:
                                     row = await fetch_one(db, "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?", [license_id])
                                     if row and row.get("bot_token"):
                                         ts = TelegramService(row["bot_token"])
                                         recipient = message.get("recipient_id") or message.get("recipient_email")
-                                        if not recipient:
-                                            raise ValueError("No recipient specified (ID or Contact)")
-
-                                        res = None
-                                        if mime_type.startswith("image/"): res = await ts.send_photo(chat_id=recipient, photo_path=tmp_path, caption=caption, reply_to_message_id=message.get("reply_to_id"))
-                                        elif mime_type.startswith("video/"): res = await ts.send_video(chat_id=recipient, video_path=tmp_path, caption=caption, reply_to_message_id=message.get("reply_to_id"))
-                                        elif mime_type.startswith("audio/"): res = await ts.send_audio(chat_id=recipient, audio_path=tmp_path, title=caption, reply_to_message_id=message.get("reply_to_id"))
-                                        else: res = await ts.send_document(chat_id=recipient, document_path=tmp_path, caption=caption, reply_to_message_id=message.get("reply_to_id"))
+                                        res = await ts.send_media_group(chat_id=recipient, media_items=album_payload, reply_to_message_id=message.get("reply_to_id"))
                                         if res:
                                             sent_anything = True
-                                            last_platform_id = str(res.get("message_id"))
-
+                                            last_platform_id = str(res[0].get("message_id"))
                             elif channel == "telegram":
                                 session = await get_telegram_phone_session_data(license_id)
                                 if session:
@@ -1213,26 +1174,21 @@ class MessagePoller:
                                     active_client = await listener.ensure_client_active(license_id)
                                     ps = TelegramPhoneService()
                                     recipient = message.get("recipient_id") or message.get("recipient_email") or message.get("sender_id")
-                                    if recipient:
-                                        res = await ps.send_file(
-                                            session_string=session, 
-                                            recipient_id=str(recipient), 
-                                            file_path=tmp_path, 
-                                            caption=caption, 
-                                            reply_to_message_id=message.get("reply_to_id"),
-                                            client=active_client
-                                        )
-                                    sent_anything = True
-                                    if res: last_platform_id = str(res.get("id"))
-
+                                    res = await ps.send_album(session_string=session, recipient_id=str(recipient), file_paths=tmp_paths, caption=caption, reply_to_message_id=message.get("reply_to_id"), client=active_client)
+                                    if res:
+                                        sent_anything = True
+                                        last_platform_id = str(res[0].get("id"))
                         finally:
-                            try: os.remove(tmp_path)
-                            except: pass
-                    except Exception as first_att_e:
-                        logger.error(f"Error sending first attachment: {first_att_e}")
+                            for p in tmp_paths:
+                                try: os.remove(p)
+                                except: pass
+                    except Exception as album_e:
+                        logger.error(f"Error sending album: {album_e}")
+                        # Fallback: add items back to other_attachments to send one by one
+                        other_attachments = media_for_album + other_attachments
 
-                # Case 3: Send Remaining Attachments
-                for att in remaining_attachments:
+                # Case 3: Send Remaining Attachments (or first if no album)
+                for i, att in enumerate(other_attachments):
                     if not att.get("base64") or not att.get("filename"): continue
                     try:
                         file_data = base64.b64decode(att["base64"])
@@ -1243,36 +1199,39 @@ class MessagePoller:
                         
                         try:
                             mime_type = att.get("mime_type") or mimetypes.guess_type(att["filename"])[0] or "application/octet-stream"
+                            # Use body as caption if this is the first thing sent
+                            caption = body if (body and not sent_anything and i == 0) else None
+                            
                             if channel == "whatsapp":
                                 config = await get_whatsapp_config(license_id)
                                 if config:
                                     ws = WhatsAppService(config["phone_number_id"], config["access_token"])
                                     mid = await ws.upload_media(tmp_path, mime_type=mime_type)
                                     if mid:
-                                        res = None
                                         recipient = message.get("recipient_id") or message.get("recipient_email")
                                         if recipient:
-                                            if mime_type.startswith("image/"): res = await ws.send_image_message(recipient, mid)
-                                            elif mime_type.startswith("video/"): res = await ws.send_video_message(recipient, mid)
-                                            else: res = await ws.send_document_message(recipient, mid, att["filename"])
-                                        if res and res.get("success"):
-                                            sent_anything = True
-                                            last_platform_id = res.get("message_id")
+                                            res = None
+                                            if mime_type.startswith("image/"): res = await ws.send_image_message(recipient, mid, caption=caption, reply_to_message_id=message.get("reply_to_platform_id"))
+                                            elif mime_type.startswith("video/"): res = await ws.send_video_message(recipient, mid, caption=caption, reply_to_message_id=message.get("reply_to_platform_id"))
+                                            else: res = await ws.send_document_message(recipient, mid, att["filename"], caption=caption, reply_to_message_id=message.get("reply_to_platform_id"))
+                                            if res and res.get("success"):
+                                                sent_anything = True
+                                                last_platform_id = res.get("message_id")
                             elif channel == "telegram_bot":
                                 async with get_db() as db:
                                     row = await fetch_one(db, "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?", [license_id])
                                     if row and row.get("bot_token"):
                                         ts = TelegramService(row["bot_token"])
-                                        res = None
                                         recipient = message.get("recipient_id") or message.get("recipient_email")
                                         if recipient:
-                                            if mime_type.startswith("image/"): res = await ts.send_photo(chat_id=recipient, photo_path=tmp_path)
-                                            elif mime_type.startswith("video/"): res = await ts.send_video(chat_id=recipient, video_path=tmp_path)
-                                            elif mime_type.startswith("audio/"): res = await ts.send_audio(chat_id=recipient, audio_path=tmp_path)
-                                            else: res = await ts.send_document(chat_id=recipient, document_path=tmp_path)
-                                        if res:
-                                            sent_anything = True
-                                            last_platform_id = str(res.get("message_id"))
+                                            res = None
+                                            if mime_type.startswith("image/"): res = await ts.send_photo(chat_id=recipient, photo_path=tmp_path, caption=caption, reply_to_message_id=message.get("reply_to_id"))
+                                            elif mime_type.startswith("video/"): res = await ts.send_video(chat_id=recipient, video_path=tmp_path, caption=caption, reply_to_message_id=message.get("reply_to_id"))
+                                            elif mime_type.startswith("audio/"): res = await ts.send_audio(chat_id=recipient, audio_path=tmp_path, title=caption, reply_to_message_id=message.get("reply_to_id"))
+                                            else: res = await ts.send_document(chat_id=recipient, document_path=tmp_path, caption=caption, reply_to_message_id=message.get("reply_to_id"))
+                                            if res:
+                                                sent_anything = True
+                                                last_platform_id = str(res.get("message_id"))
                             elif channel == "telegram":
                                 session = await get_telegram_phone_session_data(license_id)
                                 if session:
@@ -1282,14 +1241,14 @@ class MessagePoller:
                                     ps = TelegramPhoneService()
                                     recipient = message.get("recipient_id") or message.get("recipient_email") or message.get("sender_id")
                                     if recipient:
-                                        res = await ps.send_file(session_string=session, recipient_id=str(recipient), file_path=tmp_path, client=active_client)
-                                    sent_anything = True
-                                    if res: last_platform_id = str(res.get("id"))
+                                        res = await ps.send_file(session_string=session, recipient_id=str(recipient), file_path=tmp_path, caption=caption, reply_to_message_id=message.get("reply_to_id"), client=active_client)
+                                        sent_anything = True
+                                        if res: last_platform_id = str(res.get("id"))
                         finally:
                             try: os.remove(tmp_path)
                             except: pass
-                    except Exception as rest_att_e:
-                        logger.error(f"Error sending extra attachment: {rest_att_e}")
+                    except Exception as att_e:
+                        logger.error(f"Error sending attachment: {att_e}")
 
                 # Case 4: Send Audio (Voice)
                 if audio_path:

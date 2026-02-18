@@ -452,7 +452,7 @@ class GmailAPIService:
         # Extract attachments metadata
         attachments = await self._extract_attachments_meta(payload, message.get("id"))
         
-        return {
+        result = {
             "channel_message_id": message.get("id"),
             "subject": headers.get("subject", ""),
             "sender_name": sender_name or sender_email.split("@")[0],

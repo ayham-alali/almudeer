@@ -7,6 +7,7 @@ import httpx
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 import json
+import os
 
 
 class TelegramService:
@@ -214,6 +215,52 @@ class TelegramService:
                 if not result.get("ok"):
                     raise Exception(result.get("description", "Telegram API error"))
                 return result.get("result", {})
+
+    async def send_media_group(self, chat_id: str, media_items: List[Dict], reply_to_message_id: int = None) -> List[dict]:
+        """
+        Send a group of photos/videos as an album.
+        media_items: List of dicts with {'type': 'photo'|'video', 'path': 'local_path', 'caption': 'optional'}
+        """
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            files = {}
+            media_payload = []
+            
+            opened_files = []
+            try:
+                for i, item in enumerate(media_items):
+                    at_name = f"media{i}"
+                    f = open(item['path'], "rb")
+                    opened_files.append(f)
+                    files[at_name] = (os.path.basename(item['path']), f)
+                    
+                    entry = {
+                        "type": item['type'],
+                        "media": f"attach://{at_name}"
+                    }
+                    if item.get('caption'):
+                        entry['caption'] = item['caption']
+                        entry['parse_mode'] = 'HTML'
+                    media_payload.append(entry)
+                    
+                data = {
+                    "chat_id": chat_id,
+                    "media": json.dumps(media_payload)
+                }
+                if reply_to_message_id:
+                    data["reply_to_message_id"] = reply_to_message_id
+                    
+                response = await client.post(
+                    f"{self.api_url}/sendMediaGroup",
+                    data=data,
+                    files=files
+                )
+                result = response.json()
+                if not result.get("ok"):
+                    raise Exception(result.get("description", "Telegram API error"))
+                return result.get("result", [])
+            finally:
+                for f in opened_files:
+                    f.close()
     
     async def test_connection(self) -> tuple[bool, str, dict]:
         """Test bot token and get bot info"""

@@ -421,7 +421,8 @@ class TelegramListenerService:
                         "sender_id": str(event.sender_id) if hasattr(event, 'sender_id') else None,
                         "is_group": event.is_group,
                         "is_channel": event.is_channel,
-                        "channel": "telegram"
+                        "channel": "telegram",
+                        "attachments": [{"type": "pending"}] if event.message.media else []
                     }
                     
                     should_process, reason = await apply_filters(filter_msg, license_id, recent_messages=None)

@@ -1006,6 +1006,65 @@ class TelegramPhoneService:
                 except:
                     pass
 
+    async def send_album(
+        self,
+        session_string: str,
+        recipient_id: str,
+        file_paths: List[str],
+        caption: Optional[str] = None,
+        reply_to_message_id: Optional[int] = None,
+        client: Optional["TelegramClient"] = None
+    ) -> List[Dict]:
+        """
+        Send multiple files as an album/media group via Telegram
+        """
+        from logging_config import get_logger
+        logger = get_logger(__name__)
+        
+        client_created_locally = False
+        try:
+            if not client:
+                client = await self.create_client_from_session(session_string)
+                client_created_locally = True
+            
+            # Fetch dialogs first
+            await client.get_dialogs(limit=100)
+            
+            # Resolve entity
+            entity = await self._resolve_telegram_entity(client, recipient_id, logger)
+            
+            if entity is None:
+                logger.error(f"Cannot find entity '{recipient_id}'")
+                raise ValueError(f"Cannot find entity '{recipient_id}'")
+            
+            # Send album
+            sent_messages = await client.send_file(
+                entity,
+                file_paths,
+                caption=caption,
+                reply_to=reply_to_message_id
+            )
+            
+            if not isinstance(sent_messages, list):
+                sent_messages = [sent_messages]
+
+            return [
+                {
+                    "id": msg.id,
+                    "chat_id": str(recipient_id),
+                    "date": msg.date.isoformat() if msg.date else None
+                } for msg in sent_messages
+            ]
+        
+        except Exception as e:
+            raise ValueError(f"خطأ في إرسال الألبوم: {str(e)}")
+        finally:
+            if client and client_created_locally:
+                try:
+                    await client.disconnect()
+                except:
+                    pass
+
     async def mark_as_read(
         self,
         session_string: str,
