@@ -107,7 +107,8 @@ class RateLimiter:
         self.window_seconds = window_seconds
         self._requests: Dict[str, List[float]] = {}
         self._lock = threading.Lock()
-    
+        self._call_count = 0  # Counter for periodic cleanup
+
     def is_allowed(self, identifier: str) -> tuple[bool, int]:
         """
         Check if request is allowed for given identifier.
@@ -119,6 +120,12 @@ class RateLimiter:
         window_start = now - self.window_seconds
         
         with self._lock:
+            # Periodic cleanup: every 100 calls, purge stale entries
+            self._call_count += 1
+            if self._call_count >= 100:
+                self._call_count = 0
+                self._cleanup_stale(window_start)
+
             # Get existing requests for this identifier
             if identifier not in self._requests:
                 self._requests[identifier] = []
@@ -138,6 +145,15 @@ class RateLimiter:
             # Record this request
             self._requests[identifier].append(now)
             return True, remaining - 1
+    
+    def _cleanup_stale(self, cutoff: float):
+        """Remove all identifiers with no requests in the current window. Must hold _lock."""
+        for identifier in list(self._requests.keys()):
+            self._requests[identifier] = [
+                ts for ts in self._requests[identifier] if ts > cutoff
+            ]
+            if not self._requests[identifier]:
+                del self._requests[identifier]
     
     def cleanup_old_entries(self):
         """Remove entries older than the window. Call periodically."""
@@ -423,9 +439,18 @@ class UpdateCheckResponse(BaseModel):
 
 
 @router.get("/check-update")
-async def check_update(current_version: str = Query(None), platform: str = Query("android")):
+async def check_update(request: Request, current_version: str = Query(None), platform: str = Query("android")):
     """Internal/Legacy alias for check_app_version"""
-    return await _get_app_version_logic(current_version, platform)
+    client_ip = request.client.host if request and request.client else "unknown"
+    allowed, _ = _rate_limiter.is_allowed(client_ip)
+    if not allowed:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many requests. Please try again later."},
+            headers={"Retry-After": str(_RATE_LIMIT_WINDOW)},
+        )
+    return await _get_app_version_logic(current_version, platform, client_ip)
 
 
 @router.get("/api/app/version-check", summary="Mobile app version check (public)")
@@ -444,6 +469,18 @@ async def check_app_version(
     For force updates, provide app_build_number parameter.
     """
     client_ip = request.client.host if request and request.client else "unknown"
+    
+    # Rate limiting: protect against abuse and retry storms
+    allowed, remaining = _rate_limiter.is_allowed(client_ip)
+    if not allowed:
+        logger.warning(f"Rate limited version check from IP: {client_ip}")
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many requests. Please try again later."},
+            headers={"Retry-After": str(_RATE_LIMIT_WINDOW)},
+        )
+    
     logger.info(f"Version check request: build={app_build_number}, platform={platform}, version={current_version}, ip={client_ip}")
     return await _get_app_version_logic(current_version, platform, client_ip, app_build_number)
 
@@ -480,6 +517,10 @@ async def _get_app_version_logic(
     if app_build_number is not None:
         # New build number-based force update logic
         update_available = app_build_number < min_build_number
+        if not is_update_active:
+            # During maintenance windows, suppress ALL update UI
+            # to prevent force updates leaking as soft/dismissible prompts
+            update_available = False
         force_update = update_available and is_update_active
         update_required = force_update
     elif current_version:
@@ -489,6 +530,10 @@ async def _get_app_version_logic(
             min_version = config.get(f"min_{platform}_version", "1.0.0")
             latest_version = config.get(f"latest_{platform}_version", "1.0.0")
             update_available = latest_version > current_version
+            if not is_update_active:
+                # During maintenance windows, suppress ALL update UI
+                # to prevent force updates leaking as soft/dismissible prompts
+                update_available = False
             update_required = update_available and is_update_active
             force_update = update_required
         except Exception:
