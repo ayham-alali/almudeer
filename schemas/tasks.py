@@ -24,6 +24,8 @@ class TaskUpdate(BaseModel):
     priority: Optional[str] = None
     color: Optional[int] = None
     sub_tasks: Optional[list[str]] = None
+    alarm_enabled: Optional[bool] = None
+    alarm_time: Optional[datetime] = None
 
 class TaskResponse(TaskBase):
     id: str

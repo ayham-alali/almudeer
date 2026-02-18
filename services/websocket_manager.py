@@ -716,3 +716,16 @@ async def broadcast_message_status_update(license_id: int, status_data: Dict[str
         event="delivery_status",
         data=status_data
     ))
+
+
+async def broadcast_task_sync(license_id: int):
+    """
+    Broadcast a signal to all devices to trigger a task synchronization.
+    This ensures that alarms scheduled on one device are immediately 
+    propagated to others.
+    """
+    manager = get_websocket_manager()
+    await manager.send_to_license(license_id, WebSocketMessage(
+        event="task_sync",
+        data={"timestamp": datetime.utcnow().isoformat()}
+    ))

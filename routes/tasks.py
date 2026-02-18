@@ -1,9 +1,10 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from typing import List
 from schemas.tasks import TaskCreate, TaskResponse, TaskUpdate
 from models.tasks import get_tasks, create_task, update_task, delete_task, get_task
 from dependencies import get_license_from_header
 from errors import NotFoundError
+from services.websocket_manager import broadcast_task_sync
 
 router = APIRouter(prefix="/api/tasks", tags=["Tasks"])
 
@@ -16,6 +17,7 @@ async def list_tasks(license: dict = Depends(get_license_from_header)):
 @router.post("/", response_model=TaskResponse)
 async def create_new_task(
     task: TaskCreate,
+    background_tasks: BackgroundTasks,
     license: dict = Depends(get_license_from_header)
 ):
     """Create or sync a task (atomic upsert)"""
@@ -25,6 +27,10 @@ async def create_new_task(
         result = await create_task(license_id, task.model_dump())
         if not result:
             raise HTTPException(status_code=500, detail="Failed to create/sync task")
+        
+        # Trigger real-time sync across other devices
+        background_tasks.add_task(broadcast_task_sync, license_id)
+        
         return result
     except Exception as e:
         # If we get a unique constraint error, it might be a collision across licenses
@@ -44,48 +50,33 @@ async def create_new_task(
 async def update_existing_task(
     task_id: str,
     task: TaskUpdate,
+    background_tasks: BackgroundTasks,
     license: dict = Depends(get_license_from_header)
 ):
     """Update a task"""
-    result = await update_task(license["license_id"], task_id, task.model_dump(exclude_unset=True))
+    license_id = license["license_id"]
+    result = await update_task(license_id, task_id, task.model_dump(exclude_unset=True))
     if not result:
         raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Trigger real-time sync across other devices
+    background_tasks.add_task(broadcast_task_sync, license_id)
+    
     return result
 
 @router.delete("/{task_id}")
 async def delete_existing_task(
     task_id: str,
+    background_tasks: BackgroundTasks,
     license: dict = Depends(get_license_from_header)
 ):
     """Delete a task"""
-    success = await delete_task(license["license_id"], task_id)
+    license_id = license["license_id"]
+    success = await delete_task(license_id, task_id)
     if not success:
         raise NotFoundError(resource="Task", resource_id=task_id)
+    
+    # Trigger real-time sync across other devices
+    background_tasks.add_task(broadcast_task_sync, license_id)
+    
     return {"success": True}
-
-
-# ============ Smart AI Features ============
-
-from pydantic import BaseModel
-
-class TaskSuggestionRequest(BaseModel):
-    title: str
-
-@router.post("/suggest", tags=["Tasks"])
-async def suggest_task_details(
-    data: TaskSuggestionRequest,
-    license: dict = Depends(get_license_from_header)
-):
-    """
-    Analyze task title and suggest details (Priority, Color, Subtasks).
-    Uses Gemini AI.
-    """
-    from services.task_ai import analyze_task_intent
-    
-    # Analyze
-    suggestions = await analyze_task_intent(data.title)
-    
-    return {
-        "success": True,
-        "data": suggestions
-    }
