@@ -9,6 +9,11 @@ class StoryBase(BaseModel):
 class StoryCreateText(StoryBase):
     content: str
     type: str = "text"
+    duration_hours: int = 24
+
+class StoryUpdate(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
 
 class StoryResponse(StoryBase):
     id: int
@@ -18,6 +23,8 @@ class StoryResponse(StoryBase):
     thumbnail_path: Optional[str]
     duration_ms: int
     created_at: datetime
+    expires_at: datetime
+    updated_at: datetime
     is_viewed: bool = False
 
     class Config:

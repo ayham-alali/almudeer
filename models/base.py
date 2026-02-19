@@ -20,6 +20,7 @@ from db_helper import (
 )
 from db_pool import ID_PK, TIMESTAMP_NOW, INT_TYPE, TEXT_TYPE
 from db_helper import fetch_all, fetch_one
+from models.stories import init_stories_tables
 
 # User Roles
 ROLES = {
@@ -349,6 +350,9 @@ async def init_enhanced_tables():
             await execute_sql(db, "ALTER TABLE library_items ADD COLUMN user_id TEXT")
         except:
             pass
+
+        # Stories tables initialization
+        await init_stories_tables()
 
         await commit_db(db)
         print("Enhanced tables initialized")

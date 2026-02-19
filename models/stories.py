@@ -4,7 +4,7 @@ DB table creation and CRUD for stories and views
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 
 from db_helper import get_db, execute_sql, fetch_all, fetch_one, commit_db, DB_TYPE
@@ -38,20 +38,29 @@ async def init_stories_tables():
                 thumbnail_path TEXT,
                 duration_ms INTEGER DEFAULT 0,
                 created_at {TIMESTAMP_NOW},
+                expires_at {TIMESTAMP_NOW}, -- Added for custom duration
+                updated_at {TIMESTAMP_NOW}, -- Added for tracking edits
                 deleted_at TIMESTAMP,
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
             """
         )
 
-        # Migration: add user_name if it doesn't exist
+        # Migration: add user_name, expires_at, updated_at if they don't exist
         try:
             if DB_TYPE == "postgresql":
                 await execute_sql(db, "ALTER TABLE stories ADD COLUMN IF NOT EXISTS user_name TEXT")
+                await execute_sql(db, "ALTER TABLE stories ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
+                await execute_sql(db, "ALTER TABLE stories ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP")
             else:
-                await execute_sql(db, "ALTER TABLE stories ADD COLUMN user_name TEXT")
+                try: await execute_sql(db, "ALTER TABLE stories ADD COLUMN user_name TEXT")
+                except Exception: pass
+                try: await execute_sql(db, "ALTER TABLE stories ADD COLUMN expires_at TIMESTAMP")
+                except Exception: pass
+                try: await execute_sql(db, "ALTER TABLE stories ADD COLUMN updated_at TIMESTAMP")
+                except Exception: pass
         except Exception:
-            pass # Already exists
+            pass
         
         # 2. Story Views Table (tracking who viewed what)
         await execute_sql(
@@ -89,22 +98,26 @@ async def add_story(
     content: Optional[str] = None,
     media_path: Optional[str] = None,
     thumbnail_path: Optional[str] = None,
-    duration_ms: int = 0
+    duration_ms: int = 0,
+    duration_hours: int = 24
 ) -> dict:
     """Publish a new story and return the created object atomically."""
     now = datetime.utcnow()
-    ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
+    expires_at = now + timedelta(hours=duration_hours)
+    
+    ts_now = now if DB_TYPE == "postgresql" else now.strftime('%Y-%m-%d %H:%M:%S')
+    ts_expires = expires_at if DB_TYPE == "postgresql" else expires_at.strftime('%Y-%m-%d %H:%M:%S')
     
     async with get_db() as db:
         if DB_TYPE == "postgresql":
             # Atomic return in PostgreSQL
             query = """
                 INSERT INTO stories 
-                (license_key_id, user_id, user_name, type, title, content, media_path, thumbnail_path, duration_ms, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (license_key_id, user_id, user_name, type, title, content, media_path, thumbnail_path, duration_ms, created_at, expires_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING *
             """
-            row = await fetch_one(db, query, [license_id, user_id, user_name, story_type, title, content, media_path, thumbnail_path, duration_ms, ts_value])
+            row = await fetch_one(db, query, [license_id, user_id, user_name, story_type, title, content, media_path, thumbnail_path, duration_ms, ts_now, ts_expires, ts_now])
             await commit_db(db)
             return dict(row) if row else {}
         else:
@@ -113,15 +126,44 @@ async def add_story(
                 db,
                 """
                 INSERT INTO stories 
-                (license_key_id, user_id, user_name, type, title, content, media_path, thumbnail_path, duration_ms, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (license_key_id, user_id, user_name, type, title, content, media_path, thumbnail_path, duration_ms, created_at, expires_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                [license_id, user_id, user_name, story_type, title, content, media_path, thumbnail_path, duration_ms, ts_value]
+                [license_id, user_id, user_name, story_type, title, content, media_path, thumbnail_path, duration_ms, ts_now, ts_expires, ts_now]
             )
             # Use last_insert_rowid() inside the same connection context
             row = await fetch_one(db, "SELECT * FROM stories WHERE id = last_insert_rowid()")
             await commit_db(db)
             return dict(row) if row else {}
+
+async def update_story(
+    story_id: int,
+    license_id: int,
+    user_id: str,
+    title: Optional[str] = None,
+    content: Optional[str] = None
+) -> Optional[dict]:
+    """Update story title and content. Returns the updated story or None if not found/unauthorized."""
+    now = datetime.utcnow()
+    ts_now = now if DB_TYPE == "postgresql" else now.strftime('%Y-%m-%d %H:%M:%S')
+    
+    async with get_db() as db:
+        # Check ownership
+        check_query = "SELECT id FROM stories WHERE id = ? AND license_key_id = ? AND user_id = ?"
+        story = await fetch_one(db, check_query, [story_id, license_id, user_id])
+        if not story:
+            return None
+            
+        update_query = """
+            UPDATE stories 
+            SET title = ?, content = ?, updated_at = ?
+            WHERE id = ?
+        """
+        await execute_sql(db, update_query, [title, content, ts_now, story_id])
+        await commit_db(db)
+        
+        row = await fetch_one(db, "SELECT * FROM stories WHERE id = ?", [story_id])
+        return dict(row) if row else None
 
 async def get_active_stories(license_id: int, viewer_contact: Optional[str] = None) -> List[dict]:
     """
@@ -129,9 +171,9 @@ async def get_active_stories(license_id: int, viewer_contact: Optional[str] = No
     If viewer_contact is provided, includes 'is_viewed' join status.
     """
     if DB_TYPE == "postgresql":
-        time_filter = "created_at > NOW() - INTERVAL '24 hours'"
+        time_filter = "expires_at > NOW()"
     else:
-        time_filter = "created_at > datetime('now', '-24 hours')"
+        time_filter = "expires_at > datetime('now')"
 
     query = f"""
         SELECT s.*, 
@@ -149,7 +191,7 @@ async def get_active_stories(license_id: int, viewer_contact: Optional[str] = No
 async def mark_story_viewed(story_id: int, viewer_contact: str, viewer_name: Optional[str] = None) -> bool:
     """Record that a contact viewed a story."""
     now = datetime.utcnow()
-    ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
+    ts_value = now if DB_TYPE == "postgresql" else now.strftime('%Y-%m-%d %H:%M:%S')
     
     # Use INSERT OR IGNORE / ON CONFLICT depending on DB
     if DB_TYPE == "postgresql":
@@ -235,9 +277,9 @@ async def cleanup_expired_stories():
     async with get_db() as db:
         # 1. Fetch paths of stories to be deleted to clean up disk
         if DB_TYPE == "postgresql":
-            select_query = f"SELECT media_path, thumbnail_path FROM stories WHERE created_at < NOW() - INTERVAL '{STORY_EXPIRATION_HOURS} hours' OR deleted_at IS NOT NULL"
+            select_query = f"SELECT media_path, thumbnail_path FROM stories WHERE expires_at < NOW() OR deleted_at IS NOT NULL"
         else:
-            select_query = f"SELECT media_path, thumbnail_path FROM stories WHERE created_at < datetime('now', '-{STORY_EXPIRATION_HOURS} hours') OR deleted_at IS NOT NULL"
+            select_query = f"SELECT media_path, thumbnail_path FROM stories WHERE expires_at < datetime('now') OR deleted_at IS NOT NULL"
         
         expired_stories = await fetch_all(db, select_query)
         
@@ -248,9 +290,9 @@ async def cleanup_expired_stories():
 
         # 3. Delete from DB
         if DB_TYPE == "postgresql":
-            delete_query = f"DELETE FROM stories WHERE created_at < NOW() - INTERVAL '{STORY_EXPIRATION_HOURS} hours' OR deleted_at IS NOT NULL"
+            delete_query = f"DELETE FROM stories WHERE expires_at < NOW() OR deleted_at IS NOT NULL"
         else:
-            delete_query = f"DELETE FROM stories WHERE created_at < datetime('now', '-{STORY_EXPIRATION_HOURS} hours') OR deleted_at IS NOT NULL"
+            delete_query = f"DELETE FROM stories WHERE expires_at < datetime('now') OR deleted_at IS NOT NULL"
         
         await execute_sql(db, delete_query)
         await commit_db(db)

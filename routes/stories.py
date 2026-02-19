@@ -16,9 +16,16 @@ from models.stories import (
     get_active_stories,
     mark_story_viewed,
     get_story_viewers,
-    delete_story
+    delete_story,
+    update_story
 )
-from schemas.stories import StoryCreateText, StoriesListResponse, StoryResponse, StoryViewerDetails
+from schemas.stories import (
+    StoryCreateText, 
+    StoriesListResponse, 
+    StoryResponse, 
+    StoryViewerDetails,
+    StoryUpdate
+)
 from services.file_storage_service import get_file_storage
 from services.websocket_manager import get_websocket_manager, WebSocketMessage
 from security import sanitize_string
@@ -33,7 +40,7 @@ async def list_stories(
     viewer_contact: Optional[str] = Query(None),
     license: dict = Depends(get_license_from_header)
 ):
-    """List active stories (last 24h) for the license."""
+    """List active stories for the license."""
     stories = await get_active_stories(license["license_id"], viewer_contact=viewer_contact)
     return {"success": True, "stories": stories}
 
@@ -59,7 +66,8 @@ async def create_text_story(
         user_id=user_id,
         user_name=user_name,
         title=sanitize_string(data.title) if data.title else None,
-        content=sanitize_string(data.content, max_length=1000)
+        content=sanitize_string(data.content, max_length=1000),
+        duration_hours=data.duration_hours
     )
     
     # Broadcast to all connected clients for this license
@@ -75,6 +83,7 @@ async def create_text_story(
 async def upload_media_story(
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
+    duration_hours: int = Form(24),
     license: dict = Depends(get_license_from_header),
     user: Optional[dict] = Depends(get_current_user_optional)
 ):
@@ -109,15 +118,14 @@ async def upload_media_story(
             subfolder="stories"
         )
         
-        # In a real app we might generate thumbnails for images/videos here
-        
         story = await add_story(
             license_id=license["license_id"],
             story_type=story_type,
             user_id=user_id,
             user_name=user_name,
             title=sanitize_string(title) if title else None,
-            media_path=public_url
+            media_path=public_url,
+            duration_hours=duration_hours
         )
         
         # Broadcast real-time update
@@ -131,6 +139,38 @@ async def upload_media_story(
     except Exception as e:
         logger.error(f"Error in upload_media_story: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"حدث خطأ أثناء رفع القصة: {str(e)}")
+
+@router.put("/{story_id}", response_model=StoryResponse)
+async def update_story_content(
+    story_id: int,
+    data: StoryUpdate,
+    license: dict = Depends(get_license_from_header),
+    user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Update an existing story (text/title only)."""
+    user_id = user.get("user_id") if user else None
+    if not user_id:
+        raise HTTPException(status_code=403, detail="يجب تسجيل الدخول لتعديل القصة")
+        
+    story = await update_story(
+        story_id=story_id,
+        license_id=license["license_id"],
+        user_id=user_id,
+        title=sanitize_string(data.title) if data.title else None,
+        content=sanitize_string(data.content) if data.content else None
+    )
+    
+    if not story:
+        raise HTTPException(status_code=404, detail="القصة غير موجودة أو لا تملك صلاحية تعديلها")
+        
+    # Broadcast real-time update
+    manager = get_websocket_manager()
+    await manager.send_to_license(
+        license["license_id"],
+        WebSocketMessage(event="story_updated", data=story)
+    )
+    
+    return story
 
 @router.post("/{story_id}/view")
 async def view_story(
@@ -160,9 +200,14 @@ async def remove_story(
 ):
     """Delete a story. Ensures only owner or admin can delete."""
     user_id = user.get("user_id") if user else None
-    # We pass user_id to ensure ownership check at the DB level
-    # If user is None (anonymous with valid license), they might not be able to delete
-    # unless we decide anonymous license owners can delete anything.
-    # For now, we enforce that ONLY the person who created it (via user_id) can delete it.
     success = await delete_story(story_id, license["license_id"], user_id=user_id)
+    
+    if success:
+        # Broadcast real-time delete
+        manager = get_websocket_manager()
+        await manager.send_to_license(
+            license["license_id"],
+            WebSocketMessage(event="story_deleted", data={"id": story_id})
+        )
+        
     return {"success": success}
