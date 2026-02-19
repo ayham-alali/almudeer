@@ -8,6 +8,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from starlette.requests import Request
 
+from db_helper import get_db, fetch_one
 from dependencies import get_license_from_header
 from services.jwt_auth import get_current_user_optional
 from models.stories import (
@@ -44,10 +45,19 @@ async def create_text_story(
 ):
     """Create a new text-only story."""
     user_id = user.get("user_id") if user else None
+    user_name = license.get("company_name", "مستخدم")
+    
+    if user_id:
+        async with get_db() as db:
+            user_row = await fetch_one(db, "SELECT name FROM users WHERE email = ?", [user_id])
+            if user_row and user_row.get("name"):
+                user_name = user_row["name"]
+
     story = await add_story(
         license_id=license["license_id"],
         story_type="text",
         user_id=user_id,
+        user_name=user_name,
         title=sanitize_string(data.title) if data.title else None,
         content=sanitize_string(data.content, max_length=1000)
     )
@@ -70,6 +80,14 @@ async def upload_media_story(
 ):
     """Upload a media story (image/video/audio)."""
     user_id = user.get("user_id") if user else None
+    user_name = license.get("company_name", "مستخدم")
+    
+    if user_id:
+        async with get_db() as db:
+            user_row = await fetch_one(db, "SELECT name FROM users WHERE email = ?", [user_id])
+            if user_row and user_row.get("name"):
+                user_name = user_row["name"]
+
     content_type = file.content_type or "application/octet-stream"
     
     # Determine type
@@ -97,6 +115,7 @@ async def upload_media_story(
             license_id=license["license_id"],
             story_type=story_type,
             user_id=user_id,
+            user_name=user_name,
             title=sanitize_string(title) if title else None,
             media_path=public_url
         )

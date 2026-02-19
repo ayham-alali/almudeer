@@ -30,6 +30,7 @@ async def init_stories_tables():
                 id {ID_PK},
                 license_key_id INTEGER NOT NULL,
                 user_id TEXT,
+                user_name TEXT, -- Added for display
                 type TEXT NOT NULL, -- text, image, video, voice, audio, file
                 title TEXT,
                 content TEXT,
@@ -42,6 +43,15 @@ async def init_stories_tables():
             )
             """
         )
+
+        # Migration: add user_name if it doesn't exist
+        try:
+            if DB_TYPE == "postgresql":
+                await execute_sql(db, "ALTER TABLE stories ADD COLUMN IF NOT EXISTS user_name TEXT")
+            else:
+                await execute_sql(db, "ALTER TABLE stories ADD COLUMN user_name TEXT")
+        except Exception:
+            pass # Already exists
         
         # 2. Story Views Table (tracking who viewed what)
         await execute_sql(
@@ -74,6 +84,7 @@ async def add_story(
     license_id: int,
     story_type: str,
     user_id: Optional[str] = None,
+    user_name: Optional[str] = None,
     title: Optional[str] = None,
     content: Optional[str] = None,
     media_path: Optional[str] = None,
@@ -89,11 +100,11 @@ async def add_story(
             # Atomic return in PostgreSQL
             query = """
                 INSERT INTO stories 
-                (license_key_id, user_id, type, title, content, media_path, thumbnail_path, duration_ms, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (license_key_id, user_id, user_name, type, title, content, media_path, thumbnail_path, duration_ms, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING *
             """
-            row = await fetch_one(db, query, [license_id, user_id, story_type, title, content, media_path, thumbnail_path, duration_ms, ts_value])
+            row = await fetch_one(db, query, [license_id, user_id, user_name, story_type, title, content, media_path, thumbnail_path, duration_ms, ts_value])
             await commit_db(db)
             return dict(row) if row else {}
         else:
@@ -102,10 +113,10 @@ async def add_story(
                 db,
                 """
                 INSERT INTO stories 
-                (license_key_id, user_id, type, title, content, media_path, thumbnail_path, duration_ms, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (license_key_id, user_id, user_name, type, title, content, media_path, thumbnail_path, duration_ms, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                [license_id, user_id, story_type, title, content, media_path, thumbnail_path, duration_ms, ts_value]
+                [license_id, user_id, user_name, story_type, title, content, media_path, thumbnail_path, duration_ms, ts_value]
             )
             # Use last_insert_rowid() inside the same connection context
             row = await fetch_one(db, "SELECT * FROM stories WHERE id = last_insert_rowid()")
