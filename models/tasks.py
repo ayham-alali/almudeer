@@ -19,6 +19,7 @@ async def init_tasks_table():
                 sub_tasks TEXT,  -- JSON string
                 alarm_enabled BOOLEAN DEFAULT FALSE,
                 alarm_time TIMESTAMP,
+                recurrence TEXT, -- recurrence pattern (daily, weekly, etc.)
                 created_at {TIMESTAMP_NOW},
                 updated_at TIMESTAMP,
                 synced_at TIMESTAMP,
@@ -48,6 +49,12 @@ async def init_tasks_table():
         try:
             await execute_sql(db, "ALTER TABLE tasks ADD COLUMN sub_tasks TEXT")
             print("Migrated tasks: added sub_tasks")
+        except Exception:
+            pass
+
+        try:
+            await execute_sql(db, "ALTER TABLE tasks ADD COLUMN recurrence TEXT")
+            print("Migrated tasks: added recurrence")
         except Exception:
             pass
         
@@ -103,9 +110,9 @@ async def create_task(license_id: int, task_data: dict) -> dict:
         await execute_sql(db, """
             INSERT INTO tasks (
                 id, license_key_id, title, description, is_completed, due_date, 
-                priority, color, sub_tasks, alarm_enabled, alarm_time,
+                priority, color, sub_tasks, alarm_enabled, alarm_time, recurrence,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 description = excluded.description,
@@ -116,6 +123,7 @@ async def create_task(license_id: int, task_data: dict) -> dict:
                 sub_tasks = excluded.sub_tasks,
                 alarm_enabled = excluded.alarm_enabled,
                 alarm_time = excluded.alarm_time,
+                recurrence = excluded.recurrence,
                 updated_at = CURRENT_TIMESTAMP
             WHERE tasks.license_key_id = ?
         """, (
@@ -130,6 +138,7 @@ async def create_task(license_id: int, task_data: dict) -> dict:
             sub_tasks_val,
             task_data.get('alarm_enabled', False),
             task_data.get('alarm_time'),
+            task_data.get('recurrence'),
             license_id  # For the WHERE clause in ON CONFLICT
         ))
         await commit_db(db)
