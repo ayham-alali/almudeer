@@ -110,6 +110,7 @@ async def upload_media_story(
         
         return story
     except Exception as e:
+        logger.error(f"Error in upload_media_story: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"حدث خطأ أثناء رفع القصة: {str(e)}")
 
 @router.post("/{story_id}/view")

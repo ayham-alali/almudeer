@@ -44,6 +44,24 @@ class TestWebSocketMessage:
         assert parsed["event"] == "inbox_update"
         assert parsed["data"]["count"] == 5
         assert "timestamp" in parsed
+
+    def test_message_to_json_with_datetime(self):
+        """Test WebSocket message JSON serialization with datetime objects"""
+        from services.websocket_manager import WebSocketMessage
+        from datetime import datetime
+        
+        now = datetime.utcnow()
+        msg = WebSocketMessage(
+            event="test_event",
+            data={"time": now, "other": "data"}
+        )
+        
+        json_str = msg.to_json()
+        parsed = json.loads(json_str)
+        
+        assert parsed["event"] == "test_event"
+        assert parsed["data"]["time"] == now.isoformat()
+        assert parsed["data"]["other"] == "data"
     
     def test_message_from_json(self):
         """Test WebSocket message JSON deserialization"""

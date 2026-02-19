@@ -12,6 +12,7 @@ import os
 from typing import Dict, Set, Optional, Any
 from datetime import datetime
 from dataclasses import dataclass, asdict
+from utils.json_utils import json_dumps
 
 from fastapi import WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
@@ -32,7 +33,7 @@ class WebSocketMessage:
             self.timestamp = datetime.utcnow().isoformat()
     
     def to_json(self) -> str:
-        return json.dumps(asdict(self))
+        return json_dumps(asdict(self))
     
     @classmethod
     def from_json(cls, json_str: str) -> "WebSocketMessage":
