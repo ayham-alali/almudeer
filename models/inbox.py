@@ -2,7 +2,7 @@
 Unified message inbox and outbox management
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Any
 
 from db_helper import get_db, execute_sql, fetch_all, fetch_one, commit_db, DB_TYPE
