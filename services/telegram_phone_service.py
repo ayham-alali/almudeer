@@ -770,23 +770,28 @@ class TelegramPhoneService:
                                         else:
                                             generic_type = "file"
 
+                                    # Check if voice note (for audio type)
+                                    is_voice = False
+                                    if generic_type == "audio" and hasattr(message.media, "document"):
+                                        for attr in message.media.document.attributes:
+                                            if hasattr(attr, 'voice') and attr.voice:
+                                                is_voice = True
+                                                break
+
+                                    # Override type for voice notes
+                                    if is_voice:
+                                        generic_type = "voice"
+
                                     # Set fallback body if empty (for Inbox visibility)
                                     if not messages_data[-1]["body"]:
                                         if generic_type == "image":
                                             messages_data[-1]["body"] = "[صورة]"
                                         elif generic_type == "video":
                                             messages_data[-1]["body"] = "[فيديو]"
+                                        elif generic_type == "voice":
+                                            messages_data[-1]["body"] = "[رسالة صوتية]"
                                         elif generic_type == "audio":
-                                            # Check if voice note
-                                            is_voice = False
-                                            if hasattr(message.media, "document"):
-                                                 # check attributes for voice
-                                                 for attr in message.media.document.attributes:
-                                                     if hasattr(attr, 'voice'):
-                                                         is_voice = True
-                                                         break
-                                            
-                                            messages_data[-1]["body"] = "[رسالة صوتية]" if is_voice else "[ملف صوتي]"
+                                            messages_data[-1]["body"] = "[ملف صوتي]"
                                         else:
                                             messages_data[-1]["body"] = "[ملف]"
 
@@ -805,7 +810,7 @@ class TelegramPhoneService:
                                     
                                     # Add to attachments
                                     messages_data[-1]["attachments"].append({
-                                        "type": generic_type,        # 'image', 'video', 'audio', 'file'
+                                        "type": generic_type,        # 'image', 'video', 'voice', 'audio', 'file'
                                         "mime_type": mime_type,      # 'image/jpeg', 'video/mp4', etc.
                                         "url": abs_url,
                                         "path": rel_path,

@@ -2512,7 +2512,7 @@ async def upsert_conversation_state(
                             body = "ملاحظة"
                         elif att_type == "task":
                             body = "مَهمَّة"
-                        elif att_type == "voice" or (mime.startswith("audio/") and att.get("is_voice_note")):
+                        elif att_type == "voice":
                             body = "تسجيل صوتي"
                         elif att_type == "audio" or mime.startswith("audio/") or filename.endswith((".mp3", ".wav", ".aac", ".m4a", ".ogg", ".opus", ".amr")):
                              body = "ملف صوتي"
