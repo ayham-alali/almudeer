@@ -1055,7 +1055,8 @@ async def get_conversation_messages_cursor(
                 reply_to_id, reply_to_platform_id, reply_to_body_preview, reply_to_sender_name,
                 is_forwarded,
                 NULL as delivery_status,
-                NULL as sent_at
+                NULL as sent_at,
+                i.edited_at
             FROM inbox_messages i
             WHERE {inbox_where}
             
@@ -1074,7 +1075,8 @@ async def get_conversation_messages_cursor(
                 NULL as reply_to_id, o.reply_to_platform_id, o.reply_to_body_preview, o.reply_to_sender_name,
                 is_forwarded,
                 delivery_status,
-                sent_at
+                sent_at,
+                o.edited_at
             FROM outbox_messages o
             WHERE {outbox_where}
         """
@@ -1405,7 +1407,8 @@ async def get_full_chat_history(
                 ai_summary, ai_draft_response, status,
                 created_at, received_at,
                 reply_to_id, reply_to_platform_id, reply_to_body_preview, reply_to_sender_name,
-                COALESCE(received_at, created_at) as effective_ts
+                COALESCE(received_at, created_at) as effective_ts,
+                edited_at
             FROM inbox_messages
             WHERE license_key_id = ?
             AND ({sender_where})
@@ -1722,6 +1725,19 @@ async def edit_outbox_message(
             """,
             [new_body, ts_value, original_body, current_edit_count + 1, message_id, license_id]
         )
+        
+        # ---------------------------------------------------------
+        # Sync to Internal Recipient (Almudeer Channel)
+        # ---------------------------------------------------------
+        # If this is an internal message, we must also update the recipient's inbox message
+        if message.get("channel") == "almudeer":
+            platform_id = f"alm_{message_id}"
+            await execute_sql(
+                db,
+                "UPDATE inbox_messages SET body = ?, edited_at = ? WHERE platform_message_id = ?",
+                [new_body, ts_value, platform_id]
+            )
+
         await commit_db(db)
         
         # Update conversation if this was the last message
