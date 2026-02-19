@@ -110,6 +110,12 @@ async def upload_media_story(
 
     try:
         content = await file.read()
+        
+        # Security/Reliability: Limit file size to 50MB
+        MAX_FILE_SIZE = 50 * 1024 * 1024 # 50MB
+        if len(content) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=413, detail="File too large. Max size is 50MB.")
+
         # Save file
         relative_path, public_url = file_storage.save_file(
             content=content,
