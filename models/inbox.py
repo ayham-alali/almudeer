@@ -2509,21 +2509,63 @@ async def upsert_conversation_state(
                         att_type = att.get("type", "").lower()
                         
                         if att_type == "note":
-                            body = "ملاحظة"
+                            body = "📝 ملاحظة"
                         elif att_type == "task":
-                            body = "مَهمَّة"
+                            body = "✅ مَهمَّة"
                         elif att_type == "voice":
-                            body = "تسجيل صوتي"
+                            body = "🎤 تسجيل صوتي"
                         elif att_type == "audio" or mime.startswith("audio/") or filename.endswith((".mp3", ".wav", ".aac", ".m4a", ".ogg", ".opus", ".amr")):
-                             body = "ملف صوتي"
+                             body = "🎵 ملف صوتي"
                         elif att_type in ["image", "photo"] or mime.startswith("image/") or filename.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
-                             body = "صورة"
+                             body = "📸 صورة"
                         elif att_type == "video" or mime.startswith("video/") or filename.endswith((".mp4", ".mov", ".avi", ".webm")):
-                             body = "فيديو"
+                             body = "🎥 فيديو"
+                        elif filename.endswith((".zip", ".rar", ".7z", ".tar", ".gz")):
+                             body = "📦 ملف مضغوط"
                         else:
-                             body = "ملف"
+                             body = "📄 ملف"
                 except:
-                    body = "ملف"
+                    body = "📄 ملف"
+        else:
+            # Body is not empty, but if there are attachments, prepend emoji
+            if last_attachments:
+                import json
+                try:
+                    att_list = []
+                    if isinstance(last_attachments, str):
+                        att_list = json.loads(last_attachments)
+                    elif isinstance(last_attachments, list):
+                        att_list = last_attachments
+                    
+                    if att_list and len(att_list) > 0:
+                        att = att_list[0]
+                        mime = att.get("mime_type", "").lower()
+                        filename = (att.get("filename") or att.get("file_name") or "").lower()
+                        att_type = att.get("type", "").lower()
+                        
+                        emoji = ""
+                        if att_type == "note":
+                            emoji = "📝"
+                        elif att_type == "task":
+                            emoji = "✅"
+                        elif att_type == "voice":
+                            emoji = "🎤"
+                        elif att_type == "audio" or mime.startswith("audio/") or filename.endswith((".mp3", ".wav", ".aac", ".m4a", ".ogg", ".opus", ".amr")):
+                             emoji = "🎵"
+                        elif att_type in ["image", "photo"] or mime.startswith("image/") or filename.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
+                             emoji = "📸"
+                        elif att_type == "video" or mime.startswith("video/") or filename.endswith((".mp4", ".mov", ".avi", ".webm")):
+                             emoji = "🎥"
+                        elif filename.endswith((".zip", ".rar", ".7z", ".tar", ".gz")):
+                             emoji = "📦"
+                        else:
+                             emoji = "📄"
+                        
+                        if emoji:
+                            # Prepend emoji to body
+                            body = f"{emoji} {body}"
+                except:
+                    pass
 
         # 3. Upsert
         now = datetime.utcnow()
