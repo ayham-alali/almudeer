@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 
 class TaskBase(BaseModel):
@@ -10,6 +10,11 @@ class TaskBase(BaseModel):
     alarm_enabled: bool = False
     alarm_time: Optional[datetime] = None
     recurrence: Optional[str] = None
+    sub_tasks: Optional[List[dict]] = []
+    category: Optional[str] = None
+    order_index: float = 0.0
+    created_by: Optional[str] = None
+    assigned_to: Optional[str] = None
 
 class TaskCreate(TaskBase):
     id: str = Field(..., description="UUID from client")
@@ -22,6 +27,10 @@ class TaskUpdate(BaseModel):
     alarm_enabled: Optional[bool] = None
     alarm_time: Optional[datetime] = None
     recurrence: Optional[str] = None
+    sub_tasks: Optional[List[dict]] = None
+    category: Optional[str] = None
+    order_index: Optional[float] = None
+    assigned_to: Optional[str] = None
 
 class TaskResponse(TaskBase):
     id: str

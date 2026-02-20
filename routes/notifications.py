@@ -29,6 +29,7 @@ from services.notification_service import (
 )
 from dependencies import get_license_from_header
 from models import create_notification
+from services.jwt_auth import get_current_user
 
 load_dotenv()
 
@@ -576,7 +577,7 @@ class MobilePushToken(BaseModel):
 async def register_mobile_token(
     request: Request,  # Required for rate limiting
     data: MobilePushToken,
-    license: dict = Depends(get_license_from_header)
+    user: dict = Depends(get_current_user)
 ):
     """Register mobile FCM token for push notifications."""
     from services.fcm_mobile_service import save_fcm_token, ensure_fcm_tokens_table
@@ -599,10 +600,11 @@ async def register_mobile_token(
     await ensure_fcm_tokens_table()
     
     token_id = await save_fcm_token(
-        license_id=license["license_id"],
+        license_id=user["license_id"],
         token=data.token,
         platform=data.platform,
-        device_id=data.device_id
+        device_id=data.device_id,
+        user_id=user["user_id"]
     )
     
     return {
@@ -615,7 +617,7 @@ async def register_mobile_token(
 @router.post("/push/mobile/unregister")
 async def unregister_mobile_token(
     data: MobilePushToken,
-    license: dict = Depends(get_license_from_header)
+    user: dict = Depends(get_current_user)
 ):
     """Unregister mobile FCM token."""
     from services.fcm_mobile_service import remove_fcm_token

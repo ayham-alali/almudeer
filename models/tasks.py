@@ -20,6 +20,10 @@ async def init_tasks_table():
                 alarm_enabled BOOLEAN DEFAULT FALSE,
                 alarm_time TIMESTAMP,
                 recurrence TEXT, -- recurrence pattern (daily, weekly, etc.)
+                category TEXT,
+                order_index REAL DEFAULT 0.0,
+                created_by TEXT,
+                assigned_to TEXT,
                 created_at {TIMESTAMP_NOW},
                 updated_at TIMESTAMP,
                 synced_at TIMESTAMP,
@@ -51,10 +55,34 @@ async def init_tasks_table():
             print("Migrated tasks: added sub_tasks")
         except Exception:
             pass
-
+ 
         try:
             await execute_sql(db, "ALTER TABLE tasks ADD COLUMN recurrence TEXT")
             print("Migrated tasks: added recurrence")
+        except Exception:
+            pass
+ 
+        try:
+            await execute_sql(db, "ALTER TABLE tasks ADD COLUMN category TEXT")
+            print("Migrated tasks: added category")
+        except Exception:
+            pass
+ 
+        try:
+            await execute_sql(db, "ALTER TABLE tasks ADD COLUMN order_index REAL DEFAULT 0.0")
+            print("Migrated tasks: added order_index")
+        except Exception:
+            pass
+
+        try:
+            await execute_sql(db, "ALTER TABLE tasks ADD COLUMN created_by TEXT")
+            print("Migrated tasks: added created_by")
+        except Exception:
+            pass
+
+        try:
+            await execute_sql(db, "ALTER TABLE tasks ADD COLUMN assigned_to TEXT")
+            print("Migrated tasks: added assigned_to")
         except Exception:
             pass
         
@@ -67,14 +95,19 @@ async def init_tasks_table():
         await commit_db(db)
         print("Tasks table initialized")
 
-async def get_tasks(license_id: int) -> List[dict]:
-    """Get all tasks for a license"""
+async def get_tasks(license_id: int, since: Optional[datetime] = None) -> List[dict]:
+    """Get all tasks for a license, optionally since a specific time"""
     async with get_db() as db:
-        rows = await fetch_all(db, """
-            SELECT * FROM tasks 
-            WHERE license_key_id = ?
-            ORDER BY created_at DESC
-        """, (license_id,))
+        query = "SELECT * FROM tasks WHERE license_key_id = ?"
+        params = [license_id]
+        
+        if since:
+            query += " AND (updated_at > ? OR synced_at > ?)"
+            params.extend([since, since])
+            
+        query += " ORDER BY created_at DESC"
+        
+        rows = await fetch_all(db, query, tuple(params))
         return [_parse_task_row(dict(row)) for row in rows]
 
 async def get_task(license_id: int, task_id: str) -> Optional[dict]:
@@ -111,8 +144,8 @@ async def create_task(license_id: int, task_data: dict) -> dict:
             INSERT INTO tasks (
                 id, license_key_id, title, description, is_completed, due_date, 
                 priority, color, sub_tasks, alarm_enabled, alarm_time, recurrence,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                category, order_index, created_by, assigned_to, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 description = excluded.description,
@@ -124,6 +157,9 @@ async def create_task(license_id: int, task_data: dict) -> dict:
                 alarm_enabled = excluded.alarm_enabled,
                 alarm_time = excluded.alarm_time,
                 recurrence = excluded.recurrence,
+                category = excluded.category,
+                order_index = excluded.order_index,
+                assigned_to = excluded.assigned_to,
                 updated_at = CURRENT_TIMESTAMP
             WHERE tasks.license_key_id = ?
         """, (
@@ -139,6 +175,10 @@ async def create_task(license_id: int, task_data: dict) -> dict:
             task_data.get('alarm_enabled', False),
             task_data.get('alarm_time'),
             task_data.get('recurrence'),
+            task_data.get('category'),
+            task_data.get('order_index', 0.0),
+            task_data.get('created_by'),
+            task_data.get('assigned_to'),
             license_id  # For the WHERE clause in ON CONFLICT
         ))
         await commit_db(db)

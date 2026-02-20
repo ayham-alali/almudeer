@@ -87,6 +87,7 @@ async def create_text_story(
 async def upload_media_story(
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
+    content: Optional[str] = Form(None),
     duration_hours: int = Form(24),
     license: dict = Depends(get_license_from_header),
     user: Optional[dict] = Depends(get_current_user_optional)
@@ -131,6 +132,7 @@ async def upload_media_story(
             user_id=user_id,
             user_name=user_name,
             title=sanitize_string(title) if title else None,
+            content=sanitize_string(content, max_length=1000) if content else None,
             media_path=public_url,
             duration_hours=duration_hours
         )
@@ -187,6 +189,12 @@ async def view_story(
     license: dict = Depends(get_license_from_header)
 ):
     """Mark a story as viewed by a contact."""
+    # Verify the story belongs to this license key
+    async with get_db() as db:
+        story = await fetch_one(db, "SELECT id FROM stories WHERE id = ? AND license_key_id = ?", [story_id, license["license_id"]])
+        if not story:
+            raise HTTPException(status_code=404, detail="القصة غير موجودة")
+            
     success = await mark_story_viewed(story_id, viewer_contact, viewer_name)
     return {"success": success}
 
@@ -207,7 +215,13 @@ async def remove_story(
 ):
     """Delete a story. Ensures only owner or admin can delete."""
     user_id = user.get("user_id") if user else None
-    success = await delete_story(story_id, license["license_id"], user_id=user_id)
+    is_admin = user.get("role") == "admin" if user else False
+    
+    # If not admin and not logged in, forbid
+    if not user_id and not is_admin:
+        raise HTTPException(status_code=403, detail="لا تملك صلاحية حذف هذه القصة")
+        
+    success = await delete_story(story_id, license["license_id"], user_id=None if is_admin else user_id)
     
     if success:
         # Broadcast real-time delete

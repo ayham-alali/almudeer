@@ -145,6 +145,7 @@ async def ensure_fcm_tokens_table():
                 CREATE TABLE IF NOT EXISTS fcm_tokens (
                     id {ID_PK},
                     license_key_id INTEGER NOT NULL,
+                    user_id TEXT,
                     token TEXT NOT NULL,
                     device_id TEXT,
                     platform TEXT DEFAULT 'android',
@@ -163,6 +164,11 @@ async def ensure_fcm_tokens_table():
             await execute_sql(db, """
                 CREATE INDEX IF NOT EXISTS idx_fcm_license
                 ON fcm_tokens(license_key_id) 
+            """)
+
+            await execute_sql(db, """
+                CREATE INDEX IF NOT EXISTS idx_fcm_user
+                ON fcm_tokens(user_id) 
             """)
             
             await execute_sql(db, """
@@ -183,23 +189,37 @@ async def ensure_device_id_column():
         try:
             if DB_TYPE == "postgresql":
                 await execute_sql(db, "ALTER TABLE fcm_tokens ADD COLUMN IF NOT EXISTS device_id TEXT")
+                await execute_sql(db, "ALTER TABLE fcm_tokens ADD COLUMN IF NOT EXISTS user_id TEXT")
                 await execute_sql(db, "CREATE INDEX IF NOT EXISTS idx_fcm_device_id ON fcm_tokens(device_id)")
+                await execute_sql(db, "CREATE INDEX IF NOT EXISTS idx_fcm_user ON fcm_tokens(user_id)")
             else:
                 try:
                     await execute_sql(db, "ALTER TABLE fcm_tokens ADD COLUMN device_id TEXT")
+                except:
+                    pass
+                try:
+                    await execute_sql(db, "ALTER TABLE fcm_tokens ADD COLUMN user_id TEXT")
+                except:
+                    pass
+                try:
                     await execute_sql(db, "CREATE INDEX IF NOT EXISTS idx_fcm_device_id ON fcm_tokens(device_id)")
+                except:
+                    pass
+                try:
+                    await execute_sql(db, "CREATE INDEX IF NOT EXISTS idx_fcm_user ON fcm_tokens(user_id)")
                 except:
                     pass
             await commit_db(db)
         except Exception as e:
-            logger.error(f"FCM: Failed to add device_id column: {e}")
+            logger.error(f"FCM: Failed to add columns: {e}")
 
 
 async def save_fcm_token(
     license_id: int,
     token: str,
     platform: str = "android",
-    device_id: Optional[str] = None
+    device_id: Optional[str] = None,
+    user_id: Optional[str] = None
 ) -> int:
     """
     Save a new FCM token for a license.
@@ -229,15 +249,14 @@ async def save_fcm_token(
             
             if existing:
                 # Update existing token record. 
-                # Note: This might still trigger a unique violation if 'token' is moved between records.
                 await execute_sql(
                     db,
                     """
                     UPDATE fcm_tokens 
-                    SET license_key_id = ?, token = ?, platform = ?, device_id = ?, is_active = TRUE, updated_at = CURRENT_TIMESTAMP
+                    SET license_key_id = ?, user_id = ?, token = ?, platform = ?, device_id = ?, is_active = TRUE, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
-                    [license_id, token, platform, device_id, existing["id"]]
+                    [license_id, user_id, token, platform, device_id, existing["id"]]
                 )
                 
                 # Aggressive cleanup: If we have a device_id, deactivate all tokens for this license that DON'T have a device_id
@@ -259,23 +278,24 @@ async def save_fcm_token(
                 await execute_sql(
                     db,
                     """
-                    INSERT INTO fcm_tokens (license_key_id, token, platform, device_id, updated_at)
-                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    INSERT INTO fcm_tokens (license_key_id, user_id, token, platform, device_id, updated_at)
+                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     ON CONFLICT (token) DO UPDATE SET
                         license_key_id = EXCLUDED.license_key_id,
+                        user_id = EXCLUDED.user_id,
                         platform = EXCLUDED.platform,
                         device_id = EXCLUDED.device_id,
                         is_active = TRUE,
                         updated_at = CURRENT_TIMESTAMP
                     """,
-                    [license_id, token, platform, device_id]
+                    [license_id, user_id, token, platform, device_id]
                 )
             else:
                 # SQLite fallback path
                 await execute_sql(
                     db,
-                    "INSERT INTO fcm_tokens (license_key_id, token, platform, device_id) VALUES (?, ?, ?, ?)",
-                    [license_id, token, platform, device_id]
+                    "INSERT INTO fcm_tokens (license_key_id, user_id, token, platform, device_id) VALUES (?, ?, ?, ?, ?)",
+                    [license_id, user_id, token, platform, device_id]
                 )
 
             # Cleanup for new tokens
@@ -690,6 +710,116 @@ async def send_fcm_to_license(
             )
             await commit_db(db)
             logger.info(f"FCM: Marked {len(expired_ids)} tokens as inactive")
+    
+    return sent_count
+
+
+    return sent_count
+
+
+async def send_fcm_to_user(
+    license_id: int,
+    user_id: str,
+    title: str,
+    body: str,
+    data: Optional[dict] = None,
+    link: Optional[str] = None,
+    badge_count: Optional[int] = None,
+    ttl_seconds: int = 86400,
+    sound: str = "default",
+    image: Optional[str] = None,
+    notification_id: Optional[int] = None
+) -> int:
+    """
+    Send push notification to all mobile devices for a specific user.
+    
+    Args:
+        license_id: License key ID
+        user_id: The specific user ID (email or license-prefix)
+        title: Notification title
+        body: Notification body
+        data: Optional custom data payload
+        link: Optional deep link URL
+    """
+    from db_helper import get_db, fetch_all, fetch_one, execute_sql, commit_db
+    
+    sent_count = 0
+    expired_ids = []
+    
+    # Calculate badge count if needed
+    if badge_count is None:
+        async with get_db() as db:
+            unread_row = await fetch_one(
+                db,
+                """
+                SELECT COUNT(*) as unread_count FROM notifications
+                WHERE license_key_id = ? AND is_read = FALSE
+                """,
+                [license_id]
+            )
+            badge_count = unread_row["unread_count"] if unread_row else 1
+            if badge_count < 1:
+                badge_count = 1
+    
+    async with get_db() as db:
+        rows = await fetch_all(
+            db,
+            """
+            SELECT id, token, device_id, platform FROM fcm_tokens
+            WHERE license_key_id = ? AND user_id = ? AND is_active = TRUE
+            ORDER BY device_id DESC, updated_at DESC
+            """,
+            [license_id, user_id]
+        )
+        
+        if not rows:
+            return 0
+        
+        # Deduplicate by device_id
+        processed_device_ids = set()
+        unique_tokens = []
+        for row in rows:
+            device_id = row.get("device_id")
+            if device_id:
+                if device_id in processed_device_ids:
+                    continue
+                processed_device_ids.add(device_id)
+            
+            if any(r["token"] == row["token"] for r in unique_tokens):
+                continue
+            unique_tokens.append(row)
+
+        for row in unique_tokens:
+            tracking_data = data.copy() if data else {}
+            if notification_id:
+                tracking_data["notification_id"] = str(notification_id)
+                # Delivery tracking is optional here for now
+                
+            success = await send_fcm_notification(
+                token=row["token"],
+                title=title,
+                body=body,
+                data=tracking_data,
+                link=link,
+                badge_count=badge_count,
+                ttl_seconds=ttl_seconds,
+                sound=sound,
+                image=image
+            )
+            
+            if success:
+                sent_count += 1
+            else:
+                expired_ids.append(row["id"])
+        
+        if expired_ids:
+            placeholders = ",".join("?" for _ in expired_ids)
+            await execute_sql(
+                db,
+                f"UPDATE fcm_tokens SET is_active = FALSE WHERE id IN ({placeholders})",
+                expired_ids
+            )
+            await commit_db(db)
     
     return sent_count
 

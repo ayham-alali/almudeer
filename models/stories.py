@@ -228,8 +228,10 @@ async def get_story_viewers(story_id: int, license_id: int) -> List[dict]:
         rows = await fetch_all(db, query, [story_id, license_id])
         return [dict(row) for row in rows]
 
-def _delete_file_safely(file_path: str):
-    """Utility to delete file from disk if it exists, handling both relative and absolute paths."""
+import asyncio
+
+async def _delete_file_safely(file_path: str):
+    """Utility to delete file from disk if it exists, handling both relative and absolute paths asynchronously."""
     if not file_path:
         return
         
@@ -241,7 +243,7 @@ def _delete_file_safely(file_path: str):
     
     if os.path.exists(file_path):
         try:
-            os.remove(file_path)
+            await asyncio.to_thread(os.remove, file_path)
         except Exception:
             pass # Best effort
 
@@ -257,8 +259,8 @@ async def delete_story(story_id: int, license_id: int, user_id: Optional[str] = 
         story = await fetch_one(db, query, params)
         
         if story:
-            _delete_file_safely(story.get('media_path'))
-            _delete_file_safely(story.get('thumbnail_path'))
+            await _delete_file_safely(story.get('media_path'))
+            await _delete_file_safely(story.get('thumbnail_path'))
             
             # Now delete from DB
             delete_query = "DELETE FROM stories WHERE id = ? AND license_key_id = ?"
@@ -283,10 +285,10 @@ async def cleanup_expired_stories():
         
         expired_stories = await fetch_all(db, select_query)
         
-        # 2. Delete files from disk
+        # 2. Delete files from disk async
         for story in expired_stories:
-            _delete_file_safely(story.get('media_path'))
-            _delete_file_safely(story.get('thumbnail_path'))
+            await _delete_file_safely(story.get('media_path'))
+            await _delete_file_safely(story.get('thumbnail_path'))
 
         # 3. Delete from DB
         if DB_TYPE == "postgresql":
