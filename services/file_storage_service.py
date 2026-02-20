@@ -79,6 +79,46 @@ class FileStorageService:
             logger.error(f"Failed to save file: {e}")
             raise
 
+    async def save_upload_file_async(self, upload_file, filename: str, mime_type: str, subfolder: str = None) -> Tuple[str, str]:
+        """
+        Save an UploadFile to disk asynchronously in chunks to prevent OOM
+        and return (relative_path, accessible_url)
+        """
+        try:
+            if not subfolder:
+                if mime_type.startswith("image/"):
+                    subfolder = "images"
+                elif mime_type.startswith("audio/"):
+                    subfolder = "audio"
+                elif mime_type.startswith("video/"):
+                    subfolder = "video"
+                else:
+                    subfolder = "docs"
+            
+            target_dir = os.path.join(self.upload_dir, subfolder)
+            os.makedirs(target_dir, exist_ok=True)
+            
+            unique_id = uuid.uuid4().hex
+            ext = os.path.splitext(filename)[1] or ".bin"
+            unique_filename = f"{unique_id}{ext}"
+            
+            file_path = os.path.join(target_dir, unique_filename)
+            
+            import aiofiles
+            async with aiofiles.open(file_path, 'wb') as out_file:
+                while content := await upload_file.read(1024 * 1024):  # 1MB chunks
+                    await out_file.write(content)
+                
+            relative_path = os.path.join(subfolder, unique_filename).replace("\\", "/")
+            public_url = f"{self.url_prefix}/{relative_path}"
+            
+            logger.info(f"Saved file async: {relative_path} (URL: {public_url})")
+            return relative_path, public_url
+            
+        except Exception as e:
+            logger.error(f"Failed to save file async: {e}")
+            raise
+
 # Singleton instance
 _instance = None
 
