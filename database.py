@@ -47,8 +47,7 @@ async def init_database():
             # Migrations for existing SQLite tables
             try:
                 await execute_sql(conn, "ALTER TABLE license_keys ADD COLUMN token_version INTEGER DEFAULT 1")
-            except Exception:
-                pass
+            except Exception as e:
                 from logging_config import get_logger
                 get_logger(__name__).debug(f"SQLite migration note (might already exist): {e}")
             await commit_db(conn)

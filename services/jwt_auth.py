@@ -56,8 +56,6 @@ class JWTConfig:
 
 config = JWTConfig()
 
-# Password hashing context
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 # ============ Token Types ============
