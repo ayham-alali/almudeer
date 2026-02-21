@@ -157,31 +157,21 @@ async def ensure_fcm_tokens_table():
                 )
             """)
             
-            # 2. Migration: Check and add missing columns if table already existed
-            has_user_id = False
-            has_device_id = False
-            
+            # 2. Migration: Add missing columns if table already existed (defensive)
             if DB_TYPE == "postgresql":
-                cols = await fetch_all(db, """
-                    SELECT column_name FROM information_schema.columns 
-                    WHERE table_name = 'fcm_tokens'
-                """)
-                for col in cols:
-                    if col["column_name"] == "user_id": has_user_id = True
-                    if col["column_name"] == "device_id": has_device_id = True
+                # PostgreSQL-native safe addition
+                await execute_sql(db, "ALTER TABLE fcm_tokens ADD COLUMN IF NOT EXISTS user_id TEXT")
+                await execute_sql(db, "ALTER TABLE fcm_tokens ADD COLUMN IF NOT EXISTS device_id TEXT")
             else:
-                cols = await fetch_all(db, "PRAGMA table_info(fcm_tokens)")
-                for col in cols:
-                    if col["name"] == "user_id": has_user_id = True
-                    if col["name"] == "device_id": has_device_id = True
-                    
-            if not has_user_id:
-                logger.info("FCM: Adding missing 'user_id' column to fcm_tokens")
-                await execute_sql(db, "ALTER TABLE fcm_tokens ADD COLUMN user_id TEXT")
-                
-            if not has_device_id:
-                logger.info("FCM: Adding missing 'device_id' column to fcm_tokens")
-                await execute_sql(db, "ALTER TABLE fcm_tokens ADD COLUMN device_id TEXT")
+                # SQLite: try-except as safety (doesn't support ADD COLUMN IF NOT EXISTS)
+                try:
+                    await execute_sql(db, "ALTER TABLE fcm_tokens ADD COLUMN user_id TEXT")
+                except Exception:
+                    pass
+                try:
+                    await execute_sql(db, "ALTER TABLE fcm_tokens ADD COLUMN device_id TEXT")
+                except Exception:
+                    pass
 
             # 3. Ensure Indexes
             await execute_sql(db, "CREATE INDEX IF NOT EXISTS idx_fcm_token ON fcm_tokens(token)")
