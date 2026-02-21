@@ -69,7 +69,7 @@ async def login(data: LoginRequest):
         **tokens,
         user={
             "license_id": result.get("license_id"),
-            "company_name": result.get("company_name"),
+            "company_name": result.get("full_name"),
             "username": result.get("username"),
         }
     )

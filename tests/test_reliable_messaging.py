@@ -143,8 +143,8 @@ async def test_internal_channels():
             "platform_message_id": None
         }]
         mock_fetch_one.side_effect = [
-            {"id": 2, "company_name": "Target Company"}, # Target license holder
-            {"username": "me", "company_name": "My Company"} # Sender license info
+            {"id": 2, "full_name": "Target Company"}, # Target license holder
+            {"username": "me", "full_name": "My Company"} # Sender license info
         ]
         
         with patch("models.inbox.save_inbox_message", new_callable=AsyncMock) as mock_save_inbox, \

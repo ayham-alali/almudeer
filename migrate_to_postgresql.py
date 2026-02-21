@@ -69,7 +69,7 @@ async def create_postgresql_schema(conn: asyncpg.Connection):
         CREATE TABLE IF NOT EXISTS license_keys (
             id SERIAL PRIMARY KEY,
             key_hash TEXT UNIQUE NOT NULL,
-            company_name TEXT NOT NULL,
+            full_name TEXT NOT NULL,
             contact_email TEXT,
             is_active BOOLEAN DEFAULT TRUE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -234,14 +234,14 @@ async def import_data_to_postgresql(conn: asyncpg.Connection, data: Dict[str, Li
             
             await conn.execute("""
                 INSERT INTO license_keys 
-                (id, key_hash, company_name, contact_email, is_active, created_at, 
+                (id, key_hash, full_name, contact_email, is_active, created_at, 
                  expires_at, max_requests_per_day, requests_today, last_request_date)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 ON CONFLICT (id) DO NOTHING
             """, 
                 row.get('id'),
                 row.get('key_hash'),
-                row.get('company_name'),
+                row.get('full_name', row.get('company_name')),
                 row.get('contact_email'),
                 is_active,
                 created_at,

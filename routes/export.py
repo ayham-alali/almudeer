@@ -427,7 +427,7 @@ async def generate_full_report(
     start, end = get_date_range(start_date, end_date, days=30)
     data = await get_export_data(license["license_id"], start, end)
     
-    html = generate_html_report(data, license.get("company_name", "شركتك"))
+    html = generate_html_report(data, license.get("full_name", "شركتك"))
     
     return StreamingResponse(
         io.StringIO(html),
@@ -446,7 +446,7 @@ async def preview_report(
     start, end = get_date_range(start_date, end_date, days=30)
     data = await get_export_data(license["license_id"], start, end)
     
-    html = generate_html_report(data, license.get("company_name", "شركتك"))
+    html = generate_html_report(data, license.get("full_name", "شركتك"))
     
     return StreamingResponse(
         io.StringIO(html),

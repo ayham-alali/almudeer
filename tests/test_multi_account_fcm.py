@@ -52,7 +52,7 @@ async def test_fcm_token_migration_same_device(db_session):
         hash_b = f"hash_B_{unique_suffix}"
         
         await execute_sql(db_session, 
-            "INSERT INTO license_keys (key_hash, company_name, is_active) VALUES (?, ?, ?)",
+            "INSERT INTO license_keys (key_hash, full_name, is_active) VALUES (?, ?, ?)",
             [hash_a, "Company A", 1]
         )
         license_a = await fetch_one(db_session, "SELECT id FROM license_keys WHERE key_hash = ?", [hash_a])
@@ -60,7 +60,7 @@ async def test_fcm_token_migration_same_device(db_session):
         
         # Create License B
         await execute_sql(db_session, 
-            "INSERT INTO license_keys (key_hash, company_name, is_active) VALUES (?, ?, ?)",
+            "INSERT INTO license_keys (key_hash, full_name, is_active) VALUES (?, ?, ?)",
             [hash_b, "Company B", 1]
         )
         license_b = await fetch_one(db_session, "SELECT id FROM license_keys WHERE key_hash = ?", [hash_b])
@@ -147,7 +147,7 @@ async def test_logout_cleanup_simulation(db_session):
         hash_c = f"hash_C_{unique_suffix}"
             
         await execute_sql(db_session, 
-            "INSERT INTO license_keys (key_hash, company_name, is_active) VALUES (?, ?, ?)",
+            "INSERT INTO license_keys (key_hash, full_name, is_active) VALUES (?, ?, ?)",
             [hash_c, "Company C", 1]
         )
         license_c = await fetch_one(db_session, "SELECT id FROM license_keys WHERE key_hash = ?", [hash_c])

@@ -30,13 +30,13 @@ async def main():
         try:
             if DB_TYPE == "postgresql":
                 await execute_sql(db, """
-                    INSERT INTO license_keys (id, key, company_name, contact_email, is_active, max_requests_per_day, requests_today, created_at, expires_at)
+                    INSERT INTO license_keys (id, key, full_name, contact_email, is_active, max_requests_per_day, requests_today, created_at, expires_at)
                     VALUES ($1, 'test_key', 'Test Company', 'test@test.com', true, 1000, 0, NOW(), NOW() + INTERVAL '1 year')
                     ON CONFLICT (id) DO NOTHING
                 """, [license_id])
             else:
                 await execute_sql(db, """
-                    INSERT OR IGNORE INTO license_keys (id, key, company_name, contact_email, is_active, max_requests_per_day, requests_today, created_at, expires_at)
+                    INSERT OR IGNORE INTO license_keys (id, key, full_name, contact_email, is_active, max_requests_per_day, requests_today, created_at, expires_at)
                     VALUES (?, 'test_key', 'Test Company', 'test@test.com', 1, 1000, 0, datetime('now'), datetime('now', '+1 year'))
                 """, [license_id])
         except Exception as e:

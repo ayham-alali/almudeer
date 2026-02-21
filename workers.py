@@ -997,10 +997,10 @@ class MessagePoller:
                 if recipient_username:
                     async with get_db() as db:
                         # 1. Find target license holder
-                        target_license = await fetch_one(db, "SELECT id, company_name FROM license_keys WHERE username = ?", [recipient_username])
+                        target_license = await fetch_one(db, "SELECT id, full_name as company_name FROM license_keys WHERE username = ?", [recipient_username])
                         if target_license:
                             # 2. Resolve sender info for recipient view
-                            sender_license = await fetch_one(db, "SELECT username, company_name FROM license_keys WHERE id = ?", [license_id])
+                            sender_license = await fetch_one(db, "SELECT username, full_name as company_name FROM license_keys WHERE id = ?", [license_id])
                             sender_username = (sender_license["username"] if sender_license else None) or "mudeer_user"
                             sender_company = (sender_license["company_name"] if sender_license else "Al-Mudeer User")
                             
@@ -1474,7 +1474,7 @@ async def check_subscription_reminders():
                 rows = await fetch_all(
                     db,
                     """
-                    SELECT id, company_name, expires_at, contact_email
+                    SELECT id, full_name as company_name, expires_at, contact_email
                     FROM license_keys 
                     WHERE is_active = TRUE 
                     AND DATE(expires_at) = CURRENT_DATE + INTERVAL '3 days'
@@ -1486,7 +1486,7 @@ async def check_subscription_reminders():
                 rows = await fetch_all(
                     db,
                     """
-                    SELECT id, company_name, expires_at, contact_email
+                    SELECT id, full_name as company_name, expires_at, contact_email
                     FROM license_keys 
                     WHERE is_active = 1 
                     AND DATE(expires_at) = DATE('now', '+3 days')

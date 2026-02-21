@@ -56,7 +56,7 @@ async def create_text_story(
 ):
     """Create a new text-only story."""
     user_id = user.get("user_id") if user else None
-    user_name = license.get("company_name", "مستخدم")
+    user_name = license.get("full_name", "مستخدم")
     
     if user_id:
         async with get_db() as db:
@@ -94,7 +94,7 @@ async def upload_media_story(
 ):
     """Upload a media story (image/video/audio)."""
     user_id = user.get("user_id") if user else None
-    user_name = license.get("company_name", "مستخدم")
+    user_name = license.get("full_name", "مستخدم")
     
     if user_id:
         async with get_db() as db:

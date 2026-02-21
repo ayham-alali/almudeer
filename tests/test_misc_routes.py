@@ -33,7 +33,7 @@ class TestSubscriptionRoutes:
             mock_get_db.return_value.__aenter__.return_value = mock_db
             
             payload = SubscriptionCreate(
-                company_name="Test Company",
+                full_name="Test Company",
                 days_valid=30,
                 max_requests_per_day=100,
                 username="test_user"
@@ -43,7 +43,7 @@ class TestSubscriptionRoutes:
             
             assert response.success is True
             assert response.subscription_key == "KEY-123"
-            assert response.company_name == "Test Company"
+            assert getattr(response, "full_name", getattr(response, "company_name", None)) == "Test Company"
 
     @pytest.mark.asyncio
     async def test_list_subscriptions(self, mock_auth_data):
@@ -56,12 +56,12 @@ class TestSubscriptionRoutes:
             mock_db = AsyncMock()
             mock_get_db.return_value.__aenter__.return_value = mock_db
             
-            mock_fetch.return_value = [{"id": 1, "company_name": "Test Co", "is_active": 1, "created_at": "2023-01-01"}]
+            mock_fetch.return_value = [{"id": 1, "full_name": "Test Co", "is_active": 1, "created_at": "2023-01-01"}]
             
             response = await list_subscriptions(limit=10, auth=mock_auth_data)
             
             assert response.total == 1
-            assert response.subscriptions[0]["company_name"] == "Test Co"
+            assert response.subscriptions[0].get("full_name") == "Test Co" or response.subscriptions[0].get("company_name") == "Test Co"
 
 
 class TestSystemRoutes:

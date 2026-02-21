@@ -162,11 +162,11 @@ async def invite_to_call(
     if not sender_username:
         # Fallback if username not in license dict
         async with get_db() as db:
-            row = await fetch_one(db, "SELECT username, company_name FROM license_keys WHERE id = ?", [license["license_id"]])
+            row = await fetch_one(db, "SELECT username, full_name as company_name FROM license_keys WHERE id = ?", [license["license_id"]])
             sender_username = row["username"] if row else "mudeer_user"
             sender_company = row["company_name"] if row else "Al-Mudeer User"
     else:
-        sender_company = license.get("company_name", "Al-Mudeer User")
+        sender_company = license.get("full_name", "Al-Mudeer User")
 
     # 1. Find the recipient's license holder
     async with get_db() as db:
@@ -232,7 +232,7 @@ async def cancel_call(
     Signals the recipient to stop ringing.
     """
     sender_username = license.get("username") or "mudeer_user"
-    sender_company = license.get("company_name", "Al-Mudeer User")
+    sender_company = license.get("full_name", "Al-Mudeer User")
     
     async with get_db() as db:
         recipient = await fetch_one(db, "SELECT id FROM license_keys WHERE username = ?", [data.recipient_username])

@@ -81,7 +81,7 @@ async def db_session():
             CREATE TABLE IF NOT EXISTS license_keys (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 key_hash TEXT UNIQUE NOT NULL,
-                company_name TEXT NOT NULL,
+                full_name TEXT NOT NULL,
                 contact_email TEXT,
                 is_active BOOLEAN DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -132,7 +132,7 @@ async def db_session():
         key_hash = hashlib.sha256(test_key.encode()).hexdigest()
         
         await db.execute("""
-            INSERT OR IGNORE INTO license_keys (key_hash, company_name, is_active)
+            INSERT OR IGNORE INTO license_keys (key_hash, full_name, is_active)
             VALUES (?, ?, ?)
         """, (key_hash, "Test Company", 1))
         
