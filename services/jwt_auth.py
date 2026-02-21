@@ -11,9 +11,7 @@ from typing import Optional, Dict, Any, Tuple
 from dataclasses import dataclass
 
 from jose import jwt, JWTError
-from passlib.context import CryptContext
 
-from constants import TeamRoles
 from logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -119,14 +117,14 @@ def create_refresh_token(data: Dict[str, Any]) -> str:
     return jwt.encode(to_encode, config.secret_key, algorithm=config.algorithm)
 
 
-async def create_token_pair(user_id: str, license_id: int = None, role: str = TeamRoles.MEMBER) -> Dict[str, Any]:
+async def create_token_pair(user_id: str, license_id: int = None, role: str = "user") -> Dict[str, Any]:
     """
     Create both access and refresh tokens.
     
     Args:
-        user_id: User identifier (email or license key)
+        user_id: User identifier (typically license key prefix or username)
         license_id: Associated license ID
-        role: User role (admin/user)
+        role: User role (default: "user")
     
     Returns:
         Dict with 'access_token', 'refresh_token', 'jti', 'expires_at'
@@ -223,20 +221,8 @@ async def refresh_access_token(refresh_token: str) -> Optional[Dict[str, Any]]:
     return await create_token_pair(
         user_id=payload.get("sub"),
         license_id=payload.get("license_id"),
-        role=payload.get("role", TeamRoles.MEMBER),
+        role=payload.get("role", "user"),
     )
-
-
-# ============ Password Operations ============
-
-def hash_password(password: str) -> str:
-    """Hash a password using bcrypt"""
-    return pwd_context.hash(password)
-
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a password against its hash"""
-    return pwd_context.verify(plain_password, hashed_password)
 
 
 # ============ FastAPI Dependencies ============
@@ -301,7 +287,7 @@ async def get_current_user(
     return {
         "user_id": payload.get("sub"),
         "license_id": payload.get("license_id"),
-        "role": payload.get("role", TeamRoles.MEMBER),
+        "role": payload.get("role", "user"),
     }
 
 
@@ -319,28 +305,5 @@ async def get_current_user_optional(
     return {
         "user_id": payload.get("sub"),
         "license_id": payload.get("license_id"),
-        "role": payload.get("role", TeamRoles.MEMBER),
+        "role": payload.get("role", "user"),
     }
-
-
-def require_role(required_role: str):
-    """
-    Dependency factory for role-based access control.
-    
-    Usage:
-        @app.get("/admin-only")
-        async def admin_route(user: dict = Depends(require_role(TeamRoles.ADMIN))):
-            return {"access": "granted"}
-    """
-    async def role_checker(user: dict = Depends(get_current_user)) -> dict:
-        if user.get("role") != required_role:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Role '{required_role}' required",
-            )
-        return user
-    return role_checker
-
-
-# Admin shortcut
-require_admin = require_role(TeamRoles.ADMIN)

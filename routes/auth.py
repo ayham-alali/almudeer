@@ -4,23 +4,16 @@ JWT-based login, registration, and token management
 """
 
 from fastapi import APIRouter, HTTPException, status, Depends, Request
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from typing import Optional
-from datetime import datetime
 
 from services.jwt_auth import (
     create_token_pair,
     refresh_access_token,
-    hash_password,
-    verify_password,
     get_current_user,
-    require_admin,
 )
 from database import validate_license_key
-from db_helper import get_db, execute_sql, fetch_one
 from logging_config import get_logger
-from security_config import validate_password_strength
-from services.login_protection import check_account_lockout, record_failed_login, record_successful_login
 from services.security_logger import get_security_logger
 from services.token_blacklist import blacklist_token
 
@@ -31,18 +24,8 @@ router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 # ============ Request/Response Models ============
 
 class LoginRequest(BaseModel):
-    """Login with license key or email/password"""
-    license_key: Optional[str] = None
-    email: Optional[str] = None
-    password: Optional[str] = None
-
-
-class RegisterRequest(BaseModel):
-    """Register a new user account"""
-    email: EmailStr
-    password: str
-    name: str
-    license_key: str  # Must have valid license to register
+    """Login with license key"""
+    license_key: str
 
 
 class TokenResponse(BaseModel):
@@ -64,169 +47,30 @@ class RefreshRequest(BaseModel):
 @router.post("/login", response_model=TokenResponse)
 async def login(data: LoginRequest):
     """
-    Login with license key or email/password.
+    Login with license key.
     
     Returns JWT tokens for authenticated access.
     """
-    # Option 1: Login with license key (existing flow)
-    if data.license_key:
-        result = await validate_license_key(data.license_key)
-        
-        if not result.get("valid"):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid license key",
-            )
-        
-        tokens = await create_token_pair(
-            user_id=data.license_key[:20],
-            license_id=result.get("license_id"),
-            role="user",
-        )
-        
-        return TokenResponse(
-            **tokens,
-            user={
-                "license_id": result.get("license_id"),
-                "company_name": result.get("company_name"),
-            }
-        )
+    result = await validate_license_key(data.license_key)
     
-    # Option 2: Login with email/password
-    if data.email and data.password:
-        security_logger = get_security_logger()
-        
-        # Check if account is locked
-        is_locked, remaining_seconds = check_account_lockout(data.email)
-        if is_locked:
-            security_logger.log_login_failed(data.email, reason="Account locked")
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Account locked. Try again in {remaining_seconds // 60 + 1} minutes.",
-            )
-        
-        # Look up user by email
-        async with get_db() as db:
-            user = await fetch_one(
-                db,
-                "SELECT * FROM users WHERE email = ?",
-                [data.email]
-            )
-        
-        if not user:
-            record_failed_login(data.email)
-            security_logger.log_login_failed(data.email, reason="User not found")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid email or password",
-            )
-        
-        if not verify_password(data.password, user.get("password_hash", "")):
-            attempts, is_now_locked = record_failed_login(data.email)
-            if is_now_locked:
-                security_logger.log_account_locked(data.email, attempts=attempts)
-            else:
-                security_logger.log_login_failed(data.email, reason="Wrong password")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid email or password",
-            )
-        
-        # Successful login - clear failed attempts
-        record_successful_login(data.email)
-        security_logger.log_login_success(data.email)
-        
-        tokens = await create_token_pair(
-            user_id=user.get("email"),
-            license_id=user.get("license_key_id"),
-            role=user.get("role", "user"),
-        )
-        
-        return TokenResponse(
-            **tokens,
-            user={
-                "email": user.get("email"),
-                "name": user.get("name"),
-                "role": user.get("role"),
-            }
-        )
-    
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail="Provide license_key or email/password",
-    )
-
-
-@router.post("/register", response_model=TokenResponse)
-async def register(data: RegisterRequest):
-    """
-    Register a new user account.
-    
-    Requires a valid license key to register.
-    """
-    # SECURITY: Validate password strength first
-    is_valid, error_message = validate_password_strength(data.password)
-    if not is_valid:
+    if not result.get("valid"):
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_message,
-        )
-    
-    # Validate license key
-    license_result = await validate_license_key(data.license_key)
-    if not license_result.get("valid"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid license key",
         )
     
-    # Check if email already exists
-    async with get_db() as db:
-        existing = await fetch_one(
-            db,
-            "SELECT id FROM users WHERE email = ?",
-            [data.email]
-        )
-        
-        if existing:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered",
-            )
-        
-        # Create user
-        password_hash = hash_password(data.password)
-        await execute_sql(
-            db,
-            """
-            INSERT INTO users (email, password_hash, name, license_key_id, role, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            [data.email, password_hash, data.name, license_result.get("license_id"), "user", datetime.utcnow().isoformat()]
-        )
-        
-        # Also update license_keys username if it's currently NULL
-        await execute_sql(
-            db,
-            "UPDATE license_keys SET username = ? WHERE id = ? AND (username IS NULL OR username = '')",
-            [data.email, license_result.get("license_id")]
-        )
-    
-    # Create tokens
     tokens = await create_token_pair(
-        user_id=data.email,
-        license_id=license_result.get("license_id"),
+        user_id=data.license_key[:20],
+        license_id=result.get("license_id"),
         role="user",
     )
-    
-    logger.info(f"New user registered: {data.email}")
     
     return TokenResponse(
         **tokens,
         user={
-            "email": data.email,
-            "name": data.name,
-            "role": "user",
+            "license_id": result.get("license_id"),
+            "company_name": result.get("company_name"),
+            "username": result.get("username"),
         }
     )
 
