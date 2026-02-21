@@ -28,26 +28,42 @@ async def init_database():
         if DB_TYPE == "postgresql":
             try:
                 await _init_postgresql_tables(conn)
-                # Add new columns if they don't exist (for existing databases)
-                await execute_sql(conn, """
-                    ALTER TABLE license_keys 
-                    ADD COLUMN IF NOT EXISTS full_name VARCHAR(255),
-                    ADD COLUMN IF NOT EXISTS profile_image_url TEXT,
-                    ADD COLUMN IF NOT EXISTS referral_code VARCHAR(50) UNIQUE,
-                    ADD COLUMN IF NOT EXISTS referred_by_id INTEGER REFERENCES license_keys(id),
-                    ADD COLUMN IF NOT EXISTS is_trial BOOLEAN DEFAULT FALSE,
-                    ADD COLUMN IF NOT EXISTS referral_count INTEGER DEFAULT 0,
-                    ADD COLUMN IF NOT EXISTS username VARCHAR(255) UNIQUE,
-                    ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP,
-                    ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 1
-                """)
-                # Rename company_name to full_name if it exists
-                try:
-                    await execute_sql(conn, "ALTER TABLE license_keys RENAME COLUMN company_name TO full_name")
-                except Exception: pass
             except Exception as e:
                 from logging_config import get_logger
-                get_logger(__name__).debug(f"PostgreSQL migration note: {e}")
+                get_logger(__name__).debug(f"PostgreSQL tables already exist or partial init: {e}")
+
+            # Add new columns individually to avoid one failure blocking others
+            from logging_config import get_logger
+            logger = get_logger(__name__)
+            
+            # 1. Handle Rename with data preservation
+            try:
+                await execute_sql(conn, "ALTER TABLE license_keys RENAME COLUMN company_name TO full_name")
+                logger.info("Successfully renamed column company_name to full_name in license_keys")
+            except Exception:
+                # If rename fails, ensure full_name exists
+                try:
+                    await execute_sql(conn, "ALTER TABLE license_keys ADD COLUMN IF NOT EXISTS full_name VARCHAR(255)")
+                except Exception as e:
+                    logger.debug(f"Migration note: full_name column check: {e}")
+
+            # 2. Add other missing columns
+            migrations = [
+                "ALTER TABLE license_keys ADD COLUMN IF NOT EXISTS profile_image_url TEXT",
+                "ALTER TABLE license_keys ADD COLUMN IF NOT EXISTS referral_code VARCHAR(50) UNIQUE",
+                "ALTER TABLE license_keys ADD COLUMN IF NOT EXISTS referred_by_id INTEGER REFERENCES license_keys(id)",
+                "ALTER TABLE license_keys ADD COLUMN IF NOT EXISTS is_trial BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE license_keys ADD COLUMN IF NOT EXISTS referral_count INTEGER DEFAULT 0",
+                "ALTER TABLE license_keys ADD COLUMN IF NOT EXISTS username VARCHAR(255) UNIQUE",
+                "ALTER TABLE license_keys ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP",
+                "ALTER TABLE license_keys ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 1"
+            ]
+            
+            for m in migrations:
+                try:
+                    await execute_sql(conn, m)
+                except Exception as e:
+                    logger.debug(f"Migration item skipped: {m} - {e}")
         else:
             await _init_sqlite_tables(conn)
             # Migrations for existing SQLite tables
