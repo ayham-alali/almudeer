@@ -4,7 +4,7 @@ Easy subscription key generation and management for clients
 """
 
 import os
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends, Header, UploadFile, File
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, List
 from datetime import datetime, timedelta
@@ -87,7 +87,7 @@ class SubscriptionUpdate(BaseModel):
     """Request to update subscription"""
     full_name: Optional[str] = Field(None, description="الاسم الكامل الجديد", min_length=2, max_length=200)
     is_active: Optional[bool] = None
-    remaining_days: Optional[int] = Field(None, description="ضبط الأيام المتبقية", ge=0, le=3650)
+    days_valid_extension: Optional[int] = Field(None, description="زيادة أو تقليل أيام الصلاحية")
     profile_image_url: Optional[str] = None
     notes: Optional[str] = Field(None, max_length=500)
     username: Optional[str] = Field(None, description="اسم المستخدم الجديد", min_length=2, max_length=50)
@@ -354,9 +354,18 @@ async def update_subscription(
                 params.append(update.is_active)
                 param_index += 1
             
-            if update.remaining_days is not None:
-                # Set dynamic expiration date based on remaining days
-                new_expires = datetime.now() + timedelta(days=update.remaining_days)
+            if update.days_valid_extension is not None and update.days_valid_extension != 0:
+                # Add/subtract days to the existing expiration date
+                current_expires = current.get("expires_at")
+                if current_expires:
+                    if isinstance(current_expires, str):
+                        try:
+                            current_expires = datetime.fromisoformat(current_expires.replace('Z', '+00:00'))
+                        except ValueError:
+                            current_expires = datetime.now()
+                    new_expires = current_expires + timedelta(days=update.days_valid_extension)
+                else:
+                    new_expires = datetime.now() + timedelta(days=update.days_valid_extension)
                 
                 if DB_TYPE == "postgresql":
                     updates.append(f"expires_at = ${param_index}")
@@ -483,6 +492,66 @@ async def regenerate_subscription_key(
     except Exception as e:
         logger.error(f"Error regenerating license key: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="حدث خطأ أثناء إعادة إنشاء المفتاح")
+
+
+@router.post("/{license_id}/upload-avatar")
+async def upload_subscription_avatar(
+    license_id: int,
+    file: UploadFile = File(...),
+    auth: dict = Depends(verify_admin)
+):
+    """Upload avatar for a subscription user (Admin Only)"""
+    if not auth["is_admin"]:
+        raise HTTPException(status_code=403, detail="هذا الإجراء متاح لمدير النظام فقط")
+    from services.file_storage_service import get_file_storage
+    from db_helper import get_db, execute_sql, commit_db, fetch_one
+    from database import DB_TYPE
+    from logging_config import get_logger
+    
+    logger = get_logger(__name__)
+    file_storage = get_file_storage()
+    
+    try:
+        async with get_db() as db:
+            # Check if subscription exists
+            row = await fetch_one(db, "SELECT * FROM license_keys WHERE id = ?", [license_id])
+            if not row:
+                raise HTTPException(status_code=404, detail="الاشتراك غير موجود")
+            
+            # Read file content
+            content = await file.read()
+            content_type = file.content_type or "image/jpeg"
+            
+            if not content_type.startswith("image/"):
+                raise HTTPException(status_code=400, detail="يجب أن يكون الملف المرفوع صورة")
+                
+            # Upload using storage service
+            relative_path, public_url = file_storage.save_file(
+                content=content,
+                filename=file.filename,
+                mime_type=content_type,
+                subfolder="avatars"
+            )
+            
+            # Update database
+            if DB_TYPE == "postgresql":
+                await execute_sql(db, "UPDATE license_keys SET profile_image_url = $1 WHERE id = $2", [public_url, license_id])
+            else:
+                await execute_sql(db, "UPDATE license_keys SET profile_image_url = ? WHERE id = ?", [public_url, license_id])
+                
+            await commit_db(db)
+            
+            return {
+                "success": True,
+                "profile_image_url": public_url,
+                "message": "تم رفع الصورة بنجاح"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading avatar: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"حدث خطأ أثناء رفع الصورة: {str(e)}")
 
 
 @router.delete("/{license_id}")
