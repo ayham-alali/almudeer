@@ -135,12 +135,13 @@ def _get_access_token() -> Optional[str]:
 
 
 async def ensure_fcm_tokens_table():
-    """Ensure fcm_tokens table exists."""
-    from db_helper import get_db, execute_sql, commit_db, DB_TYPE
+    """Ensure fcm_tokens table exists and has all required columns."""
+    from db_helper import get_db, execute_sql, fetch_all, commit_db, DB_TYPE
     from db_pool import ID_PK, TIMESTAMP_NOW
     
     async with get_db() as db:
         try:
+            # 1. Base table creation (user_id and device_id included for new tables)
             await execute_sql(db, f"""
                 CREATE TABLE IF NOT EXISTS fcm_tokens (
                     id {ID_PK},
@@ -156,62 +157,42 @@ async def ensure_fcm_tokens_table():
                 )
             """)
             
-            await execute_sql(db, """
-                CREATE INDEX IF NOT EXISTS idx_fcm_token
-                ON fcm_tokens(token)
-            """)
+            # 2. Migration: Check and add missing columns if table already existed
+            has_user_id = False
+            has_device_id = False
             
-            await execute_sql(db, """
-                CREATE INDEX IF NOT EXISTS idx_fcm_license
-                ON fcm_tokens(license_key_id) 
-            """)
+            if DB_TYPE == "postgresql":
+                cols = await fetch_all(db, """
+                    SELECT column_name FROM information_schema.columns 
+                    WHERE table_name = 'fcm_tokens'
+                """)
+                for col in cols:
+                    if col["column_name"] == "user_id": has_user_id = True
+                    if col["column_name"] == "device_id": has_device_id = True
+            else:
+                cols = await fetch_all(db, "PRAGMA table_info(fcm_tokens)")
+                for col in cols:
+                    if col["name"] == "user_id": has_user_id = True
+                    if col["name"] == "device_id": has_device_id = True
+                    
+            if not has_user_id:
+                logger.info("FCM: Adding missing 'user_id' column to fcm_tokens")
+                await execute_sql(db, "ALTER TABLE fcm_tokens ADD COLUMN user_id TEXT")
+                
+            if not has_device_id:
+                logger.info("FCM: Adding missing 'device_id' column to fcm_tokens")
+                await execute_sql(db, "ALTER TABLE fcm_tokens ADD COLUMN device_id TEXT")
 
-            await execute_sql(db, """
-                CREATE INDEX IF NOT EXISTS idx_fcm_user
-                ON fcm_tokens(user_id) 
-            """)
-            
-            await execute_sql(db, """
-                CREATE INDEX IF NOT EXISTS idx_fcm_device_id
-                ON fcm_tokens(device_id)
-            """)
+            # 3. Ensure Indexes
+            await execute_sql(db, "CREATE INDEX IF NOT EXISTS idx_fcm_token ON fcm_tokens(token)")
+            await execute_sql(db, "CREATE INDEX IF NOT EXISTS idx_fcm_license ON fcm_tokens(license_key_id)")
+            await execute_sql(db, "CREATE INDEX IF NOT EXISTS idx_fcm_user ON fcm_tokens(user_id)")
+            await execute_sql(db, "CREATE INDEX IF NOT EXISTS idx_fcm_device_id ON fcm_tokens(device_id)")
 
             await commit_db(db)
             logger.info("FCM: fcm_tokens table verified")
         except Exception as e:
-            logger.error(f"FCM: Verify table failed: {e}")
-
-async def ensure_device_id_column():
-    """Ensure device_id column exists (migration helper)."""
-    from db_helper import get_db, execute_sql, commit_db, DB_TYPE
-    
-    async with get_db() as db:
-        try:
-            if DB_TYPE == "postgresql":
-                await execute_sql(db, "ALTER TABLE fcm_tokens ADD COLUMN IF NOT EXISTS device_id TEXT")
-                await execute_sql(db, "ALTER TABLE fcm_tokens ADD COLUMN IF NOT EXISTS user_id TEXT")
-                await execute_sql(db, "CREATE INDEX IF NOT EXISTS idx_fcm_device_id ON fcm_tokens(device_id)")
-                await execute_sql(db, "CREATE INDEX IF NOT EXISTS idx_fcm_user ON fcm_tokens(user_id)")
-            else:
-                try:
-                    await execute_sql(db, "ALTER TABLE fcm_tokens ADD COLUMN device_id TEXT")
-                except:
-                    pass
-                try:
-                    await execute_sql(db, "ALTER TABLE fcm_tokens ADD COLUMN user_id TEXT")
-                except:
-                    pass
-                try:
-                    await execute_sql(db, "CREATE INDEX IF NOT EXISTS idx_fcm_device_id ON fcm_tokens(device_id)")
-                except:
-                    pass
-                try:
-                    await execute_sql(db, "CREATE INDEX IF NOT EXISTS idx_fcm_user ON fcm_tokens(user_id)")
-                except:
-                    pass
-            await commit_db(db)
-        except Exception as e:
-            logger.error(f"FCM: Failed to add columns: {e}")
+            logger.error(f"FCM: Schema verification failed: {e}")
 
 
 async def save_fcm_token(
