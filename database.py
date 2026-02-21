@@ -31,6 +31,8 @@ async def init_database():
                 # Add new columns if they don't exist (for existing databases)
                 await execute_sql(conn, """
                     ALTER TABLE license_keys 
+                    ADD COLUMN IF NOT EXISTS full_name VARCHAR(255),
+                    ADD COLUMN IF NOT EXISTS profile_image_url TEXT,
                     ADD COLUMN IF NOT EXISTS referral_code VARCHAR(50) UNIQUE,
                     ADD COLUMN IF NOT EXISTS referred_by_id INTEGER REFERENCES license_keys(id),
                     ADD COLUMN IF NOT EXISTS is_trial BOOLEAN DEFAULT FALSE,
@@ -39,17 +41,29 @@ async def init_database():
                     ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP,
                     ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 1
                 """)
+                # Rename company_name to full_name if it exists
+                try:
+                    await execute_sql(conn, "ALTER TABLE license_keys RENAME COLUMN company_name TO full_name")
+                except Exception: pass
             except Exception as e:
                 from logging_config import get_logger
-                get_logger(__name__).debug(f"PostgreSQL migration note (might already exist): {e}")
+                get_logger(__name__).debug(f"PostgreSQL migration note: {e}")
         else:
             await _init_sqlite_tables(conn)
             # Migrations for existing SQLite tables
             try:
+                await execute_sql(conn, "ALTER TABLE license_keys ADD COLUMN full_name TEXT")
+            except: pass
+            try:
+                # Copy data from company_name to full_name if needed
+                await execute_sql(conn, "UPDATE license_keys SET full_name = company_name WHERE full_name IS NULL")
+            except: pass
+            try:
+                await execute_sql(conn, "ALTER TABLE license_keys ADD COLUMN profile_image_url TEXT")
+            except: pass
+            try:
                 await execute_sql(conn, "ALTER TABLE license_keys ADD COLUMN token_version INTEGER DEFAULT 1")
-            except Exception as e:
-                from logging_config import get_logger
-                get_logger(__name__).debug(f"SQLite migration note (might already exist): {e}")
+            except: pass
             await commit_db(conn)
     
     # === Startup migration: Backfill username for all license_keys ===
@@ -105,13 +119,13 @@ async def _init_sqlite_tables(db):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             key_hash TEXT UNIQUE NOT NULL,
             license_key_encrypted TEXT,
-            company_name TEXT NOT NULL,
+            full_name TEXT NOT NULL,
+            profile_image_url TEXT,
             contact_email TEXT,
             username TEXT UNIQUE,
             is_active BOOLEAN DEFAULT TRUE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             expires_at TIMESTAMP,
-            max_requests_per_day INTEGER DEFAULT 100,
             requests_today INTEGER DEFAULT 0,
             last_request_date DATE,
             last_seen_at TIMESTAMP,
@@ -246,13 +260,13 @@ async def _init_postgresql_tables(conn):
             id SERIAL PRIMARY KEY,
             key_hash VARCHAR(255) UNIQUE NOT NULL,
             license_key_encrypted TEXT,
-            company_name VARCHAR(255) NOT NULL,
+            full_name VARCHAR(255) NOT NULL,
+            profile_image_url TEXT,
             contact_email VARCHAR(255),
             username VARCHAR(255) UNIQUE,
             is_active BOOLEAN DEFAULT TRUE,
             created_at TIMESTAMP DEFAULT NOW(),
             expires_at TIMESTAMP,
-            max_requests_per_day INTEGER DEFAULT 100,
             requests_today INTEGER DEFAULT 0,
             last_request_date DATE,
             referral_code VARCHAR(50) UNIQUE,
@@ -388,9 +402,8 @@ def hash_license_key(key: str) -> str:
 
 
 async def generate_license_key(
-    company_name: str,
+    full_name: str,
     days_valid: int = 365,
-    max_requests: int = 50,
     is_trial: bool = False,
     referred_by_id: Optional[int] = None,
     username: Optional[str] = None
@@ -414,28 +427,23 @@ async def generate_license_key(
     async with get_db() as db:
         try:
             if DB_TYPE == "postgresql":
-                # Senior Pattern: Atomic transaction for insert + referrer update
-                # Note: db handles the connection. We use a transaction context if possible, 
-                # but for now we'll use a safer multi-statement approach if supported 
-                # or just ensure consistency.
-                
                 # Fetch row to check for referral count increment atomicity
                 row = await fetch_one(db, """
-                    INSERT INTO license_keys (key_hash, license_key_encrypted, company_name, expires_at, max_requests_per_day, is_trial, referred_by_id, referral_code, username)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO license_keys (key_hash, license_key_encrypted, full_name, expires_at, is_trial, referred_by_id, referral_code, username)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     RETURNING id
-                """, [key_hash, encrypted_key, company_name, expires_at, max_requests, is_trial, referred_by_id, referral_code, username])
+                """, [key_hash, encrypted_key, full_name, expires_at, is_trial, referred_by_id, referral_code, username])
                 
                 # If referred, increment referrer's count
                 if referred_by_id and row:
                     await execute_sql(db, "UPDATE license_keys SET referral_count = referral_count + 1 WHERE id = ?", [referred_by_id])
                 
-                return raw_key # PG is auto-committed per execute unless in transaction() block
+                return raw_key
             else:
                 cursor = await execute_sql(db, """
-                    INSERT INTO license_keys (key_hash, license_key_encrypted, company_name, expires_at, max_requests_per_day, is_trial, referred_by_id, referral_code, username)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (key_hash, encrypted_key, company_name, expires_at.isoformat(), max_requests, is_trial, referred_by_id, referral_code, username))
+                    INSERT INTO license_keys (key_hash, license_key_encrypted, full_name, expires_at, is_trial, referred_by_id, referral_code, username)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (key_hash, encrypted_key, full_name, expires_at.isoformat(), is_trial, referred_by_id, referral_code, username))
                 
                 if referred_by_id:
                     await execute_sql(db, "UPDATE license_keys SET referral_count = referral_count + 1 WHERE id = ?", [referred_by_id])
@@ -558,16 +566,15 @@ async def validate_license_key(key: str) -> dict:
     result = {
         "valid": True,
         "license_id": row_dict["id"],
-        "company_name": row_dict["company_name"],
+        "full_name": row_dict.get("full_name") or row_dict.get("company_name"),
+        "profile_image_url": row_dict.get("profile_image_url"),
         "created_at": str(row_dict["created_at"]) if row_dict.get("created_at") else None,
         "expires_at": expires_at_str,
         "is_trial": bool(row_dict.get("is_trial")),
         "referral_code": row_dict.get("referral_code"),
         "referral_count": row_dict.get("referral_count", 0),
         "username": row_dict.get("username"),
-        "requests_remaining": row_dict.get("max_requests_per_day", 0) - (
-            row_dict.get("requests_today", 0) if last_request_date == today else 0
-        )
+        "requests_remaining": 999999 # Unlimited
     }
     
     # Cache the result (5 minutes TTL)
@@ -669,9 +676,8 @@ async def create_demo_license():
     if count == 0:
         # Create demo license
         demo_key = await generate_license_key(
-            company_name="شركة تجريبية",
-            days_valid=365,
-            max_requests=1000
+            full_name="مستخدم تجريبي",
+            days_valid=365
         )
         print(f"Demo License Key Created: {demo_key}")
         return demo_key

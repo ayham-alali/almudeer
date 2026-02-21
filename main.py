@@ -87,9 +87,11 @@ try:
         purchases_router, 
         library_router,
         stories_router,
-        tasks
+        tasks,
+        global_assets
     )
     from routes.tasks import router as tasks_router
+    from routes.global_assets import router as global_assets_router
     # Reactions router removed
     logger.info("Successfully imported modular routes")
 except ImportError as e:
@@ -419,6 +421,7 @@ app.include_router(library_router)         # Library of Everything
 app.include_router(tasks_router)           # Task Management
 app.include_router(subscription_router)    # Subscription Key Management
 app.include_router(stories_router)         # Stories Feature
+app.include_router(global_assets_router)   # Admin Global Assets
 
 # JWT Authentication routes
 from routes.auth import router as auth_router
@@ -535,7 +538,7 @@ async def verify_license(x_license_key: str = Header(None, alias="X-License-Key"
             message_ar="مفتاح الاشتراك غير صالح أو منتهي الصلاحية"
         )
     
-    logger.debug(f"License validated for company: {result.get('company_name')}")
+    logger.debug(f"License validated for user: {result.get('full_name')}")
     return result
 
 # ...
@@ -562,12 +565,11 @@ async def create_license(data: LicenseKeyCreate, _: None = Depends(verify_admin)
     Returns:
         Generated license key
     """
-    logger.info(f"Creating license for company: {data.company_name}")
+    logger.info(f"Creating license for user: {data.full_name}")
     key = await generate_license_key(
-        company_name=data.company_name,
+        full_name=data.full_name,
         contact_email=data.contact_email,
-        days_valid=data.days_valid,
-        max_requests=data.max_requests_per_day
+        days_valid=data.days_valid
     )
     logger.info(f"License created: {key[:20]}...")
     return {"success": True, "license_key": key}

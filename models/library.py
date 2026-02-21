@@ -23,8 +23,8 @@ async def get_library_items(
     limit: int = 50,
     offset: int = 0
 ) -> List[dict]:
-    """Get library items for a license, optionally filtered by customer, type or category."""
-    query = "SELECT * FROM library_items WHERE license_key_id = ? AND deleted_at IS NULL"
+    """Get library items for a license + global items (0), optionally filtered by customer, type or category."""
+    query = "SELECT * FROM library_items WHERE (license_key_id = ? OR license_key_id = 0) AND deleted_at IS NULL"
     params = [license_id]
     
     if customer_id is not None:
@@ -59,8 +59,8 @@ async def get_library_items(
         return [dict(row) for row in rows]
 
 async def get_library_item(license_id: int, item_id: int, user_id: Optional[str] = None) -> Optional[dict]:
-    """Get a specific library item."""
-    query = "SELECT * FROM library_items WHERE id = ? AND license_key_id = ? AND deleted_at IS NULL"
+    """Get a specific library item (including global)."""
+    query = "SELECT * FROM library_items WHERE id = ? AND (license_key_id = ? OR license_key_id = 0) AND deleted_at IS NULL"
     params = [item_id, license_id]
     
     if user_id:

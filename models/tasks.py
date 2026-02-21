@@ -96,9 +96,10 @@ async def init_tasks_table():
         print("Tasks table initialized")
 
 async def get_tasks(license_id: int, since: Optional[datetime] = None) -> List[dict]:
-    """Get all tasks for a license, optionally since a specific time"""
+    """Get all tasks for a license + global tasks (license_id 0), optionally since a specific time"""
     async with get_db() as db:
-        query = "SELECT * FROM tasks WHERE license_key_id = ?"
+        # Include license_id and global (0)
+        query = "SELECT * FROM tasks WHERE (license_key_id = ? OR license_key_id = 0)"
         params = [license_id]
         
         if since:
@@ -111,11 +112,11 @@ async def get_tasks(license_id: int, since: Optional[datetime] = None) -> List[d
         return [_parse_task_row(dict(row)) for row in rows]
 
 async def get_task(license_id: int, task_id: str) -> Optional[dict]:
-    """Get a specific task"""
+    """Get a specific task (check both license and global)"""
     async with get_db() as db:
         row = await fetch_one(db, """
             SELECT * FROM tasks 
-            WHERE license_key_id = ? AND id = ?
+            WHERE (license_key_id = ? OR license_key_id = 0) AND id = ?
         """, (license_id, task_id))
         return _parse_task_row(dict(row)) if row else None
 

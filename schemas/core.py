@@ -18,19 +18,17 @@ class LicenseKeyValidation(BaseModel):
 class LicenseKeyResponse(BaseModel):
     """Response for license key validation"""
     valid: bool
-    company_name: Optional[str] = None
+    full_name: Optional[str] = None
     created_at: Optional[str] = None
     expires_at: Optional[str] = None
-    requests_remaining: Optional[int] = None
     error: Optional[str] = None
 
 
 class LicenseKeyCreate(BaseModel):
     """Request to create a new license key (admin only)"""
-    company_name: str = Field(..., description="اسم الشركة")
+    full_name: str = Field(..., description="الاسم الكامل")
     contact_email: Optional[str] = Field(None, description="البريد الإلكتروني")
     days_valid: int = Field(365, description="مدة الصلاحية بالأيام")
-    max_requests_per_day: int = Field(100, description="الحد الأقصى للطلبات اليومية")
 
 
 # ============ Message Processing Schemas ============

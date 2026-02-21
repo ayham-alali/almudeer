@@ -61,10 +61,8 @@ async def verify_admin(
 
 class SubscriptionCreate(BaseModel):
     """Request to create a new subscription"""
-    company_name: str = Field(..., description="اسم الشركة", min_length=2, max_length=200)
-    contact_phone: Optional[str] = Field(None, description="رقم الهاتف")
+    full_name: str = Field(..., description="الاسم الكامل", min_length=2, max_length=200)
     days_valid: int = Field(365, description="مدة الصلاحية بالأيام", ge=1, le=3650)
-    max_requests_per_day: int = Field(50, description="الحد الأقصى للطلبات اليومية")
     is_trial: bool = Field(False, description="هل هذا اشتراك تجريبي؟")
     referred_by_code: Optional[str] = Field(None, description="كود الإحالة (اختياري)")
     username: str = Field(..., description="اسم المستخدم الفريد", min_length=2, max_length=50)
@@ -74,9 +72,8 @@ class SubscriptionResponse(BaseModel):
     """Response with subscription details"""
     success: bool
     subscription_key: str
-    company_name: str
+    full_name: str
     expires_at: str
-    max_requests_per_day: int
     message: str
 
 
@@ -88,10 +85,10 @@ class SubscriptionListResponse(BaseModel):
 
 class SubscriptionUpdate(BaseModel):
     """Request to update subscription"""
-    company_name: Optional[str] = Field(None, description="اسم الشركة الجديد", min_length=2, max_length=200)
+    full_name: Optional[str] = Field(None, description="الاسم الكامل الجديد", min_length=2, max_length=200)
     is_active: Optional[bool] = None
-    max_requests_per_day: Optional[int] = Field(None, ge=10, le=100000)
-    days_valid_extension: Optional[int] = Field(None, description="إضافة أيام للصلاحية", ge=0, le=3650)
+    remaining_days: Optional[int] = Field(None, description="ضبط الأيام المتبقية", ge=0, le=3650)
+    profile_image_url: Optional[str] = None
     notes: Optional[str] = Field(None, max_length=500)
     username: Optional[str] = Field(None, description="اسم المستخدم الجديد", min_length=2, max_length=50)
 
@@ -103,9 +100,9 @@ async def check_username_availability(username: str):
     """Check if a username exists and return user info"""
     from db_helper import get_db, fetch_one
     async with get_db() as db:
-        row = await fetch_one(db, "SELECT company_name FROM license_keys WHERE username = ?", [username])
+        row = await fetch_one(db, "SELECT full_name FROM license_keys WHERE username = ?", [username])
         if row:
-            return {"exists": True, "company_name": row["company_name"]}
+            return {"exists": True, "full_name": row["full_name"]}
         return {"exists": False}
 
 @router.post("/create", response_model=SubscriptionResponse)
@@ -141,9 +138,8 @@ async def create_subscription(
 
         # Generate the subscription key
         key = await generate_license_key(
-            company_name=subscription.company_name,
+            full_name=subscription.full_name,
             days_valid=subscription.days_valid,
-            max_requests=subscription.max_requests_per_day,
             is_trial=subscription.is_trial,
             referred_by_id=referred_by_id,
             username=subscription.username
@@ -152,18 +148,14 @@ async def create_subscription(
         # Calculate expiration date
         expires_at = datetime.now() + timedelta(days=subscription.days_valid)
         
-        # Save additional metadata if needed (contact_phone, notes)
-        # This could be stored in a separate table or as JSON in license_keys
-        
-        logger.info(f"Created subscription for {subscription.company_name}: {key[:20]}...")
+        logger.info(f"Created subscription for {subscription.full_name}: {key[:20]}...")
         
         return SubscriptionResponse(
             success=True,
             subscription_key=key,
-            company_name=subscription.company_name,
+            full_name=subscription.full_name,
             expires_at=expires_at.isoformat(),
-            max_requests_per_day=subscription.max_requests_per_day,
-            message=f"تم إنشاء اشتراك بنجاح لـ {subscription.company_name}"
+            message=f"تم إنشاء اشتراك بنجاح لـ {subscription.full_name}"
         )
     
     except Exception as e:
@@ -193,7 +185,7 @@ async def list_subscriptions(
         
         from db_helper import get_db, fetch_all
         async with get_db() as db:
-            query = "SELECT id, company_name, contact_email, username, is_active, created_at, expires_at, max_requests_per_day, requests_today, last_request_date, is_trial, referral_code, referral_count FROM license_keys"
+            query = "SELECT id, full_name, contact_email, username, is_active, created_at, expires_at, requests_today, last_request_date, is_trial, referral_code, referral_count, profile_image_url FROM license_keys"
             params = []
             
             if active_only:
@@ -346,12 +338,12 @@ async def update_subscription(
             params = []
             param_index = 1
             
-            if update.company_name is not None:
+            if update.full_name is not None:
                 if DB_TYPE == "postgresql":
-                    updates.append(f"company_name = ${param_index}")
+                    updates.append(f"full_name = ${param_index}")
                 else:
-                    updates.append("company_name = ?")
-                params.append(update.company_name)
+                    updates.append("full_name = ?")
+                params.append(update.full_name)
                 param_index += 1
 
             if update.is_active is not None:
@@ -362,25 +354,9 @@ async def update_subscription(
                 params.append(update.is_active)
                 param_index += 1
             
-            if update.max_requests_per_day is not None:
-                if DB_TYPE == "postgresql":
-                    updates.append(f"max_requests_per_day = ${param_index}")
-                else:
-                    updates.append("max_requests_per_day = ?")
-                params.append(update.max_requests_per_day)
-                param_index += 1
-            
-            if update.days_valid_extension is not None and update.days_valid_extension > 0:
-                # Extend expiration date
-                if current.get("expires_at"):
-                    if isinstance(current["expires_at"], str):
-                        current_expires = datetime.fromisoformat(current["expires_at"])
-                    else:
-                        current_expires = current["expires_at"]
-                else:
-                    current_expires = datetime.now()
-                
-                new_expires = current_expires + timedelta(days=update.days_valid_extension)
+            if update.remaining_days is not None:
+                # Set dynamic expiration date based on remaining days
+                new_expires = datetime.now() + timedelta(days=update.remaining_days)
                 
                 if DB_TYPE == "postgresql":
                     updates.append(f"expires_at = ${param_index}")
@@ -388,6 +364,14 @@ async def update_subscription(
                 else:
                     updates.append("expires_at = ?")
                     params.append(new_expires.isoformat())
+                param_index += 1
+            
+            if update.profile_image_url is not None:
+                if DB_TYPE == "postgresql":
+                    updates.append(f"profile_image_url = ${param_index}")
+                else:
+                    updates.append("profile_image_url = ?")
+                params.append(update.profile_image_url)
                 param_index += 1
             
             if update.username is not None:
