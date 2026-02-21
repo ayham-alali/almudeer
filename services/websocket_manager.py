@@ -821,3 +821,18 @@ async def broadcast_task_sync(license_id: int):
         event="task_sync",
         data={"timestamp": datetime.utcnow().isoformat()}
     ))
+
+
+async def broadcast_global_sync(event_name: str):
+    """
+    Broadcast a signal to all connected clients across all licenses.
+    Used for global assets like global tasks and global library items.
+    """
+    manager = get_websocket_manager()
+    
+    # We want to send this to all active connections
+    # The manager has a broadcast method for this
+    await manager.broadcast(WebSocketMessage(
+        event=event_name,
+        data={"timestamp": datetime.utcnow().isoformat(), "global": True}
+    ))
