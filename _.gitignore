@@ -43,10 +43,6 @@ mobile-app/build/
 # Admin Next.js build and dependencies
 admin/
 
-# Generated documentation/report outputs
-ReadMe/
-pdf/
-
 # Debug files
 *.log
 *.tmp
