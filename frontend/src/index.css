@@ -1,0 +1,9 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans Arabic", ui-sans-serif, system-ui, sans-serif;
+  --spacing-48: 48px;
+  --radius-12: 12px;
+}
+
+@custom-variant dark (&:is(.dark *));

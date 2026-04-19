@@ -1,3 +1,0 @@
-"""
-Al-Mudeer Test Package
-"""

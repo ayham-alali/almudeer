@@ -1,5 +1,0 @@
-# Railway configuration for Almudeer Monorepo
-# This tells Railway to build from the backend/ folder
-
-[build]
-root = "backend"

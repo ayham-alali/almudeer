@@ -1,0 +1,177 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// 1. User
+model User {
+  id             String    @id @default(uuid()) @db.Uuid
+  fullName       String
+  username       String    @unique
+  email          String    @unique
+  passwordHash   String
+  avatarUrl      String?
+  status         UserStatus @default(PENDING)
+  trialEndsAt    DateTime?
+  followersCount Int       @default(0)
+  followingCount Int       @default(0)
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  tasks                 Task[]
+  notes                 Note[]
+  customers             Customer[]
+  systemTaskLogs        SystemTaskLog[]
+  sharedResourcesOwned  SharedResource[] @relation("ResourceOwner")
+  sharedResourcesShared SharedResource[] @relation("ResourceSharedWith")
+}
+
+enum UserStatus {
+  PENDING
+  ACTIVE
+  EXPIRED
+}
+
+// 2. Task
+model Task {
+  id          String        @id @default(uuid()) @db.Uuid
+  title       String
+  description String?       @db.Text
+  ownerId     String        @db.Uuid
+  owner       User          @relation(fields: [ownerId], references: [id])
+  priority    TaskPriority  @default(MEDIUM)
+  status      TaskStatus    @default(TODO)
+  dueDate     DateTime?
+  isRecurring RecurringType @default(NONE)
+  alarmEnabled Boolean      @default(false)
+  
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  deletedAt   DateTime?
+}
+
+enum TaskPriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum RecurringType {
+  NONE
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+// 3. Note
+model Note {
+  id          String   @id @default(uuid()) @db.Uuid
+  title       String
+  content     String?  @db.Text
+  ownerId     String   @db.Uuid
+  owner       User     @relation(fields: [ownerId], references: [id])
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+}
+
+// 4. Customer
+model Customer {
+  id                String   @id @default(uuid()) @db.Uuid
+  name              String
+  phone             String?
+  description       String?  @db.Text
+  ownerId           String   @db.Uuid
+  owner             User     @relation(fields: [ownerId], references: [id])
+  totalDebtForMe    Float    @default(0)
+  totalDebtOnMe     Float    @default(0)
+  currency          String   @default("USD")
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  deletedAt         DateTime?
+
+  ledgerTransactions LedgerTransaction[]
+}
+
+// 5. LedgerTransaction
+model LedgerTransaction {
+  id          String                @id @default(uuid()) @db.Uuid
+  customerId  String                @db.Uuid
+  customer    Customer              @relation(fields: [customerId], references: [id])
+  amount      Float
+  type        LedgerTransactionType
+  date        DateTime              @default(now())
+  notes       String?               @db.Text
+
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+  deletedAt   DateTime?
+}
+
+enum LedgerTransactionType {
+  DEBT_FOR_ME
+  DEBT_ON_ME
+  PAYMENT_RECEIVED
+  PAYMENT_SENT
+}
+
+// 6. SharedResource
+model SharedResource {
+  id                String          @id @default(uuid()) @db.Uuid
+  resourceType      ResourceType
+  resourceId        String          @db.Uuid
+  ownerId           String          @db.Uuid
+  owner             User            @relation("ResourceOwner", fields: [ownerId], references: [id])
+  sharedWithUserId  String          @db.Uuid
+  sharedWithUser    User            @relation("ResourceSharedWith", fields: [sharedWithUserId], references: [id])
+  permissionLevel   PermissionLevel @default(VIEW)
+
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  deletedAt         DateTime?
+}
+
+enum ResourceType {
+  TASK
+  NOTE
+  CUSTOMER
+}
+
+enum PermissionLevel {
+  VIEW
+  EDIT
+  TRANSFER_OWNERSHIP
+}
+
+// 7. SystemTaskLog
+model SystemTaskLog {
+  id          String         @id @default(uuid()) @db.Uuid
+  userId      String         @db.Uuid
+  user        User           @relation(fields: [userId], references: [id])
+  taskType    SystemTaskType
+  completedAt DateTime       @default(now())
+
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  deletedAt   DateTime?
+}
+
+enum SystemTaskType {
+  ADHKAR
+  QURAN
+}
