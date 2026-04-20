@@ -5,11 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/main.ts",
-    "build": "npx prisma generate && npx prisma db push --force-reset && nest build",
+    "build": "npx prisma generate && npx prisma db push --force-reset && tsc",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "start": "node dist/main.js"
+    "start": "tsx src/main.ts"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
