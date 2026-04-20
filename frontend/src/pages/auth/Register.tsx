@@ -5,6 +5,8 @@ import { useNavigate } from 'react-router-dom';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
 import { Mail, Lock, User, UserPlus, LogIn } from 'lucide-react';
+import { useAuthStore } from '../../store/useAuthStore';
+import { useState } from 'react';
 
 const registerSchema = z.object({
   fullName: z.string().min(2, 'الاسم يجب أن يكون أكثر من حرفين'),
@@ -24,6 +26,8 @@ type RegisterForm = z.infer<typeof registerSchema>;
 
 export default function Register() {
   const navigate = useNavigate();
+  const registerUser = useAuthStore((state) => state.registerUser);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   const {
     register,
@@ -37,10 +41,20 @@ export default function Register() {
   });
 
   const onSubmit = async (data: RegisterForm) => {
-    // Simulate API registration call
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    // Redirect to Verify Email on success
-    navigate('/verify-email');
+    setAuthError(null);
+    try {
+      await registerUser({
+        fullName: data.fullName,
+        username: data.username,
+        email: data.email,
+        password: data.password,
+      });
+      // Redirect to Verify Email on success (Zustand holds the tempEmail now)
+      navigate('/verify-email');
+    } catch (err: any) {
+      console.error(err);
+      setAuthError(err.response?.data?.message || 'حدث خطأ أثناء إنشاء الحساب، الرجاء المحاولة مرة أخرى.');
+    }
   };
 
   return (
@@ -50,6 +64,12 @@ export default function Register() {
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white">إنشاء حساب</h1>
           <p className="text-gray-500 dark:text-gray-400">انضم إلى نظام المدير الآن</p>
         </div>
+
+        {authError && (
+          <div className="p-3 rounded-12 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900 text-sm text-red-600 dark:text-red-400 font-medium">
+            {authError}
+          </div>
+        )}
 
         <form className="space-y-4" onSubmit={handleSubmit(onSubmit)}>
           <Input 

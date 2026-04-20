@@ -1,21 +1,32 @@
-import { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '../../components/ui/Button';
 import { ShieldCheck, RefreshCw } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { useAuthStore } from '../../store/useAuthStore';
 
 export default function VerifyEmail() {
   const navigate = useNavigate();
+  const verifyOtp = useAuthStore((state) => state.verifyOtp);
+  const tempEmail = useAuthStore((state) => state.tempEmail);
+
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [isVerifying, setIsVerifying] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   useEffect(() => {
-    // Focus first input on mount
+    // If user lands here without a target email stored from auth hook, boot them back
+    if (!tempEmail) {
+      navigate('/register', { replace: true });
+      return;
+    }
+
     if (inputRefs.current[0]) {
       inputRefs.current[0].focus();
     }
-  }, []);
+  }, [tempEmail, navigate]);
 
   const handleChange = (index: number, value: string) => {
     if (value.length > 1) value = value.slice(-1); // Only accept 1 char
@@ -24,8 +35,7 @@ export default function VerifyEmail() {
     newOtp[index] = value;
     setOtp(newOtp);
 
-    // Auto-advance logic (RTL aware, next visual box is right-to-left usually... 
-    // but array indexing implies index 0 is first logically. We'll advance array index)
+    // Auto-advance logic (RTL aware mapping naturally indexes left-to-right structurally inside flex row)
     if (value && index < 5 && inputRefs.current[index + 1]) {
       inputRefs.current[index + 1]?.focus();
     }
@@ -39,10 +49,21 @@ export default function VerifyEmail() {
   };
 
   const onConfirm = async () => {
+    if (!tempEmail) return;
+    
     setIsVerifying(true);
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    setIsVerifying(false);
-    navigate('/pending-approval');
+    setAuthError(null);
+    
+    const joinedOtp = otp.join('');
+    try {
+      await verifyOtp(tempEmail, joinedOtp);
+      navigate('/pending-approval'); // Or navigate('/tasks') depending on system requirements
+    } catch (err: any) {
+      console.error(err);
+      setAuthError(err.response?.data?.message || 'رمز التحقق غير صحيح أو انتهت صلاحيته.');
+    } finally {
+      setIsVerifying(false);
+    }
   };
 
   const isComplete = otp.every(val => val.length === 1);
@@ -58,11 +79,17 @@ export default function VerifyEmail() {
         <div className="space-y-2">
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white">تأكيد البريد الإلكتروني</h1>
           <p className="text-gray-500 dark:text-gray-400">
-            لقد أرسلنا رمزاً مكوناً من 6 أرقام إلى بريدك الإلكتروني. الرجاء إدخاله أدناه.
+            لقد أرسلنا رمزاً مكوناً من 6 أرقام إلى {tempEmail}. الرجاء إدخاله أدناه.
           </p>
         </div>
 
-        <div className="space-y-6 pt-4">
+        {authError && (
+          <div className="p-3 rounded-12 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900 text-sm text-red-600 dark:text-red-400 font-medium">
+            {authError}
+          </div>
+        )}
+
+        <div className="space-y-6 pt-2">
           <div className="flex justify-center gap-2 md:gap-3" dir="ltr">
             {otp.map((digit, idx) => (
               <input

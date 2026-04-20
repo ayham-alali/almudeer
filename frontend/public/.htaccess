@@ -1,0 +1,17 @@
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+  
+  # Protect hidden files from being viewed
+  <Files .*>
+    Order Deny,Allow
+    Deny from all
+  </Files>
+  
+  # Allow any files or directories that exist to be displayed directly
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  
+  # Otherwise, redirect to index.html for React Router to handle
+  RewriteRule ^ index.html [QSA,L]
+</IfModule>

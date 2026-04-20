@@ -6,6 +6,7 @@ import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
 import { Mail, Lock, LogIn, UserPlus } from 'lucide-react';
 import { useAuthStore } from '../../store/useAuthStore';
+import { useState } from 'react';
 
 const loginSchema = z.object({
   emailOrUsername: z.string().min(1, 'البريد الإلكتروني أو اسم المستخدم مطلوب'),
@@ -16,7 +17,8 @@ type LoginForm = z.infer<typeof loginSchema>;
 
 export default function Login() {
   const navigate = useNavigate();
-  const login = useAuthStore((state) => state.login);
+  const loginUser = useAuthStore((state) => state.loginUser);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   const {
     register,
@@ -27,10 +29,15 @@ export default function Login() {
   });
 
   const onSubmit = async (data: LoginForm) => {
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    login({ id: '1', name: 'مستخدم تجريبي', email: data.emailOrUsername }, 'dummy-token');
-    navigate('/pending-approval');
+    setAuthError(null);
+    try {
+      await loginUser(data.emailOrUsername, data.password);
+      // Wait to execute nav after layout render handles state sync internally
+      navigate('/tasks'); // Changed from mock /pending-approval -> straight into Dashboard context
+    } catch (err: any) {
+      console.error(err);
+      setAuthError(err.response?.data?.message || 'فشل تسجيل الدخول، يرجى التحقق من بياناتك.');
+    }
   };
 
   return (
@@ -40,6 +47,12 @@ export default function Login() {
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white">تسجيل الدخول</h1>
           <p className="text-gray-500 dark:text-gray-400">مرحباً بك مجدداً في نظام المدير</p>
         </div>
+
+        {authError && (
+          <div className="p-3 rounded-12 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900 text-sm text-red-600 dark:text-red-400 font-medium">
+            {authError}
+          </div>
+        )}
 
         <form className="space-y-5" onSubmit={handleSubmit(onSubmit)}>
           <Input 

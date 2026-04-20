@@ -4,11 +4,18 @@ import { ValidationPipe } from '@nestjs/common';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  // Optional: configure CORS, validation pipes, etc.
-  app.enableCors();
+  
+  // Specific CORS config for frontend support on Railway
+  app.enableCors({
+    origin: ['https://almudeer.royaraqamia.com', 'http://localhost:5173'],
+    credentials: true,
+  });
+  
+  // Global validation pipe for DTO validation
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
   
-  const port = process.env.PORT || 3000;
+  // Railway requires binding to a dynamic port
+  const port = process.env.PORT || 8080;
   await app.listen(port, '0.0.0.0');
   console.log(`Application is running on: http://localhost:${port}`);
 }
