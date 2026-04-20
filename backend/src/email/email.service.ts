@@ -1,5 +1,4 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 
 @Injectable()
@@ -7,14 +6,14 @@ export class EmailService implements OnModuleInit {
   private transporter: nodemailer.Transporter;
   private readonly logger = new Logger(EmailService.name);
 
-  constructor(private configService: ConfigService) {}
+  constructor() {}
 
   onModuleInit() {
-    const host = this.configService.get<string>('SMTP_HOST') || 'smtp.resend.com';
-    const port = this.configService.get<number>('SMTP_PORT') || 465;
-    const secure = this.configService.get<string>('SMTP_USE_TLS') === 'true' || port === 465;
-    const user = this.configService.get<string>('SMTP_USERNAME') || '';
-    const pass = this.configService.get<string>('SMTP_PASSWORD') || '';
+    const host = process.env.SMTP_HOST || 'smtp.resend.com';
+    const port = parseInt(process.env.SMTP_PORT || '465', 10);
+    const secure = process.env.SMTP_USE_TLS === 'true' || port === 465;
+    const user = process.env.SMTP_USERNAME || '';
+    const pass = process.env.SMTP_PASSWORD || '';
 
     this.transporter = nodemailer.createTransport({
       host,
@@ -28,8 +27,8 @@ export class EmailService implements OnModuleInit {
   }
 
   async sendOtpEmail(to: string, otp: string) {
-    const fromEmail = this.configService.get<string>('FROM_EMAIL') || 'onboarding@resend.dev';
-    const fromName = this.configService.get<string>('FROM_NAME') || 'Al-Mudeer';
+    const fromEmail = process.env.FROM_EMAIL || 'onboarding@resend.dev';
+    const fromName = process.env.FROM_NAME || 'Al-Mudeer';
     
     const html = `
       <div dir="rtl" style="font-family: Arial, sans-serif; padding: 20px; line-height: 1.6; text-align: right;">
