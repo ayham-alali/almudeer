@@ -1,13 +1,15 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 
 @Injectable()
-export class EmailService {
+export class EmailService implements OnModuleInit {
   private transporter: nodemailer.Transporter;
   private readonly logger = new Logger(EmailService.name);
 
-  constructor(private configService: ConfigService) {
+  constructor(private configService: ConfigService) {}
+
+  onModuleInit() {
     const host = this.configService.get<string>('SMTP_HOST') || 'smtp.resend.com';
     const port = this.configService.get<number>('SMTP_PORT') || 465;
     const secure = this.configService.get<string>('SMTP_USE_TLS') === 'true' || port === 465;
@@ -51,8 +53,6 @@ export class EmailService {
       this.logger.log(`OTP Email sent to ${to}`);
     } catch (error) {
       this.logger.error(`Failed to send email to ${to}`, error);
-      // Depending on business logic, we might want to throw or just log.
-      // Usually logging is enough unless strict delivery guarantee is needed.
     }
   }
 }
