@@ -1,4 +1,4 @@
-import { Controller, Post, Body, HttpCode, HttpStatus, UseGuards, Get, Inject } from '@nestjs/common';
+import { Controller, Post, Body, HttpCode, HttpStatus, UseGuards, Get } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { RegisterDto, LoginDto, VerifyOtpDto, ForgotPasswordDto, ResetPasswordDto } from './dto/auth.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
@@ -6,20 +6,11 @@ import { CurrentUser } from './decorators/current-user.decorator';
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {
-    console.log('AuthController initialized, authService:', !!authService);
-  }
+  constructor(private readonly authService: AuthService) {}
 
   @Post('register')
-  async register(@Body() dto: RegisterDto) {
-    console.log('Register called, dto:', dto);
-    console.log('authService before call:', this.authService);
-    try {
-      return await this.authService.register(dto);
-    } catch (error) {
-      console.error('Register error:', error);
-      throw error;
-    }
+  register(@Body() dto: RegisterDto) {
+    return this.authService.register(dto);
   }
 
   @HttpCode(HttpStatus.OK)

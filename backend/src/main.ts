@@ -1,30 +1,21 @@
+import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 
 async function bootstrap() {
-  console.log('Starting bootstrap...');
-  try {
-    const app = await NestFactory.create(AppModule);
-    console.log('AppModule created successfully');
+  const app = await NestFactory.create(AppModule);
   
-  // Specific CORS config for frontend support on Railway
   app.enableCors({
     origin: ['https://almudeer.royaraqamia.com', 'http://localhost:3000', 'http://localhost:5173'],
     credentials: true,
   });
   
-  // Global validation pipe for DTO validation
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
   
-  // Railway requires binding to a dynamic port
   const port = process.env.PORT || 8080;
   await app.listen(port, '0.0.0.0');
   console.log(`Application is running on: http://localhost:${port}`);
-  } catch (error) {
-    console.error('Bootstrap error:', error);
-    process.exit(1);
-  }
 }
 
 bootstrap();

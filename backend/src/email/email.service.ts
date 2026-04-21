@@ -6,9 +6,7 @@ export class EmailService implements OnModuleInit {
   private transporter: nodemailer.Transporter;
   private readonly logger = new Logger(EmailService.name);
 
-  constructor() {
-    this.logger.log('EmailService instantiated');
-  }
+  constructor() {}
 
   onModuleInit() {
     const host = process.env.SMTP_HOST || 'smtp.resend.com';

@@ -1,16 +1,10 @@
-import { Module, Logger, forwardRef } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { PrismaModule } from '../prisma/prisma.module';
 
 @Module({
   imports: [PrismaModule],
   providers: [UsersService],
-  exports: [UsersService, PrismaModule],
+  exports: [UsersService],
 })
-export class UsersModule {
-  private readonly logger = new Logger(UsersModule.name);
-  
-  constructor() {
-    this.logger.log('UsersModule instantiated');
-  }
-}
+export class UsersModule {}
