@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, Logger } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from './prisma/prisma.module';
 import { UsersModule } from './users/users.module';
@@ -9,7 +9,7 @@ import { SyncModule } from './sync/sync.module';
 @Module({
   imports: [
     ConfigModule.forRoot({
-      isGlobal: true, // Make config globally available
+      isGlobal: true,
     }),
     PrismaModule,
     UsersModule,
@@ -20,4 +20,10 @@ import { SyncModule } from './sync/sync.module';
   controllers: [],
   providers: [],
 })
-export class AppModule {}
+export class AppModule {
+  private readonly logger = new Logger(AppModule.name);
+  
+  constructor() {
+    this.logger.log('AppModule instantiated');
+  }
+}

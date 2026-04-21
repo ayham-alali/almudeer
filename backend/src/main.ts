@@ -3,7 +3,10 @@ import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  console.log('Starting bootstrap...');
+  try {
+    const app = await NestFactory.create(AppModule);
+    console.log('AppModule created successfully');
   
   // Specific CORS config for frontend support on Railway
   app.enableCors({
@@ -18,6 +21,10 @@ async function bootstrap() {
   const port = process.env.PORT || 8080;
   await app.listen(port, '0.0.0.0');
   console.log(`Application is running on: http://localhost:${port}`);
+  } catch (error) {
+    console.error('Bootstrap error:', error);
+    process.exit(1);
+  }
 }
 
 bootstrap();
