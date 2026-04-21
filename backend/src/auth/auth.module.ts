@@ -12,15 +12,11 @@ import { EmailModule } from '../email/email.module';
   imports: [
     forwardRef(() => UsersModule),
     forwardRef(() => EmailModule),
-    PassportModule,
+    PassportModule.register({ defaultStrategy: 'jwt' }),
     ConfigModule,
-    JwtModule.registerAsync({
-      imports: [ConfigModule],
-      useFactory: async (configService: ConfigService) => ({
-        secret: configService.get<string>('JWT_SECRET') || 'defaultSecretChangeThisInProduction',
-        signOptions: { expiresIn: '1d' },
-      }),
-      inject: [ConfigService],
+    JwtModule.register({
+      secret: process.env.JWT_SECRET || 'defaultSecretChangeThisInProduction',
+      signOptions: { expiresIn: '1d' },
     }),
   ],
   controllers: [AuthController],

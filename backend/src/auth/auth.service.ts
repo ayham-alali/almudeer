@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, ForbiddenException, BadRequestException, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, UnauthorizedException, ForbiddenException, BadRequestException, NotFoundException } from '@nestjs/common';
 import { UsersService } from '../users/users.service';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
@@ -16,9 +16,9 @@ export class AuthService {
   private readonly otpCache = new Map<string, OtpData>();
 
   constructor(
-    @Inject(forwardRef(() => UsersService)) private readonly usersService: UsersService,
+    private readonly usersService: UsersService,
     private readonly jwtService: JwtService,
-    @Inject(forwardRef(() => EmailService)) private readonly emailService: EmailService,
+    private readonly emailService: EmailService,
   ) {}
 
   private generateVerificationOtp(): string {
