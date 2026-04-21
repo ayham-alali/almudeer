@@ -9,8 +9,13 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Post('register')
-  register(@Body() dto: RegisterDto) {
-    return this.authService.register(dto);
+  async register(@Body() dto: RegisterDto) {
+    try {
+      return await this.authService.register(dto);
+    } catch (error) {
+      console.error('Register error:', error);
+      throw error;
+    }
   }
 
   @HttpCode(HttpStatus.OK)
