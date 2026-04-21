@@ -8,8 +8,14 @@ import { CurrentUser } from './decorators/current-user.decorator';
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
+  @Get('test')
+  test() {
+    return { message: 'Auth controller works', service: !!this.authService };
+  }
+
   @Post('register')
   register(@Body() dto: RegisterDto) {
+    console.log('register called, authService:', this.authService);
     return this.authService.register(dto);
   }
 
