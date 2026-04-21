@@ -4,7 +4,7 @@ import { useAuthStore } from '../store/useAuthStore';
 
 // Assuming Vite environment variable for API URL
 // Mock default to /api if not set
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
 export const api = axios.create({
   baseURL: API_URL,

@@ -7,7 +7,7 @@ async function bootstrap() {
   
   // Specific CORS config for frontend support on Railway
   app.enableCors({
-    origin: ['https://almudeer.royaraqamia.com', 'http://localhost:5173'],
+    origin: ['https://almudeer.royaraqamia.com', 'http://localhost:3000', 'http://localhost:5173'],
     credentials: true,
   });
   
