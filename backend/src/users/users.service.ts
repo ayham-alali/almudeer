@@ -1,11 +1,15 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { User, UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(UsersService.name);
+  
+  constructor(private readonly prisma: PrismaService) {
+    this.logger.log('UsersService instantiated, prisma:', !!prisma);
+  }
 
   async createUser(data: { fullName: string; username: string; email: string; passwordHash: string }): Promise<User> {
     const trialEndsAt = new Date();
