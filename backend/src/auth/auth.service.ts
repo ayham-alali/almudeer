@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, ForbiddenException, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, ForbiddenException, BadRequestException, NotFoundException, Logger } from '@nestjs/common';
 import { UsersService } from '../users/users.service';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
@@ -13,14 +13,19 @@ interface OtpData {
 
 @Injectable()
 export class AuthService {
-  // Using an in-memory map for cache (could be swapped with Redis in production)
+  private readonly logger = new Logger(AuthService.name);
   private readonly otpCache = new Map<string, OtpData>();
 
   constructor(
     private readonly usersService: UsersService,
     private readonly jwtService: JwtService,
     private readonly emailService: EmailService,
-  ) {}
+  ) {
+    this.logger.log('AuthService instantiated');
+    this.logger.log('usersService:', !!usersService);
+    this.logger.log('jwtService:', !!jwtService);
+    this.logger.log('emailService:', !!emailService);
+  }
 
   private generateVerificationOtp(): string {
     return Math.floor(100000 + Math.random() * 900000).toString();
