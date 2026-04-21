@@ -6,10 +6,14 @@ import { CurrentUser } from './decorators/current-user.decorator';
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(private readonly authService: AuthService) {
+    console.log('AuthController initialized, authService:', !!authService);
+  }
 
   @Post('register')
   async register(@Body() dto: RegisterDto) {
+    console.log('Register called, dto:', dto);
+    console.log('authService before call:', this.authService);
     try {
       return await this.authService.register(dto);
     } catch (error) {
